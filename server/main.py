@@ -55,13 +55,15 @@ async def env():
 
 
 def _find_mineru():
-    """找 MinerU。装在自己 venv 里最好，找不到就退回工作台那份（开发期用）。"""
+    r"""找 MinerU。**只认自己 venv 里那份**。
+
+    2026-08-31 之前这里有一条退路：找不到就用工作台的那份。
+    环境独立之后撤掉了 —— 留着的话，别人机器上装漏了 MinerU 会静默失败，
+    而在我这台机器上永远测不出来（因为工作台就在隔壁目录）。
+    这种「只在开发机上能跑」的坑，宁可现在红。
+    """
     here = os.path.join(ROOT, '.venv', 'Scripts', 'mineru.exe')
-    if os.path.isfile(here):
-        return here
-    dev = os.path.join(os.path.dirname(ROOT), 'edu_book_generator',
-                       '.venv', 'Scripts', 'mineru.exe')
-    return dev if os.path.isfile(dev) else ''
+    return here if os.path.isfile(here) else ''
 
 
 # ── 下载源（B35：点下载时并发实测，不存历史成绩，不用 ping 判优）────────

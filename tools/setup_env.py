@@ -92,7 +92,12 @@ def main():
             sys.exit(1)
 
     if not os.path.isfile(os.path.join(ROOT, '.venv', 'Scripts', 'mineru.exe')):
-        if not pip(['mineru'], '装 MinerU'):
+        # 🔴 **必须带 [core] 这组 extras**。裸装 mineru 只给命令行外壳，
+        #    真跑本地提取时它会当场拒绝：
+        #      Install `mineru[pipeline]` or `mineru[core]`
+        #    实测栽过：装了 torch 也没用，MinerU 按 extras 决定启用哪条 pipeline。
+        #    18 秒就失败，看着像「跑得飞快」，其实一页都没处理。
+        if not pip(['mineru[core]'], '装 MinerU（含本地提取所需的组件）'):
             sys.exit(1)
 
     print('')
