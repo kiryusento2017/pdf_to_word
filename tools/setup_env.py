@@ -86,7 +86,9 @@ def main():
 
     if not have('torch'):
         # torch 单独装，且指定 CUDA 版的 index —— 不指定会装到 CPU 版，
-        # 那样 MinerU 会悄悄退回 CPU 跑，慢十几倍而且没有任何提示。
+        # 那样 MinerU 会悄悄退回 CPU 跑，**没有任何提示**。
+        # 实测代价（2026-08-31，同一份 10 页讲义）：GPU 262 秒 / CPU 460 秒，
+        # 慢 2.0 倍 —— 不是十几倍，但白等一倍时间且毫不知情，还是得装对。
         if not pip(['torch', 'torchvision', '--index-url', index],
                    '装 torch（CUDA 12.8 版，约 2.8 GB）'):
             sys.exit(1)

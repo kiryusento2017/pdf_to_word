@@ -7,14 +7,16 @@
 
 ## 怎么用
 
-双击 `启动.cmd`。三屏：
+双击 `启动.cmd`。四屏：
 
 ```
 ① 这台电脑的情况   显卡 / 转换引擎 / 公式引擎 / Office，四项一次看完
                    显卡不满足时，你自己选「仍然继续」还是「退出」
-② 把 PDF 拖进来    单个文件、多个文件、整个文件夹都行
+② 选下载源        只在没有模型时出现。并发实测各源，显示「预计几分钟」，
+                   最快的默认选中
+③ 把 PDF 拖进来    单个文件、多个文件、整个文件夹都行
                    列出每份的页数，以及哪几页没有文字层
-③ 转换            当前第几份 + 当前在干什么（识别公式 / 定位文字…）
+④ 转换            最大号字显示「还要约 X 分 Y 秒」，当前文件和阶段是小字
                    完成后逐份可以直接打开，或打开所在文件夹
 ```
 
@@ -26,8 +28,27 @@
 公式 213 个   全部是 Word 原生公式对象，可编辑可搜索，不是图片
 表格 2 个     含合并单元格，有边框
 图 4 张       按原书尺寸还原（4.45 / 1.29 / 1.61 / 1.25 英寸）
-用时 235 秒   其中 MinerU 提取占绝大部分
+用时 262 秒   其中 MinerU 提取占绝大部分
 ```
+
+## 进度条为什么显示「还要多久」而不是百分比
+
+因为百分比在这里是误导。MinerU 的阶段进度是真的（直接解析它的 tqdm 输出），
+但各阶段耗时差 100 倍——同一次转换的真实时间线：
+
+```
+分析版面  0→10     16 秒
+识别中    0→10    122 秒   ← 占 42%
+识别中    0→202   244 秒   ← 占 49%
+定位文字  0→188   249 秒
+处理页面  0→10    250 秒   ← 只要 1 秒
+```
+
+「分析版面 10/10 完成」看着像快好了，其实才走了 6%。所以首屏改成显示
+剩余时间：页数在体检时就知道，速率是实测的（GPU 26 秒/页、CPU 46 秒/页），
+转完一份后还会用真实耗时反推速率替掉出厂估值。
+
+估不出来时显示「正在估算…」——宁可不显示，也不给一个编的数。
 
 ## 公式走哪条路
 
@@ -35,7 +56,7 @@
 
 ```
 装了 Office → 读本机 MML2OMML.XSL → OMML
-没装        → 内置 Pandoc（打包在 runtime/）→ OMML
+没装        → 内置 Pandoc（runtime/pandoc/）→ OMML
 ```
 
 两条都产出 Word 原生公式。为什么优先 Office：实测同一份讲义 213 个公式，
@@ -82,41 +103,59 @@
 
 ```
 .venv\Scripts\python.exe tools\setup_env.py --check   # 看缺什么
-.venv\Scripts\python.exe tools\setup_env.py           # 装齐（约 3 GB）
+.venv\Scripts\python.exe tools\setup_env.py           # 装齐
 ```
+
+下载约 3 GB（大头是 CUDA 版 torch），装完 `.venv` 占约 5.1 GB。
 
 模型（约 4.6 GB）不在这一步装——首次转换时 MinerU 自己下，
 下载源在首启界面并发实测后由你选，最快的默认选中。
+
+**注意：`runtime/pandoc/pandoc.exe`（233 MB）不在版本库里**，`.gitignore`
+排除了它，`setup_env.py` 也不下载它。从 git clone 出来的话需要自己放一份
+（[pandoc 3.11 官方发布页](https://github.com/jgm/pandoc/releases/tag/3.11)），
+否则没装 Office 的机器上公式那条备用路会断。
 
 ## 目录
 
 ```
 pipeline/   probe(体检) gpu(显卡) extract(调MinerU) tomath(XSL公式)
-            todocx(出Word) convert(串起来) sources(多源测速) vendor/katex
+            todocx(出Word) convert(串起来) sources(多源测速)
+            tex2mml.js(KaTeX 转 MathML) vendor/katex
 server/     FastAPI，只绑 127.0.0.1，端口系统分配
-app/        Electron 外壳 + 三屏前端（纯 JS 无框架）
+app/        Electron 外壳 + 四屏前端（纯 JS 无框架）
 runtime/    pandoc.exe + 许可证
-tests/      109 条 Python + 33 条前端检查 + 三个真实数据验证脚本
+tests/      116 条 Python + 35 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md
 ```
 
 ## 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 109 条，6 秒
-node tests\front_check.js                                   # 33 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 116 条，7 秒
+node tests\front_check.js                                   # 35 条，真渲染
 ```
 
-这两个都是离线的、秒级的。另有三个**依赖本机真实文件**的验证脚本，不在自动套件里：
+这两个都是离线的、秒级的。另有四个**依赖本机真实文件**的验证脚本，不在自动套件里：
 
 ```
 tests\real_probe_check.py     真实 PDF 的体检（扫你资料库里的 544 份）
 tests\real_convert_check.py   拿现成的 MinerU 产物转 Word（11 份，不用 GPU）
-tests\real_pdf_to_word.py     端到端：一份 PDF 直接出 Word（要 GPU，约 4 分钟）
+tests\real_pdf_to_word.py     端到端：一份 PDF 直接出 Word（要 GPU，约 4 分半）
+tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 8 分钟）
 ```
 
 它们存在的理由：单元测试用的是脚本造的假数据，只能证明逻辑自洽，
 不能证明在真书上做对了。这个项目里已经栽过两次「测试全绿但实际没生效」。
+
+## 已知的坑
+
+- **「开始下载」按钮点了不下载**：它只是记下你选的源然后放行，真正的下载
+  由 MinerU 在首次转换时自己做（不自己实现下载器是有意的，理由见
+  `app/renderer/actions.js:152`）。副作用是第一次转换的「还要多久」会偏小，
+  因为那 4.6 GB 的下载时间没算进去。
+- **模型落在 MinerU 的默认缓存目录**（用户目录下），不在安装目录里。
+  临时文件是关在安装目录内的（`_tmp/`）。
 
 ## 许可证
 
