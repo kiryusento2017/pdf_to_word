@@ -5,64 +5,103 @@
 金石工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
 这边只做「PDF → Word」这一段。
 
-## 现在能做什么（阶段 0 已完成）
+## 怎么用
 
-拿 MinerU 的产物转 Word，**不需要 GPU**：
-
-```
-.venv\Scripts\python.exe tests\real_convert_check.py
-```
-
-实测 11 份真实讲义：
+双击 `启动.cmd`。三屏：
 
 ```
-成功 11 ｜ 失败 0 ｜ 用时 10.7 秒
-公式合计 3163 个，其中 2884 个走了 Office 的 XSL（10/11 份）
+① 这台电脑的情况   显卡 / 转换引擎 / 公式引擎 / Office，四项一次看完
+                   显卡不满足时，你自己选「仍然继续」还是「退出」
+② 把 PDF 拖进来    单个文件、多个文件、整个文件夹都行
+                   列出每份的页数，以及哪几页没有文字层
+③ 转换            当前第几份 + 当前在干什么（识别公式 / 定位文字…）
+                   完成后逐份可以直接打开，或打开所在文件夹
+```
+
+## 转出来是什么样
+
+同一份讲义（10 页数学）实测：
+
+```
+公式 213 个   全部是 Word 原生公式对象，可编辑可搜索，不是图片
+表格 2 个     含合并单元格，有边框
+图 4 张       按原书尺寸还原（4.45 / 1.29 / 1.61 / 1.25 英寸）
+用时 235 秒   其中 MinerU 提取占绝大部分
 ```
 
 ## 公式走哪条路
 
-小蔡定的优先级：**有 XSL 先用 XSL，没有才启用内置的 Pandoc**。
+**有 Office 就用 Office 的，没有才用内置的 Pandoc。**
 
 ```
-Pandoc 出骨架（段落、表格、图片，以及它自己转的公式）
-  ↓
-有 Office 的 MML2OMML.XSL → 把公式逐个换成 XSL 转出来的
-没有                      → 就用 Pandoc 转的那批
+装了 Office → 读本机 MML2OMML.XSL → OMML
+没装        → 内置 Pandoc（打包在 runtime/）→ OMML
 ```
 
-两条路都产出 Word 原生公式对象（可编辑、可搜索），不是图片。
-每次转换的报告里写明**这次实际走了哪条**——同一份文件在两台机器上结果可能不同，
-不写明的话人根本查不出为什么。
+两条都产出 Word 原生公式。为什么优先 Office：实测同一份讲义 213 个公式，
+两条路 35.7% 的可见文字有差异，Office 那条更准——
+
+- 括号用 OMML 定界符（Word 里会随内容自动伸缩），Pandoc 当普通文字
+- `\leqslant` 给 `⩽`(U+2A7D)，Pandoc 给 `≤`(U+2264)
+- 空集 `∅`(U+2205)，**Pandoc 转成了 `⌀`(U+2300 直径符号)，这是错的**
 
 微软的 `MML2OMML.XSL` **不打包**（那是随 Office 分发的版权文件），只读用户本机的。
-没装 Office 的用户由 Pandoc 接管，功能不缺。
+
+## 文字准确度：不做承诺
+
+2026-08-31 实测推翻了初版设计。同一份 PDF 跑 MinerU 三种模式：
+
+| 模式 | 正文字符 | 行内公式 | 「己知」 | 「已知」 |
+|---|---|---|---|---|
+| txt | 10187 | 131 | 1 | 13 |
+| auto | 10187 | 131 | 1 | 13 |
+| ocr | 8972 | **213** | 1 | 13 |
+
+那个错字**在原 PDF 的文字层里就是错的**（原书排版打错的字），三种模式都消不掉。
+而 txt / auto 丢了 38% 的公式（文字层里没有公式）。所以默认 `ocr`。
+
+界面因此不显示「文字版 / 扫描版」这种质量暗示，只报客观事实：
+几页、哪几页没有文字层。详见 `docs/DESIGN.md` 第二节。
+
+## 装环境
+
+```
+.venv\Scripts\python.exe tools\setup_env.py --check   # 看缺什么
+.venv\Scripts\python.exe tools\setup_env.py           # 装齐（约 3 GB）
+```
+
+模型（约 4.6 GB）不在这一步装——首次转换时 MinerU 自己下，
+下载源在首启界面并发实测后由你选，最快的默认选中。
 
 ## 目录
 
 ```
-pipeline/   probe(判文字层) tomath(XSL公式) todocx(出Word) vendor/katex
+pipeline/   probe(体检) gpu(显卡) extract(调MinerU) tomath(XSL公式)
+            todocx(出Word) convert(串起来) sources(多源测速) vendor/katex
+server/     FastAPI，只绑 127.0.0.1，端口系统分配
+app/        Electron 外壳 + 三屏前端（纯 JS 无框架）
 runtime/    pandoc.exe + 许可证
-tests/      单元测试 + 两个真实数据验证脚本
+tests/      109 条 Python + 33 条前端检查 + 三个真实数据验证脚本
 docs/       DESIGN.md
 ```
 
 ## 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q     # 29 条，秒级
-.venv\Scripts\python.exe tests\real_probe_check.py            # 真实 PDF 探测
-.venv\Scripts\python.exe tests\real_convert_check.py          # 真实产物转 Word
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 109 条，6 秒
+node tests\front_check.js                                   # 33 条，真渲染
 ```
 
-`real_*` 那两个**不是单元测试**，依赖本机真实文件，换台机器跑不了。
+这两个都是离线的、秒级的。另有三个**依赖本机真实文件**的验证脚本，不在自动套件里：
+
+```
+tests\real_probe_check.py     真实 PDF 的体检（扫你资料库里的 544 份）
+tests\real_convert_check.py   拿现成的 MinerU 产物转 Word（11 份，不用 GPU）
+tests\real_pdf_to_word.py     端到端：一份 PDF 直接出 Word（要 GPU，约 4 分钟）
+```
+
 它们存在的理由：单元测试用的是脚本造的假数据，只能证明逻辑自洽，
-不能证明在真书上做对了。
-
-## 还没做
-
-阶段 1 接 MinerU（要 GPU）、阶段 2 界面、阶段 3 首启向导与多源测速、阶段 4 打包。
-详见 `docs/DESIGN.md`。
+不能证明在真书上做对了。这个项目里已经栽过两次「测试全绿但实际没生效」。
 
 ## 许可证
 
