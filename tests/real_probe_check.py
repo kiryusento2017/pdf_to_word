@@ -45,22 +45,26 @@ for r in probe.probe_many(found[:40]):
         n_bad += 1
         print('  [坏]  %-42s %s' % (name, r['error']))
         continue
+    # 只报事实，不下「好 / 差」的结论 —— has_text 不是质量保证
+    # （那个「己知」错字在原 PDF 文字层里就是错的，走哪种模式都消不掉）。
     if r['kind'] == 'text':
         n_text += 1
-        tag = '文字版'
     else:
         n_scan += 1
-        tag = '扫描版'
-    scan = ''
-    if r['scan_pages'] and r['kind'] == 'text':
-        s = r['scan_pages']
-        scan = '（第 %s 页无文字层，走 OCR）' % ','.join(str(x) for x in s[:6])
-        if len(s) > 6:
-            scan = scan[:-1] + ' 等 %d 页）' % len(s)
-    print('  [%s] %-42s %2d 页 %s' % (tag, name, r['pages'], scan))
+    note = ''
+    if r['scan_pages']:
+        sp = r['scan_pages']
+        if len(sp) == r['pages']:
+            note = '整份无文字层'
+        else:
+            note = '第 %s 页无文字层' % ','.join(str(x) for x in sp[:6])
+            if len(sp) > 6:
+                note += ' 等 %d 页' % len(sp)
+    print('  %-44s %2d 页  %s' % (name, r['pages'], note))
 
 print('')
-print('文字版 %d ｜ 扫描版 %d ｜ 读不了 %d' % (n_text, n_scan, n_bad))
+print('能取到文字的 %d ｜ 整份取不到的 %d ｜ 读不了 %d' % (n_text, n_scan, n_bad))
 print('')
-print('文字版那些走 txt 模式取文字层，正文几乎不会出错；')
-print('扫描版和上面标出来的那些页只能走 OCR，界面上要提前告诉用户。')
+print('注意：「能取到文字」不等于「文字是对的」：实测那个「己知」错字')
+print('   在原 PDF 的文字层里就是错的，txt / auto / ocr 三种模式都消不掉。')
+print('   标出来的「无文字层」页只是提示那几页整页当图识别、出错概率更高。')
