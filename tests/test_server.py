@@ -193,6 +193,20 @@ class Test转换任务(unittest.TestCase):
         self._wait(tid)
         self.assertTrue(seen, '轮询期间一次都没拿到阶段名')
 
+    def test_后台线程炸了也不能让任务永远转圈(self):
+        r"""后台线程的异常会被 Python 悄悄吞掉，任务停在 running 不动，
+        界面上就是转到天荒地老。实测撞见过：漏一个 import，
+        四条测试全部等到超时才失败。"""
+        def boom(*a, **kw):
+            raise RuntimeError('假装内部炸了')
+        srv.convert.pdf_to_word = boom
+        tid = client.post('/api/convert',
+                          json={'paths': [self.pdf],
+                                'out_dir': WORK}).json()['task_id']
+        d = self._wait(tid, timeout=5)
+        self.assertEqual(d['state'], 'done', '任务卡在 running 了')
+        self.assertIn('假装内部炸了', d.get('error', ''), '炸了却没说原因')
+
     def test_查不存在的任务给404(self):
         self.assertEqual(client.get('/api/convert/nope').status_code, 404)
 

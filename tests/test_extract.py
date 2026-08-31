@@ -162,7 +162,10 @@ class Test跑一次(unittest.TestCase):
         shutil.rmtree(WORK, ignore_errors=True)
 
     def _fake(self, lines, make_output=True, rc=0):
-        def fake(argv, on_line):
+        self.seen_env = None
+
+        def fake(argv, on_line, env=None):
+            self.seen_env = env
             for ln in lines:
                 on_line(ln)
             if make_output:
@@ -206,6 +209,19 @@ class Test跑一次(unittest.TestCase):
         r = extract.run(self.pdf, self.out, mineru='mineru.exe')
         self.assertFalse(r['ok'])
         self.assertIn('CUDA', r['error'] + r.get('tail', ''))
+
+    def test_模型源的环境变量真的传给了子进程(self):
+        r"""用户在首启那屏选的下载源，只记在前端等于让人做了个没用的
+        选择题，比不给选更糟。这条钉着「选了就真的生效」。"""
+        self._fake(['Processing pages: 100%|##| 1/1 [00:01<00:00]'])
+        extract.run(self.pdf, self.out, mineru='mineru.exe',
+                    env={'MINERU_MODEL_SOURCE': 'modelscope'})
+        self.assertEqual(self.seen_env, {'MINERU_MODEL_SOURCE': 'modelscope'})
+
+    def test_不传env时保持原样(self):
+        self._fake(['Processing pages: 100%|##| 1/1 [00:01<00:00]'])
+        extract.run(self.pdf, self.out, mineru='mineru.exe')
+        self.assertIsNone(self.seen_env)
 
     def test_找不到mineru时说人话(self):
         r = extract.run(self.pdf, self.out, mineru=os.path.join(WORK, '没有.exe'))

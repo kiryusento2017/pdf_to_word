@@ -20,7 +20,7 @@ import todocx
 
 
 def pdf_to_word(pdf, out_docx, work_dir, on_progress=None, on_log=None,
-                prefer_xsl=True, mineru=None, **kw):
+                prefer_xsl=True, mineru=None, env=None, **kw):
     r"""转一份。返回汇总报告，**不抛异常**。
 
     on_progress(阶段中文名, 当前, 总数) —— 提取那步的真进度，
@@ -45,7 +45,7 @@ def pdf_to_word(pdf, out_docx, work_dir, on_progress=None, on_log=None,
         if on_progress:
             on_progress(stage, cur, tot)
 
-    e = extract.run(pdf, work_dir, mineru=mineru,
+    e = extract.run(pdf, work_dir, mineru=mineru, env=env,
                     on_progress=_prog, on_log=on_log, **kw)
     if not e['ok']:
         rep['error'] = e['error']

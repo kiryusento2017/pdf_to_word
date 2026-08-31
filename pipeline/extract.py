@@ -123,7 +123,7 @@ def _split_lines(buf):
     return out, buf
 
 
-def _spawn(argv, on_line):
+def _spawn(argv, on_line, env=None):
     r"""起子进程，逐行回调。抽出来是为了测试能拦住它，不必真跑 GPU。
 
     🔴 **不能用 readline**。tqdm 刷新进度用的是**回车符、不换行**，
@@ -132,8 +132,14 @@ def _spawn(argv, on_line):
 
     （原来还写过 bufsize=1，二进制模式根本不支持行缓冲，Python 自己会警告。）
     """
+    # env 用来指定模型下载源（MINERU_MODEL_SOURCE / HF_ENDPOINT）。
+    # **合并进现有环境而不是替换** —— 替换会丢掉 PATH，子进程直接起不来。
+    real_env = None
+    if env:
+        real_env = dict(os.environ)
+        real_env.update(env)
     p = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT)
+                         stderr=subprocess.STDOUT, env=real_env)
     buf = ''
     try:
         while True:
@@ -151,7 +157,8 @@ def _spawn(argv, on_line):
     return p.wait()
 
 
-def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None, **kw):
+def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
+        env=None, **kw):
     r"""提取一份 PDF。返回报告 dict，**不抛异常**。
 
     on_progress(阶段中文名, 当前, 总数) —— 真进度，来自 MinerU 的 tqdm
@@ -188,7 +195,7 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None, **kw):
                 on_progress(stage, cur, tot)
 
     try:
-        rc = _spawn(build_argv(mineru, pdf, out_dir, **kw), on_line)
+        rc = _spawn(build_argv(mineru, pdf, out_dir, **kw), on_line, env=env)
     except Exception as e:
         rep['error'] = '起 mineru 失败：%s: %s' % (type(e).__name__, str(e)[:120])
         return rep

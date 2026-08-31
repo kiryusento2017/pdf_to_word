@@ -250,4 +250,70 @@ function pageRun(st) {
   return head + body + resultCard + foot;
 }
 
-window.P2W_PAGES = { check: pageCheck, pick: pagePick, run: pageRun };
+// ── ④ 下载模型（首次使用，只出现一次）──────────────────────────────
+function pageModel(st) {
+  var head = '<div style="' + S.h1 + '">第一次使用，需要下载识别模型</div>'
+    + '<div style="' + S.faint + ';margin-bottom:18px">'
+    + '大约 ' + (st.srcTotalGb || '4.6') + ' GB，下载一次，以后不用再下</div>';
+
+  // 正在下载就显示下载 —— 这一判断必须在最前面。
+  // 原先排在「源列表为空」的 early return 之后，结果下载进行中却因为
+  // 列表为空而显示「还没测速」，用户会以为下载没开始。
+  var dl = st.dl;
+  if (dl && dl.running) {
+    return '<div style="' + S.card + '">' + head
+      + '<div style="' + S.body + ';margin-bottom:10px">正在下载…'
+      + (dl.total ? '　' + Math.round(100 * dl.got / dl.total) + '%' : '') + '</div>'
+      + bar(dl.got, dl.total || 1)
+      + '<div style="' + S.faint + ';margin-top:12px">'
+      + '下载中断了也不要紧，重开软件会接着上次的位置继续。</div></div>';
+  }
+
+  if (st.srcLoading) {
+    return '<div style="' + S.card + '">' + head
+      + '<div style="' + S.body + '">正在测试各个下载源的速度…</div></div>';
+  }
+
+  if (st.srcError) {
+    return '<div style="' + S.card + '">' + head
+      + '<div style="' + S.body + ';color:var(--bad)">' + esc(st.srcError) + '</div>'
+      + '<div style="margin-top:16px"><button data-act="probeSources">重新测速</button></div>'
+      + '</div>';
+  }
+
+  var items = st.sources || [];
+  if (!items.length) {
+    return '<div style="' + S.card + '">' + head
+      + '<div style="' + S.body + '">还没测速。</div>'
+      + '<div style="margin-top:16px">'
+      + '<button class="primary" data-act="probeSources">测速</button></div></div>';
+  }
+
+  var anyOk = items.some(function (x) { return x.ok; });
+  var rows = items.map(function (x) {
+    var on = st.srcPick === x.id;
+    return '<div class="row" style="padding:13px 0;display:flex;gap:12px;'
+      + 'align-items:center;' + (x.ok ? 'cursor:pointer' : 'opacity:.5') + '"'
+      + (x.ok ? ' data-act="pickSource" data-arg="' + esc(x.id) + '"' : '') + '>'
+      + '<div style="width:20px;flex:none;color:'
+      + (on ? 'var(--theme)' : 'var(--ink3)') + '">' + (on ? '●' : '○') + '</div>'
+      + '<div style="flex:1;min-width:0">' + esc(x.name) + '</div>'
+      + '<div style="' + S.faint + ';flex:none">'
+      + esc(x.ok ? x.eta : (x.error ? '连不上' : '连不上')) + '</div>'
+      + '</div>';
+  }).join('');
+
+  return '<div style="' + S.card + '">' + head + rows
+    + '<div style="margin-top:18px;display:flex;gap:10px;align-items:center">'
+    + '<button class="primary" data-act="startDownload"'
+    + (anyOk ? '' : ' disabled') + '>开始下载</button>'
+    + '<button data-act="probeSources">重新测速</button>'
+    + '<button data-act="pickLocal">我已经有模型了</button>'
+    + '</div>'
+    + (anyOk ? '' : '<div style="' + S.body + ';color:var(--bad);margin-top:12px">'
+        + '所有下载源都连不上，检查一下网络。</div>')
+    + '</div>';
+}
+
+window.P2W_PAGES = { check: pageCheck, pick: pagePick, run: pageRun,
+                     model: pageModel };

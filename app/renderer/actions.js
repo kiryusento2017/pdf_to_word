@@ -106,6 +106,7 @@
       render();
       HTTP.post('/api/convert', {
         paths: paths, out_dir: st.outDir, prefer_xsl: true,
+        source: st.srcPick,
       }).then(function (d) {
         st.taskId = d.task_id;
         st.task = null;
@@ -126,6 +127,39 @@
     cancel: function () {
       if (!st.taskId) return;
       HTTP.post('/api/convert/' + st.taskId + '/cancel', {}).catch(function () {});
+    },
+
+    probeSources: function () {
+      st.srcLoading = true;
+      st.srcError = '';
+      render();
+      HTTP.get('/api/sources').then(function (d) {
+        st.sources = d.items || [];
+        st.srcPick = d.best || '';
+        st.srcTotalGb = d.total_gb;
+        st.srcLoading = false;
+        render();
+      }).catch(function (e) {
+        st.srcLoading = false;
+        st.srcError = String(e && e.message || e);
+        render();
+      });
+    },
+
+    pickSource: function (id) { st.srcPick = id; render(); },
+
+    startDownload: function () {
+      // 模型下载由 MinerU 自己在首次提取时触发（它认 MINERU_MODEL_SOURCE），
+      // 这里只把选中的源记下来并放行 —— 自己再实现一套下载器等于跟它抢活，
+      // 两边对模型清单的理解一旦不一致就会下出一个跑不起来的半套。
+      st.page = 'pick';
+      render();
+    },
+
+    pickLocal: function () {
+      window.api.pickDir().then(function (d) {
+        if (d && d.length) { st.page = 'pick'; render(); }
+      });
     },
 
     openFile: function (p) { window.api.openFile(p); },

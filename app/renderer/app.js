@@ -35,6 +35,13 @@ var state = {
   starting: false,
   err: '',
   port: 0,
+  // 首次使用那一屏：源清单、选中的源、下载进度
+  sources: null,
+  srcLoading: false,
+  srcError: '',
+  srcPick: '',
+  srcTotalGb: '',
+  dl: null,
 };
 
 // HTML 转义。**必须做**：文件名是用户给的，出现 < > & 是常事。

@@ -26,6 +26,7 @@ from pydantic import BaseModel                        # noqa: E402
 import convert                                        # noqa: E402
 import gpu                                            # noqa: E402
 import probe                                          # noqa: E402
+import sources                                      # noqa: E402
 import todocx                                         # noqa: E402
 import tomath                                         # noqa: E402
 
@@ -63,6 +64,30 @@ def _find_mineru():
     return dev if os.path.isfile(dev) else ''
 
 
+# ── 下载源（B35：点下载时并发实测，不存历史成绩，不用 ping 判优）────────
+# 模型总量按 MinerU 实际拉下来的量估：约 4.6 GB。
+MODEL_BYTES = 4.6 * 1024 * 1024 * 1024
+
+
+@app.get('/api/sources')
+async def list_sources():
+    r"""并发测所有源，按快慢排序返回。**每次现测** ——
+    下载是低频动作，现测成本可忽略，而旧成绩会过时误导。
+    """
+    rows = sources.probe_all()
+    best = sources.pick_best(rows)
+    return {
+        'items': [{
+            'id': r['id'], 'name': r['name'],
+            'ok': r['bps'] > 0,
+            'eta': sources.eta_words(MODEL_BYTES, r['bps']),
+            'error': r['error'],
+        } for r in rows],
+        'best': best['id'] if best else '',
+        'total_gb': round(MODEL_BYTES / 1024 / 1024 / 1024, 1),
+    }
+
+
 # ── 选书 ────────────────────────────────────────────────────────────────
 class ScanReq(BaseModel):
     paths: list[str] = []
@@ -94,12 +119,37 @@ class ConvertReq(BaseModel):
     paths: list[str]
     out_dir: str = ''          # 空 = 输出到每份 PDF 自己所在的文件夹
     prefer_xsl: bool = True
+    source: str = ''           # 模型下载源的 id，空 = 让 MinerU 自己决定
 
 
-def _work(task_id, paths, out_dir, prefer_xsl):
-    """后台线程：逐份转。一份失败不影响其余。"""
+def _work(task_id, paths, out_dir, prefer_xsl, source=''):
+    r"""后台线程：逐份转。一份失败不影响其余。
+
+    🔴 **整体套一层兜底**。这是后台线程，异常会被 Python 悄悄吞掉，
+    任务就永远停在 running —— 界面上是转圈转到天荒地老，用户只会以为
+    软件慢，不会知道出了事。实测撞见过：漏了一个 import，
+    四条测试全部等到超时才失败。
+    """
+    try:
+        _work_inner(task_id, paths, out_dir, prefer_xsl, source)
+    except Exception as e:
+        with _LOCK:
+            t = _TASKS.get(task_id)
+            if t is not None:
+                t['state'] = 'done'
+                t['error'] = '%s: %s' % (type(e).__name__, str(e)[:200])
+
+
+def _work_inner(task_id, paths, out_dir, prefer_xsl, source=''):
     mineru = _find_mineru()
     tmp = os.path.join(ROOT, '_tmp', 'extract')
+    # 用户在首启那屏选的源。**必须真的传下去** —— 只记在前端等于让人
+    # 做了个没用的选择题，比不给选更糟。
+    env = {}
+    for s in sources.MODEL_SOURCES:
+        if s['id'] == source:
+            env = s['env']
+            break
     for i, pdf in enumerate(paths):
         with _LOCK:
             t = _TASKS[task_id]
@@ -121,7 +171,7 @@ def _work(task_id, paths, out_dir, prefer_xsl):
         name = os.path.splitext(os.path.basename(pdf))[0] + '.docx'
         rep = convert.pdf_to_word(pdf, os.path.join(dest, name), tmp,
                                   on_progress=on_prog, prefer_xsl=prefer_xsl,
-                                  mineru=mineru)
+                                  mineru=mineru, env=env)
         rep['line'] = convert.summary_line(rep)
         with _LOCK:
             _TASKS[task_id]['results'].append(rep)
@@ -142,9 +192,10 @@ async def start_convert(req: ConvertReq):
         _TASKS[tid] = {'state': 'running', 'total': len(req.paths), 'current': 0,
                        'current_name': '', 'stage': '', 'stage_cur': 0,
                        'stage_total': 0, 'results': [], 'cancel': False,
-                       'started': time.time()}
+                       'error': '', 'started': time.time()}
     threading.Thread(target=_work, daemon=True,
-                     args=(tid, req.paths, req.out_dir, req.prefer_xsl)).start()
+                     args=(tid, req.paths, req.out_dir, req.prefer_xsl,
+                           req.source)).start()
     return {'task_id': tid}
 
 

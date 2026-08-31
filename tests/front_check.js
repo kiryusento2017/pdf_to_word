@@ -295,5 +295,91 @@ console.log('\u8f6c\u6362\u5c4f\uff1a');
 }
 
 console.log('');
+console.log('\u4e0b\u8f7d\u6a21\u578b\u5c4f\uff1a');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.model;
+
+  ck('测速中有话说', () => {
+    const st = baseState(sb);
+    st.srcLoading = true;
+    if (!fn(st).includes('测试各个下载源')) throw new Error('测速时没提示');
+  });
+
+  ck('显示的是预计几分钟，不是 MB/s', () => {
+    const st = baseState(sb);
+    st.sources = [
+      { id: 'modelscope', name: 'ModelScope（阿里，国内快）', ok: true, eta: '约 8 分钟', error: '' },
+      { id: 'hf-mirror', name: 'HF-Mirror（国内镜像）', ok: true, eta: '约 21 分钟', error: '' },
+    ];
+    st.srcPick = 'modelscope';
+    const h = fn(st);
+    if (!h.includes('约 8 分钟')) throw new Error('没显示预计耗时');
+    for (const bad of ['MB/s', 'KB/s', 'bps']) {
+      if (h.includes(bad)) throw new Error('显示了 ' + bad + '，老师看不懂');
+    }
+  });
+
+  ck('最快的默认选中，电脑盲直接点开始即可', () => {
+    const st = baseState(sb);
+    st.sources = [
+      { id: 'modelscope', name: '快的', ok: true, eta: '约 8 分钟', error: '' },
+      { id: 'huggingface', name: '慢的', ok: true, eta: '约 40 分钟', error: '' },
+    ];
+    st.srcPick = 'modelscope';
+    const h = fn(st);
+    const i = h.indexOf('快的');
+    const j = h.indexOf('慢的');
+    if (i < 0 || j < 0) throw new Error('源没列出来');
+    if (h.slice(0, i).lastIndexOf('\u25cf') < 0) throw new Error('最快的那个没被选中');
+    if (!h.includes('开始下载')) throw new Error('没有开始下载的按钮');
+  });
+
+  ck('连不上的源变灰且不能选', () => {
+    const st = baseState(sb);
+    st.sources = [
+      { id: 'a', name: '能用的', ok: true, eta: '约 8 分钟', error: '' },
+      { id: 'b', name: '连不上的', ok: false, eta: '连不上', error: 'timeout' },
+    ];
+    st.srcPick = 'a';
+    const h = fn(st);
+    if (!h.includes('连不上')) throw new Error('没标出连不上的源');
+    const seg = h.slice(h.indexOf('连不上的') - 300, h.indexOf('连不上的'));
+    if (seg.includes('data-act="pickSource" data-arg="b"')) {
+      throw new Error('连不上的源还能点');
+    }
+  });
+
+  ck('全都连不上时不让点开始并说明原因', () => {
+    const st = baseState(sb);
+    st.sources = [{ id: 'a', name: 'x', ok: false, eta: '连不上', error: 'timeout' }];
+    const h = fn(st);
+    if (!h.includes('disabled')) throw new Error('全连不上却还能点开始');
+    if (!h.includes('检查一下网络')) throw new Error('没说该怎么办');
+  });
+
+  ck('给已有模型的人一条路', () => {
+    const st = baseState(sb);
+    st.sources = [{ id: 'a', name: 'x', ok: true, eta: '约 8 分钟', error: '' }];
+    if (!fn(st).includes('我已经有模型了')) throw new Error('没给本地导入的入口');
+  });
+
+  ck('下载中说明断了也能续', () => {
+    const st = baseState(sb);
+    st.dl = { running: true, got: 1200, total: 4600 };
+    const h = fn(st);
+    if (!h.includes('接着上次的位置')) throw new Error('没说断点续传，人会不敢关');
+  });
+
+  ck('测速失败时把原因显示出来', () => {
+    const st = baseState(sb);
+    st.srcError = 'Failed to fetch';
+    const h = fn(st);
+    if (!h.includes('Failed to fetch')) throw new Error('吞掉了错误');
+    if (!h.includes('重新测速')) throw new Error('没给重试的路');
+  });
+}
+
+console.log('');
 if (bad) { console.log('\u5931\u8d25 ' + bad + ' \u9879'); process.exit(1); }
 console.log('\u524d\u7aef\u5168\u90e8\u901a\u8fc7');
