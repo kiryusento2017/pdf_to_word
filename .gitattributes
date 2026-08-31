@@ -1,0 +1,5 @@
+# 批处理文件必须是 CRLF —— cmd.exe 解析 LF 换行的 .cmd 会出错：
+# if 块被拆散、中文行从中间截断，报一串「is not recognized」。
+# 2026-08-31 栽过一次，启动.cmd 当时是 LF，启动时刷四行报错。
+*.cmd text eol=crlf
+*.bat text eol=crlf
