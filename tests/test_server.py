@@ -207,6 +207,42 @@ class Test转换任务(unittest.TestCase):
         self.assertEqual(d['state'], 'done', '任务卡在 running 了')
         self.assertIn('假装内部炸了', d.get('error', ''), '炸了却没说原因')
 
+    def test_预计剩余时间随页数走(self):
+        r"""每页秒数是实测的（GPU 26 秒/页、CPU 46 秒/页），
+        页数在体检时就知道 —— 这两个数一乘就是用户唯一关心的答案。"""
+        t = {'pages': [10, 20], 'results': [], 'sec_per_page': 26.0}
+        r = srv._remain(t, elapsed=0)
+        self.assertEqual(r, int(30 * 26))          # 30 页 x 26 秒
+
+    def test_跑完的用真实速率反推(self):
+        r"""转到第三份时，前两份的真实速度比出厂估值准得多。"""
+        t = {'pages': [10, 10], 'results': [{'ok': True}], 'sec_per_page': 26.0}
+        # 第一份 10 页真实花了 500 秒（这台机器慢），剩下 10 页也该按 50 秒/页估
+        r = srv._remain(t, elapsed=500)
+        self.assertEqual(r, 500)
+
+    def test_全跑完剩余是0(self):
+        t = {'pages': [10], 'results': [{'ok': True}], 'sec_per_page': 26.0}
+        self.assertEqual(srv._remain(t, elapsed=260), 0)
+
+    def test_估不出来就返回None而不是瞎猜(self):
+        r"""界面上宁可显示「正在估算」，也不能给一个编的数。"""
+        self.assertIsNone(srv._remain({'pages': [], 'results': []}, elapsed=5))
+
+    def test_剩余不会是负数(self):
+        r"""跑得比估计慢时，剩余会算成负的 —— 显示「还要约 -3 分钟」是笑话。"""
+        t = {'pages': [10], 'results': [], 'sec_per_page': 26.0}
+        self.assertGreaterEqual(srv._remain(t, elapsed=9999), 0)
+
+    def test_轮询返回里带着剩余时间(self):
+        self._fake_convert(delay=0.2)
+        tid = client.post('/api/convert',
+                          json={'paths': [self.pdf],
+                                'out_dir': WORK}).json()['task_id']
+        d = client.get('/api/convert/%s' % tid).json()
+        self.assertIn('remain', d, '轮询没带剩余时间，界面拿什么显示')
+        self._wait(tid)
+
     def test_查不存在的任务给404(self):
         self.assertEqual(client.get('/api/convert/nope').status_code, 404)
 

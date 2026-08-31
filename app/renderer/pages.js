@@ -189,25 +189,27 @@ function pageRun(st) {
 
   var body = '';
   if (!done) {
-    var pct = t.total ? Math.round(100 * t.current / t.total) : 0;
+    // 最显眼的位置放「还要多久」—— 那是用户唯一关心的数。
+    // MinerU 的阶段进度答不了它：各阶段耗时差 100 倍，跑满一整条
+    // 也可能只花 1 秒。所以阶段进度降级成小字，只用来证明「还在动」。
+    var eta = (t.remain === null || t.remain === undefined)
+      ? '' : ('还要约 ' + F.sec(t.remain));
     body = '<div style="' + S.card + ';margin-bottom:14px">'
-      + '<div style="display:flex;align-items:baseline;margin-bottom:10px">'
-      + '<div style="' + S.h2 + ';flex:1;overflow:hidden;text-overflow:ellipsis;'
-      + 'white-space:nowrap">' + esc(t.current_name || '') + '</div>'
-      + '<div style="' + S.faint + '">第 ' + (t.current + 1) + ' / ' + t.total + ' 份</div>'
+      + '<div style="display:flex;align-items:baseline;margin-bottom:12px">'
+      + '<div style="flex:1;font-size:22px;font-weight:600;color:var(--ink)">'
+      + esc(eta || '正在估算…') + '</div>'
+      + (t.total > 1 ? '<div style="' + S.faint + '">第 ' + (t.current + 1)
+          + ' / ' + t.total + ' 份</div>' : '')
       + '</div>'
-      + bar(t.current, t.total)
-      + '<div style="' + S.body + ';margin-top:14px;display:flex;align-items:baseline">'
-      + '<div style="flex:1">' + esc(t.stage || '准备中')
-      + (t.stage_total ? '　' + t.stage_cur + ' / ' + t.stage_total : '')
-      + '</div>'
-      + '<div style="' + S.faint + '">' + pct + '%</div></div>'
-      + (t.stage_total ? '<div style="margin-top:8px">'
-          + bar(t.stage_cur, t.stage_total) + '</div>' : '')
-      + '</div>'
+      + bar(t.current + (t.stage_total ? t.stage_cur / t.stage_total : 0), t.total)
+      + '<div style="' + S.faint + ';margin-top:12px;overflow:hidden;'
+      + 'text-overflow:ellipsis;white-space:nowrap">'
+      + esc(t.current_name || '') + '　·　'
+      + esc(t.stage || '准备中')
+      + (t.stage_total ? ' ' + t.stage_cur + '/' + t.stage_total : '')
+      + '</div></div>'
       + '<div style="' + S.faint + ';margin-bottom:14px">'
-      + '一份十来页的讲义大约要三到五分钟。停止只在当前这份转完之后生效 ——'
-      + '中途硬停会留下半截文件。</div>'
+      + '停止只在当前这份转完之后生效 —— 中途硬停会留下半截文件。</div>'
       + '<button data-act="cancel">停止</button>';
   }
 

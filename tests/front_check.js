@@ -223,16 +223,51 @@ console.log('\u8f6c\u6362\u5c4f\uff1a');
   const sb = mkSandbox();
   const fn = sb.window.P2W_PAGES.run;
 
-  ck('转换中显示当前是第几份、在干什么', () => {
+  ck('最显眼的位置是「还要多久」', () => {
+    // 用户唯一关心的就是这个数。MinerU 的阶段进度答不了它：
+    // 各阶段耗时差 100 倍，跑满一整条也可能只花 1 秒。
     const st = baseState(sb);
     st.task = { state: 'running', total: 3, current: 1, current_name: '解不等式.pdf',
                 stage: '识别公式', stage_cur: 4, stage_total: 10,
-                results: [], elapsed: 65 };
+                results: [], elapsed: 65, remain: 320 };
+    const h = fn(st);
+    if (!h.includes('还要约 5 分 20 秒')) throw new Error('没显示剩余时间');
+    // 剩余时间要比阶段名更显眼（字号更大）
+    const iEta = h.indexOf('还要约');
+    const iStage = h.indexOf('识别公式');
+    if (iEta < 0 || iStage < 0) throw new Error('内容不全');
+    if (iEta > iStage) throw new Error('剩余时间排在阶段名后面，不够显眼');
+  });
+
+  ck('当前文件和阶段仍然看得到，只是降级成小字', () => {
+    const st = baseState(sb);
+    st.task = { state: 'running', total: 3, current: 1, current_name: '解不等式.pdf',
+                stage: '识别公式', stage_cur: 4, stage_total: 10,
+                results: [], elapsed: 65, remain: 320 };
     const h = fn(st);
     if (!h.includes('解不等式.pdf')) throw new Error('没显示当前文件');
     if (!h.includes('识别公式')) throw new Error('没显示当前阶段');
-    if (!h.includes('第 2 / 3 份')) throw new Error('没显示进度计数');
-    if (!h.includes('1 分 5 秒')) throw new Error('没显示已用时');
+    if (!h.includes('4/10')) throw new Error('没显示阶段内进度');
+  });
+
+  ck('只转一份时不显示「第几份」', () => {
+    // 一份的时候「第 1 / 1 份」是噪声
+    const st = baseState(sb);
+    st.task = { state: 'running', total: 1, current: 0, current_name: 'a.pdf',
+                stage: '识别公式', stage_cur: 1, stage_total: 10,
+                results: [], elapsed: 10, remain: 200 };
+    const h = fn(st);
+    if (h.includes('第 1 / 1 份')) throw new Error('一份也显示了「第几份」');
+  });
+
+  ck('估不出来时说正在估算，不瞎猜一个数', () => {
+    const st = baseState(sb);
+    st.task = { state: 'running', total: 1, current: 0, current_name: 'a.pdf',
+                stage: '', stage_cur: 0, stage_total: 0,
+                results: [], elapsed: 1, remain: null };
+    const h = fn(st);
+    if (!h.includes('正在估算')) throw new Error('估不出来却没说');
+    if (h.includes('还要约')) throw new Error('估不出来还是给了个数');
   });
 
   ck('转换中能停止，并说清楚停止的时机', () => {

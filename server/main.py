@@ -116,6 +116,19 @@ async def scan(req: ScanReq):
     return {'items': probe.probe_many(uniq)}
 
 
+# 每页要多久。**实测值**，不是拍的（2026-08-31，同一份 10 页数学讲义）：
+#   有显卡 262 秒 / 10 页 = 26 秒每页
+#   纯 CPU 460 秒 / 10 页 = 46 秒每页
+# 用来估「还要等多久」—— 那是用户唯一关心的数，而 MinerU 的阶段进度
+# 回答不了它（各阶段耗时差 100 倍，跑满一条也可能只花 1 秒）。
+SEC_PER_PAGE_GPU = 26.0
+SEC_PER_PAGE_CPU = 46.0
+
+
+def _sec_per_page():
+    return SEC_PER_PAGE_GPU if gpu.detect()['ok'] else SEC_PER_PAGE_CPU
+
+
 # ── 转换 ────────────────────────────────────────────────────────────────
 class ConvertReq(BaseModel):
     paths: list[str]
@@ -190,11 +203,18 @@ async def start_convert(req: ConvertReq):
     if not _find_mineru():
         return JSONResponse({'detail': '找不到 MinerU，还没装好'}, status_code=400)
     tid = uuid.uuid4().hex[:12]
+    # 页数在体检时已经知道了，用它估总时长。一份读不了就按 10 页算，
+    # 不让一个坏文件把整批的预计搞成 0。
+    pages = []
+    for p in req.paths:
+        r = probe.probe_pdf(p)
+        pages.append(r['pages'] if r['ok'] and r['pages'] else 10)
     with _LOCK:
         _TASKS[tid] = {'state': 'running', 'total': len(req.paths), 'current': 0,
                        'current_name': '', 'stage': '', 'stage_cur': 0,
                        'stage_total': 0, 'results': [], 'cancel': False,
-                       'error': '', 'started': time.time()}
+                       'error': '', 'started': time.time(),
+                       'pages': pages, 'sec_per_page': _sec_per_page()}
     threading.Thread(target=_work, daemon=True,
                      args=(tid, req.paths, req.out_dir, req.prefer_xsl,
                            req.source)).start()
@@ -207,7 +227,35 @@ async def poll(task_id: str):
         t = _TASKS.get(task_id)
         if not t:
             return JSONResponse({'detail': '没有这个任务'}, status_code=404)
-        return dict(t, elapsed=time.time() - t['started'])
+        elapsed = time.time() - t['started']
+        return dict(t, elapsed=elapsed, remain=_remain(t, elapsed))
+
+
+def _remain(t, elapsed):
+    r"""还要多久（秒）。算不出来就返回 None，**界面上宁可不显示也不瞎猜**。
+
+    做法：没跑的那些按页数 x 每页秒数估；已经跑完的那些用真实耗时
+    反推速率，用它替掉估计值 —— 转到第三份时，前两份的真实速度
+    比出厂估值准得多。
+    """
+    pages = t.get('pages') or []
+    if not pages:
+        return None
+    done = len(t.get('results') or [])
+    spp = t.get('sec_per_page') or SEC_PER_PAGE_GPU
+    if done:
+        done_pages = sum(pages[:done]) or 1
+        spp = elapsed / float(done_pages)          # 真实速率更准
+    left_pages = sum(pages[done:])
+    if left_pages <= 0:
+        return 0
+    # 当前这份已经跑了一会儿，按它在整批里的页数占比扣掉
+    if done < len(pages):
+        cur_spent = elapsed - sum(pages[:done]) * spp
+        left = left_pages * spp - max(cur_spent, 0)
+    else:
+        left = left_pages * spp
+    return max(int(left), 0)
 
 
 @app.post('/api/convert/{task_id}/cancel')
