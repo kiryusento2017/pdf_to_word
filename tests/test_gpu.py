@@ -80,6 +80,15 @@ class Test判够不够用(unittest.TestCase):
         self.assertFalse(v['ok'])
         self.assertTrue(v['why'])
 
+    def test_不许说没有数的废话(self):
+        r"""「会慢很多」这种话等于没说。实测（2026-08-31，同一份 10 页讲义）：
+        GPU 262 秒 / 纯 CPU 460 秒 —— 慢 2.0 倍，10 页约 8 分钟。
+        这个数改变了产品判断：没显卡是**能用**的，不是能装但用不了。
+        所以话术里必须给具体分钟数，让人自己判断划不划算。"""
+        for v in (gpu.judge(None, wmi_names=['Intel(R) UHD Graphics']),
+                  gpu.judge(self._g(6.1, 11264))):
+            self.assertIn('分钟', v['why'], '没给具体时间，等于没说：%s' % v['why'])
+
     def test_理由必须是人话(self):
         r"""这句会直接显示给老师看，不能是 compute_capability < 7.5 这种。"""
         v = gpu.judge(self._g(6.1, 4096))
