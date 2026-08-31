@@ -50,12 +50,15 @@ function startServer() {
 }
 
 function createWindow() {
+  // 小工具的尺寸，参照 Geek Uninstaller 那一类。620 宽刚好放得下
+  // 「文件名 + 无文字层提示 + 页数」三列，440 高能露出 15 行左右。
+  // 拉大窗口列表会跟着长 —— 主区是 flex:1，不是写死的高度。
   win = new BrowserWindow({
-    width: 1080,
-    height: 760,
-    minWidth: 860,
-    minHeight: 600,
-    backgroundColor: '#fafafa',   // 跟页面底色一致，开窗时不白闪
+    width: 620,
+    height: 440,
+    minWidth: 460,
+    minHeight: 300,
+    backgroundColor: '#ffffff',   // 跟页面底色一致，开窗时不白闪
     title: 'PDF 转 Word',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

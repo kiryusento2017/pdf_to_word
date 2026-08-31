@@ -1,30 +1,24 @@
 // PDF 转 Word · 渲染层
 //
 // 无框架，纯 JS 拼字符串 + 事件委托 —— 跟金石工作台同一套路子。
-// 理由不是复古：这软件只有三屏，装个框架的收益抵不过多一层构建的代价，
-// 而且拼字符串这套在工作台那边已经被一套「假 window 里真渲染」的测试盯住了。
+// 理由不是复古：这软件只有两屏，装个框架的收益抵不过多一层构建的代价，
+// 而且拼字符串这套已经被一套「假 window 里真渲染」的测试盯住了。
 //
-// 三屏：
-//   check   环境自检（首次打开必看：显卡够不够、缺什么）
-//   pick    选书 + 开始转换
-//   run     转换中 / 结果
+// 两屏：
+//   main    主屏。工具条 + 文件表 + 状态栏。**任何时候主体都是那张表** ——
+//           待转换时是待转清单，转换中原地变进度，转完变结果。不跳屏。
+//   model   首次没模型时的选源屏，一次性的，选完就再也见不到
+//
+// 环境自检不占屏：结果压进状态栏左侧；只有「显卡不够」「引擎缺失」这种
+// 必须让用户拿主意的，才在主区拦一下（gate）。
 'use strict';
 
-var BS = {
-  card: 'background:var(--card);border-radius:var(--radius);padding:20px;'
-      + 'border:1px solid var(--line)',
-  h1: 'margin:0 0 6px;font-size:20px;font-weight:600;color:var(--ink)',
-  h2: 'margin:0;font-size:15px;font-weight:600;color:var(--ink)',
-  body: 'font-size:14px;line-height:1.6;color:var(--ink2)',
-  faint: 'font-size:12px;color:var(--ink3)',
-  mono: 'font-family:Consolas,"JetBrains Mono",monospace',
-};
-
 var state = {
-  page: 'check',
+  page: 'main',
   env: null,
   envLoading: true,
   envError: '',
+  gateAck: false,       // 用户看过「显卡不够」并选了「仍然继续」
   items: [],            // 选进来的 PDF（体检结果）
   picked: {},           // path -> 勾没勾
   scanning: false,
@@ -62,6 +56,12 @@ function baseName(p) {
   return m[m.length - 1] || p;
 }
 
+// 转换正在进行 —— 好几处要判断（拖放要不要拦、状态栏显示什么、
+// 表格是待转清单还是进度），抽出来免得各写各的判断口径不一。
+function isRunning(st) {
+  return !!(st.task && st.task.state === 'running');
+}
+
 // ── 跟后端说话 ─────────────────────────────────────────────────────────
 function apiUrl(p) { return 'http://127.0.0.1:' + state.port + p; }
 
@@ -83,13 +83,13 @@ function post(p, body) {
 }
 
 // ── 渲染 ───────────────────────────────────────────────────────────────
+// 页面函数自己吐完整的三段结构（工具条 / 主区 / 状态栏），这里不再包
+// 任何居中限宽的容器 —— 那是网页排版，工具软件的内容要顶到窗口边。
 function render() {
   var el = document.getElementById('app');
   if (!el) return;
-  var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.check;
-  el.innerHTML =
-    '<div style="max-width:900px;margin:0 auto;padding:28px 24px 40px">'
-    + page(state) + '</div>';
+  var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.main;
+  el.innerHTML = page(state);
 }
 
 // 事件委托：所有按钮走 data-act，页面重绘也不用重新绑
@@ -104,9 +104,12 @@ document.addEventListener('click', function (e) {
 
 // ── 拖放 ───────────────────────────────────────────────────────────────
 // 阻止默认是必须的：不拦的话 Electron 会用当前窗口打开那个 PDF，页面直接没了。
+function dropBusy() {
+  return state.page !== 'main' || isRunning(state);
+}
 window.addEventListener('dragover', function (e) {
   e.preventDefault();
-  if (state.page === 'run') return;
+  if (dropBusy()) return;
   if (!state.dragging) { state.dragging = true; render(); }
 });
 window.addEventListener('dragleave', function (e) {
@@ -116,7 +119,7 @@ window.addEventListener('dragleave', function (e) {
 window.addEventListener('drop', function (e) {
   e.preventDefault();
   state.dragging = false;
-  if (state.page === 'run') { render(); return; }
+  if (dropBusy()) { render(); return; }
   var paths = [];
   var files = (e.dataTransfer && e.dataTransfer.files) || [];
   for (var i = 0; i < files.length; i++) {
@@ -147,6 +150,6 @@ window.addEventListener('DOMContentLoaded', function () {
 window.P2W_STATE = state;
 window.P2W_RENDER = render;
 window.P2W_ESC = esc;
-window.P2W_BS = BS;
 window.P2W_FMT = { sec: fmtSec, base: baseName };
+window.P2W_RUNNING = isRunning;
 window.P2W_HTTP = { get: get, post: post };

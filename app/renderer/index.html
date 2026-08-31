@@ -6,62 +6,140 @@
       content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src http://127.0.0.1:*">
 <title>PDF 转 Word</title>
 <style>
-  /* 视觉语言沿用金石工作台 —— 同一个人做的两个软件放一起不该像两家公司出的。
-     色板：#161616 主文字 / #525252 次要 / #a8a8a8 弱 / #e0e0e0 边框 / #fafafa 底。
-     强调色只有一个（靛蓝），全程不换。 */
+  /* ── 视觉语言：Windows 工具软件，不是网页 ──────────────────────────
+     参照 Geek Uninstaller 那一类：小窗口、直角、贴边、表格铺满、
+     底部状态栏。色板仍和金石工作台同源（同一个人做的两个软件不该像
+     两家公司出的），但排版密度完全不同 —— 工作台是长文档式的阅读
+     界面，这个是干活的工具。
+
+     具体换掉了什么：
+       圆角 16px → 3px      大圆角是网页卡片的语言
+       卡片浮在灰底 → 贴边  工具软件的内容直接顶到窗口边
+       胶囊按钮 → 方按钮    999px 圆角放在 22px 高的按钮上很滑稽
+       字号 14px → 12px     Windows 界面标准是 9pt
+       行高 1.6 → 1.35      1.6 是正文行距，列表不需要
+     ─────────────────────────────────────────────────────────────── */
   :root {
-    --ink: #161616;
-    --ink2: #525252;
-    --ink3: #a8a8a8;
-    --line: #e8e8e8;
-    --bg: #fafafa;
-    --card: #ffffff;
+    --ink: #1a1a1a;
+    --ink2: #4a4a4a;
+    --ink3: #8c8c8c;
+    --line: #d6d6d6;        /* 工具软件的边框比网页更实 */
+    --line2: #ececec;       /* 列表内的分隔线，更浅 */
+    --bg: #ffffff;          /* 主体是纯白的表格区 */
+    --chrome: #f5f5f5;      /* 工具条 / 状态栏 */
+    --hover: #eef3fd;
+    --sel: #dbe7fb;
     --theme: #1d4ed8;
-    --theme-soft: rgba(29, 78, 216, 0.06);
     --ok: #15803d;
     --warn: #b45309;
     --bad: #b91c1c;
-    --radius: 16px;
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; padding: 0; height: 100%;
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
     background: var(--bg); color: var(--ink);
-    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    font-size: 14px; line-height: 1.6;
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 12px; line-height: 1.35;
     -webkit-font-smoothing: antialiased;
   }
   /* 桌面软件不该能整页选中文字，那是网页的行为 */
   body { user-select: none; cursor: default; }
   input, textarea { user-select: text; }
-  #app { height: 100%; overflow: auto; }
 
+  /* 三段式：上工具条、中列表、下状态栏。中间那段 flex:1 ——
+     「铺满」是结构保证的，不是靠 padding 凑出来的。 */
+  #app { height: 100%; display: flex; flex-direction: column; }
+  .chrome-top {
+    flex: none; display: flex; align-items: center; gap: 4px;
+    height: 30px; padding: 0 6px;
+    background: var(--chrome); border-bottom: 1px solid var(--line);
+  }
+  .main { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
+  .chrome-bot {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    height: 26px; padding: 0 8px;
+    background: var(--chrome); border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--ink2);
+  }
+  .grow { flex: 1; min-width: 0; }
+  .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── 按钮：方的、小的 ─────────────────────────────────────────── */
   button {
-    font-family: inherit; font-size: 14px; cursor: pointer;
-    border-radius: 999px; padding: 9px 20px; border: 1px solid var(--line);
-    background: #fff; color: var(--ink2);
-    transition: background .15s, border-color .15s, transform .05s;
+    font-family: inherit; font-size: 12px; cursor: pointer;
+    border-radius: 3px; padding: 3px 10px; height: 22px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    white-space: nowrap;
   }
-  button:hover:not(:disabled) { border-color: #c8c8c8; background: #fcfcfc; }
-  button:active:not(:disabled) { transform: translateY(1px); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button.primary {
-    background: var(--theme); border-color: var(--theme); color: #fff;
-    font-weight: 500;
-  }
+  button:hover:not(:disabled) { background: var(--hover); border-color: #a9c2ee; }
+  button:active:not(:disabled) { background: var(--sel); }
+  button:disabled { color: var(--ink3); background: #f7f7f7; cursor: not-allowed; }
+  button.primary { background: var(--theme); border-color: var(--theme); color: #fff; }
   button.primary:hover:not(:disabled) { background: #1a44be; border-color: #1a44be; }
+  button.primary:disabled { background: #b8c6e8; border-color: #b8c6e8; color: #fff; }
+  button.link {
+    border: 0; background: transparent; color: var(--theme);
+    padding: 0 3px; height: auto; text-decoration: underline;
+  }
+  button.link:hover:not(:disabled) { background: transparent; color: #1a44be; }
+
+  /* ── 列表：这是主角，行高压到 24px ───────────────────────────── */
+  .it {
+    display: flex; align-items: center; gap: 6px;
+    height: 24px; padding: 0 8px;
+    border-bottom: 1px solid var(--line2);
+    white-space: nowrap;
+  }
+  .it:hover { background: var(--hover); }
+  .it.on { background: var(--sel); }
+  .it .rt { flex: none; color: var(--ink3); font-size: 11px; }
+
+  /* 表头：跟列表同宽，粘在顶上 */
+  .hd {
+    display: flex; align-items: center; gap: 6px;
+    height: 22px; padding: 0 8px;
+    position: sticky; top: 0; z-index: 1;
+    background: var(--chrome); border-bottom: 1px solid var(--line);
+    font-size: 11px; color: var(--ink2);
+  }
+
+  input[type=checkbox] { margin: 0; width: 13px; height: 13px; flex: none; }
+
+  /* ── 进度条：细，嵌在行里 ─────────────────────────────────────── */
+  .bar { height: 3px; background: #e4e4e4; border-radius: 2px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--theme); transition: width .2s; }
+
+  /* ── 空态 / 拦截：占满 main，不留白 ───────────────────────────── */
+  .fill {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    padding: 16px; text-align: center;
+  }
+  .fill.drop { outline: 2px dashed #b9cdf2; outline-offset: -8px; background: #f7faff; }
+
+  /* ── 提示条：夹在工具条和列表之间 ─────────────────────────────── */
+  .note {
+    padding: 5px 8px; border-bottom: 1px solid var(--line);
+    font-size: 11px; line-height: 1.45;
+  }
+  .note.warn { background: #fff8ed; color: #7c4a06; }
+  .note.bad { background: #fef3f2; color: #8f1d1d; }
+
+  .dot { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
+  .mono { font-family: Consolas, "Cascadia Mono", monospace; }
+  .f-ok { color: var(--ok); } .f-warn { color: var(--warn); }
+  .f-bad { color: var(--bad); } .f-dim { color: var(--ink3); }
+
+  /* 滚动条细一点，粗滚动条在 620px 宽的窗口里很占地方 */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #c8c8c8; border: 3px solid #fff; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
 
   /* 动效克制到近乎没有：工具软件，用户是来干活的。
      进度条是唯一的动画，而且它反映真实进度，不是装饰。 */
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
   }
-
-  .bar { height: 4px; background: #eee; border-radius: 999px; overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: var(--theme); transition: width .2s; }
-
-  .row { border-bottom: 1px solid var(--line); }
-  .row:last-child { border-bottom: 0; }
 </style>
 </head>
 <body>

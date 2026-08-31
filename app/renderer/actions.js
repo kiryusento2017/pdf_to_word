@@ -46,15 +46,31 @@
   }
 
   window.P2W_ACTS = {
-    go: function (page) {
-      st.page = page;
-      st.err = '';
-      render();
-    },
-
     reload: function () { window.location.reload(); },
 
     quit: function () { window.close(); },
+
+    // 显卡不满足时用户选了「仍然继续」。**只有用户能按这个** ——
+    // 软件不替他做主，但按过之后就不再拦第二次。
+    ackGate: function () {
+      st.gateAck = true;
+      render();
+    },
+
+    // 转完之后回到待转清单。列表留着不清：勾选重置成「只勾失败的」，
+    // 于是「再转一批」对全成功的人是清爽的空勾选，对有失败的人正好是一键重试。
+    newBatch: function () {
+      var failed = {};
+      ((st.task && st.task.results) || []).forEach(function (r) {
+        if (!r.ok) failed[r.pdf] = true;
+      });
+      st.items.forEach(function (x) { st.picked[x.path] = !!failed[x.path]; });
+      st.task = null;
+      st.taskId = '';
+      st.err = '';
+      stopPolling();
+      render();
+    },
 
     addPaths: addPaths,
 
@@ -111,7 +127,7 @@
         st.taskId = d.task_id;
         st.task = null;
         st.starting = false;
-        st.page = 'run';
+        // 不切页 —— 同一张表原地变进度。task 一有值主屏就自己换形态。
         render();
         stopPolling();
         // 一秒一问。转换本身以分钟计，问得再勤也只是多耗电。
@@ -152,13 +168,13 @@
       // 模型下载由 MinerU 自己在首次提取时触发（它认 MINERU_MODEL_SOURCE），
       // 这里只把选中的源记下来并放行 —— 自己再实现一套下载器等于跟它抢活，
       // 两边对模型清单的理解一旦不一致就会下出一个跑不起来的半套。
-      st.page = 'pick';
+      st.page = 'main';
       render();
     },
 
     pickLocal: function () {
       window.api.pickDir().then(function (d) {
-        if (d && d.length) { st.page = 'pick'; render(); }
+        if (d && d.length) { st.page = 'main'; render(); }
       });
     },
 
