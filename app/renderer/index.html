@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src http://127.0.0.1:*">
+<title>PDF 转 Word</title>
+<style>
+  /* 视觉语言沿用金石工作台 —— 同一个人做的两个软件放一起不该像两家公司出的。
+     色板：#161616 主文字 / #525252 次要 / #a8a8a8 弱 / #e0e0e0 边框 / #fafafa 底。
+     强调色只有一个（靛蓝），全程不换。 */
+  :root {
+    --ink: #161616;
+    --ink2: #525252;
+    --ink3: #a8a8a8;
+    --line: #e8e8e8;
+    --bg: #fafafa;
+    --card: #ffffff;
+    --theme: #1d4ed8;
+    --theme-soft: rgba(29, 78, 216, 0.06);
+    --ok: #15803d;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 桌面软件不该能整页选中文字，那是网页的行为 */
+  body { user-select: none; cursor: default; }
+  input, textarea { user-select: text; }
+  #app { height: 100%; overflow: auto; }
+
+  button {
+    font-family: inherit; font-size: 14px; cursor: pointer;
+    border-radius: 999px; padding: 9px 20px; border: 1px solid var(--line);
+    background: #fff; color: var(--ink2);
+    transition: background .15s, border-color .15s, transform .05s;
+  }
+  button:hover:not(:disabled) { border-color: #c8c8c8; background: #fcfcfc; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary {
+    background: var(--theme); border-color: var(--theme); color: #fff;
+    font-weight: 500;
+  }
+  button.primary:hover:not(:disabled) { background: #1a44be; border-color: #1a44be; }
+
+  /* 动效克制到近乎没有：工具软件，用户是来干活的。
+     进度条是唯一的动画，而且它反映真实进度，不是装饰。 */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+
+  .bar { height: 4px; background: #eee; border-radius: 999px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--theme); transition: width .2s; }
+
+  .row { border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="app.js"></script>
+<script src="pages.js"></script>
+<script src="actions.js"></script>
+</body>
+</html>

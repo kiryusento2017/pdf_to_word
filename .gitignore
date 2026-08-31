@@ -3,3 +3,4 @@ _tmp/
 __pycache__/
 *.pyc
 runtime/pandoc/pandoc.exe
+node_modules/
