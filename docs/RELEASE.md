@@ -13,7 +13,7 @@
 
 ```
 .venv\Scripts\python.exe -m unittest discover -s tests -q   # 240 条
-node tests\front_check.js                                   # 67 条
+node tests\front_check.js                                   # 75 条
 ```
 
 **红一条都不许发。** 不存在「这条测试早就坏了不用管」——
@@ -95,6 +95,21 @@ v0.0.2 就带着开发机的运行时垃圾发出去了 —— 而「在 dist �
 
 `--sfx` 不重新组装，只打包已有产物——组装一次要下 Electron、装依赖，
 十几分钟，改个 SFX 配置不该重来一遍。
+
+**升版本号时要加 `--bump`**：`--sfx` 会校验产物里的版本号跟 `--version`
+一致，防的是「拿上次的产物打成新版本号」——那种包发出去，用户装完点
+检查更新还会被告知「已是最新」，因为里面的 `version.json` 写的是老版本。
+
+但「同步代码 → 升版本号 → `--sfx`」是正常流程（见下面「手工改过发行版
+目录的话」），所以留了显式开关：
+
+```
+.venv\Scripts\python.exe tools\build_release.py --version v0.0.3 --sfx --bump
+```
+
+加了 `--bump` 就得自己确认代码真同步过了 —— 工具没法替你验这件事。
+**依赖也变了的话不能用这条路**，要跑完整构建，否则 `requires.json`
+记的还是旧依赖。
 
 ### 更新包（老用户自动下的）
 

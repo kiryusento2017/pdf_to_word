@@ -546,6 +546,10 @@ def main():
                     help='只打业务代码更新包（0.4 MB），不组装完整发行版')
     ap.add_argument('--sfx', action='store_true',
                     help='把已组装好的发行版做成自解压 exe（不重新组装）')
+    ap.add_argument('--bump', action='store_true',
+                    help='配合 --sfx：产物里是旧版本号也照打。'
+                         '用在「手工同步了代码、现在要升版本号」的场合，'
+                         '**你得自己确认代码真同步过了**')
     a = ap.parse_args()
 
     sha = ''
@@ -576,11 +580,20 @@ def main():
                 have = json.load(f).get('tag', '')
         except Exception:
             have = ''
-        if have != a.version:
+        if have != a.version and not a.bump:
             raise SystemExit(
                 '产物里的版本是 %s，跟 --version %s 对不上。\n'
-                '先跑一次不带 --sfx 的完整构建，或者把 --version 改成 %s。'
+                '· 只是重打同一版 → 把 --version 改成 %s\n'
+                '· 手工同步过代码、现在要升版本号 → 加 --bump\n'
+                '· 依赖也变了 → 跑一次不带 --sfx 的完整构建'
                 % (have or '(读不出来)', a.version, have or a.version))
+        if have != a.version and a.bump:
+            # 放行，但把这件事说出来 —— 打错版本的代价是包发出去之后
+            # 用户装完点检查更新还被告知「已是最新」，很难查。
+            say('⚠️  产物里原本是 %s，按 --bump 打成 %s。'
+                % (have or '(读不出来)', a.version))
+            say('    请确认 dist\\PDF2Word 里的代码已经同步过了 —— '
+                '前端的目标是 resources\\app\\，不是 app\\。')
         # 🔴 这几个小文件每次都重新生成。
         #    它们是**从模板生成**的，不是组装来的 —— 改了 put_readme
         #    却只跑 --sfx 的话，产物里还是旧的那份。

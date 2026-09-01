@@ -140,10 +140,25 @@ def check_numbers(t):
             if n != t['js']:
                 problems.append('[数不对] %s 写前端 %d 条，实际 %d 条'
                                 % (name, n, t['js']))
-        for n in set(int(x) for x in re.findall(r'#\s*(\d{3}) 条', txt)):
-            if n != t['py']:
-                problems.append('[数不对] %s 的命令注释写 %d 条，实际 %d 条'
-                                % (name, n, t['py']))
+        # 命令后面跟的 `# N 条` 注释。
+        #
+        # 🔴 这条规则漏过一次：原来写 `#\s*(\d{3}) 条`，只认三位数，
+        #    于是 RELEASE.md 里 `node tests\front_check.js   # 67 条`
+        #    躲过去了（67 是两位，而且不带「前端」二字，上面那条
+        #    `(\d{2,3}) 条前端` 也匹配不到）。两条规则各差一点，
+        #    凑在一起就是个洞 —— 发 v0.0.3 前照着 RELEASE 走流程才撞见。
+        #
+        #    现在按行判断该跟哪个数比：提到 front_check 的就是前端。
+        for line in txt.split('\n'):
+            m = re.search(r'#\s*(\d{2,4}) 条', line)
+            if not m:
+                continue
+            n = int(m.group(1))
+            want = t['js'] if 'front_check' in line else t['py']
+            what = '前端' if 'front_check' in line else 'Python'
+            if n != want:
+                problems.append('[数不对] %s 的命令注释写 %d 条（%s），'
+                                '实际 %d 条' % (name, n, what, want))
         if t['exe_mb']:
             for n in set(int(x) for x in re.findall(r'(\d{3}) MB', txt)):
                 if 250 <= n <= 400 and n != t['exe_mb']:
