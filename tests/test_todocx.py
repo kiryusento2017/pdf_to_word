@@ -158,19 +158,48 @@ class Test两条路的优先级(unittest.TestCase):
 
     @unittest.skipUnless(tomath.xsl_available() and tomath.node_available(),
                          '本机没有 Office 的 XSL 或没有 node')
-    def test_数量对不上就整批不换(self):
+    def test_数量对不上就整批不换且判失败(self):
         r"""替换靠顺序一一对应。数量对不上说明对应关系已经不可信，
-        这时候**宁可用 pandoc 的结果**，也不能张冠李戴把公式换错位置。"""
+        这时候**绝不能张冠李戴**把公式换错位置 —— 这个判断没变。
+
+        变的是不换之后怎么算：2026-09-01 小蔡定 XSL 硬性要求之前，
+        这里保留 Pandoc 的结果并判成功，用户拿到一份含 ⌀（Pandoc 把
+        空集 ∅ 转错了）的 Word 却以为是好的，界面上那句提示还挤在
+        150px 宽的省略号里根本看不见。现在判失败，宁可让他知道
+        这一份没转好。
+        """
         orig = todocx._extract_tex_in_order
         todocx._extract_tex_in_order = lambda text, cwd=None: ['只有一个']
         try:
             r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
-            self.assertTrue(r['ok'])
-            self.assertEqual(r['math_engine'], 'pandoc', '数量对不上却还是换了')
-            self.assertIn('对不上', r['math_note'])
-            self.assertEqual(_omath_count(self.out), 2, '公式丢了')
+            self.assertFalse(r['ok'], '数量对不上却判成功了')
+            self.assertIn('公式', r['error'])
+            self.assertIn('错位', r['error'], '没说清楚为什么不能硬换')
+            # 原因里要带上两个数，用户才能判断是不是自己那份书的问题
+            self.assertIn('1', r['error'])
         finally:
             todocx._extract_tex_in_order = orig
+
+    def test_没有XSL时直接判失败而不是退回Pandoc(self):
+        r"""门口拦了「完全没装 Office」，屋里这条也得拦 ——
+        否则装了 Office 但某批公式转不成的人照样静默拿到次等产物。"""
+        orig_x, orig_r = tomath.XSL_CANDIDATES, tomath.registry_candidates
+        tomath.XSL_CANDIDATES = ['/根本没有/MML2OMML.XSL']
+        tomath.registry_candidates = lambda: []
+        try:
+            r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+            self.assertFalse(r['ok'], '没有 XSL 却判成功')
+            self.assertIn('Office', r['error'], '没告诉用户该装什么')
+        finally:
+            tomath.XSL_CANDIDATES = orig_x
+            tomath.registry_candidates = orig_r
+
+    def test_明确不要XSL时仍然可以出Word(self):
+        r"""prefer_xsl=False 是调用方明确表示「我知道，就要 Pandoc 的结果」，
+        那是另一回事，不该被硬性要求拦住 —— 测试和批量脚本都靠这条。"""
+        r = todocx.md_to_docx(self.md, self.out, prefer_xsl=False)
+        self.assertTrue(r['ok'], '明确要求跳过 XSL 却失败了')
+        self.assertEqual(r['math_engine'], 'pandoc')
 
 
 if __name__ == '__main__':

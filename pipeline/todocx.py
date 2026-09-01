@@ -428,12 +428,20 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     # 不改的话每张插图都被放大到两倍多（小蔡一眼就看出来了）。
     rep['images_resized'] = _resize_images(out_path, img_targets)
 
-    # ── 公式改走 XSL（小蔡定的优先级）────────────────────────────────
+    # ── 公式必须走 XSL（小蔡 2026-09-01 改定）────────────────────────
+    # 🔴 这三条以前都是「记一句话，照常出 Word」。那等于让用户拿到一份
+    #    含 ⌀（Pandoc 把空集 ∅ 转错了）的次等产物却毫不知情 —— 而
+    #    界面上那句提示挤在 150px 宽的省略号里，多半根本看不见。
+    #    门口拦了「完全没有 Office」，屋里这三条也必须拦，否则立论只贯彻了一半。
     if prefer_xsl and texs:
         if not tomath.xsl_available():
-            rep['math_note'] = '本机没有 Office 的 MML2OMML.XSL，公式由 Pandoc 转换'
+            rep['error'] = ('这台电脑没有微软 Office 的 MML2OMML.XSL，'
+                            '公式转不成 Word 原生公式。装上 Office 再试。')
+            return rep
         elif not tomath.node_available():
-            rep['math_note'] = '本机没有 node，KaTeX 跑不起来，公式由 Pandoc 转换'
+            rep['error'] = ('缺少 Node.js，公式的第一步转换要用到它。'
+                            '这是安装包不完整，不是你的问题。')
+            return rep
         else:
             omml = tomath.batch_to_omml(texs)
             n_ok = sum(1 for x in omml if x is not None)
@@ -447,15 +455,22 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
                         len(texs) - n_ok, tomath.last_error()[:160])
             else:
                 # 数量对不上：源文数出 N 个，产物里却不是 N 个 m:oMath。
-                # 对应关系已不可信，整批不换。
-                # 差值几乎总是「有公式 Pandoc 转不出来」造成的：它转不了就退化成
-                # 纯文本，产物里少一个 oMath，后面全部错位。实测撞见过
-                # 	extcircled —— 那是 LaTeX 文本模式命令，不是数学命令。
+                # 对应关系已不可信，整批不换 —— 强行按序替换会让其后所有
+                # 公式张冠李戴，比不换糟得多。
+                # 差值几乎总是「有公式 Pandoc 转不出来」造成的：它转不了就
+                # 退化成纯文本，产物里少一个 oMath，后面全部错位。实测撞见过
+                # \textcircled —— 那是 LaTeX 文本模式命令，不是数学命令。
+                #
+                # 以前这里保留 Pandoc 的结果并判成功。现在判失败：
+                # 用户宁可知道这一份没转好，也不要拿到一份公式可能错位的 Word
+                # 却以为它是好的。
                 n_out = count_omath(out_path)
-                rep['math_note'] = (
-                    '公式数量对不上（源文 %d 个、产物 %d 个），整批保留 Pandoc 的结果。'
-                    '差值通常是个别公式 Pandoc 转不出来、退化成了纯文本；'
-                    '强行按序替换会让其后所有公式错位' % (len(texs), n_out))
+                rep['error'] = (
+                    '这一份的公式没能转成 Word 原生公式：源文数出 %d 个公式，'
+                    '生成的文档里却是 %d 个，对应关系不可信，强行替换会让公式错位。'
+                    '通常是某个公式用了特殊写法（比如 \\textcircled 这类文本模式命令）。'
+                    % (len(texs), n_out))
+                return rep
     elif not prefer_xsl:
         rep['math_note'] = '按调用方要求跳过 XSL，公式由 Pandoc 转换'
 

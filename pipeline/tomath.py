@@ -164,8 +164,9 @@ def batch_to_omml(texs, display=False):
 
     xsl = find_xsl()
     if not xsl:
-        _last_error = ('本机没找到 Office 的 MML2OMML.XSL（扫了 %d 个候选路径），'
-                       '公式将改由 Pandoc 转换' % len(XSL_CANDIDATES))
+        _last_error = ('本机没找到 Office 的 MML2OMML.XSL（注册表 + %d 个候选路径都扫过）。'
+                       '2026-09-01 起 XSL 是硬性要求，不再退回 Pandoc。'
+                       % len(XSL_CANDIDATES))
         return [None] * len(texs)
 
     try:

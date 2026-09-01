@@ -108,8 +108,9 @@ function gateView(st, kind) {
          + '<b>只装 WPS 不行</b> —— WPS 没有这个转换文件（我们查过它的安装目录）。'
          + '</div>')
       + '<div style="display:flex;gap:8px;margin-top:2px">'
-      + (noNode ? '' : btn('openOffice', '去微软官网看看', { cls: 'primary' }))
-      + btn('reload', '重新检查', { cls: noNode ? 'primary' : '' })
+      + (noNode ? btn('openNode', '去 nodejs.org 下载', { cls: 'primary' })
+                : btn('openOffice', '去微软官网看看', { cls: 'primary' }))
+      + btn('reload', '重新检查')
       + btn('quit', '退出') + '</div></div>';
   }
 

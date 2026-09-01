@@ -75,8 +75,13 @@ def _formula_why(xsl_ok, node_ok):
         return ('这台电脑没有装微软 Office。本软件把公式转成 Word 原生公式，'
                 '要用到 Office 自带的一个转换文件（MML2OMML.XSL），'
                 '那是微软的文件，不能随本软件分发，只能装了 Office 才有。')
-    return ('缺少 Node.js 运行环境 —— 公式的第一步转换要用到它。'
-            '这属于安装包不完整，重新安装一次应该能解决。')
+    # ⚠️ 不要说「重装一次应该能解决」。setup_env.py 根本不装 node
+    #    （实测提到 node 的次数是 0），node 走的是系统 PATH，
+    #    重装我们的软件不会带来它。说一句解决不了问题的话，
+    #    比不说更糟 —— 用户会白折腾一遍然后更困惑。
+    return ('缺少 Node.js —— 公式的第一步转换要用到它，而这台电脑上没有。'
+            '到 nodejs.org 装一个「LTS」版本（一路下一步即可），'
+            '装完回来点「重新检查」。')
 
 
 def _find_mineru():

@@ -124,7 +124,7 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'pickFiles', 'pickDir', 'pickOut', 'outDefault', 'toggle',
                      'selAll', 'selNone', 'clear', 'start', 'cancel',
                      'probeSources', 'pickSource', 'startDownload', 'pickLocal',
-                     'openFile', 'openPath']) {
+                     'openFile', 'openPath', 'openOffice', 'openNode']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });
@@ -270,14 +270,46 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     if (!h.includes('WPS')) throw new Error('没提醒「装 WPS 不管用」——这是最容易踩的坑');
   });
 
+  ck('显卡不够的人，先问显卡再谈下模型', () => {
+    // 顺序反了的话：启动 → 直接进选源屏 → 让他张罗下 4.6 GB →
+    // 回主界面 → 「显卡不满足，要不要退出」。该问的话要问在花时间之前。
+    const sb2 = mkSandbox();
+    const st = sb2.window.P2W_STATE;
+    st.envLoading = false;
+    st.env = Object.assign(goodEnv(), {
+      gpu: { ok: false, why: '没有独立显卡，慢约 2 倍：10 页约 8 分钟。' },
+      models: { ok: false, dir: 'D:\\app\\models', bytes: 0 },
+    });
+    if (!sb2.window.P2W_BLOCKED(st)) {
+      throw new Error('显卡没过却不算 blocked —— 会先让人去下 4.6 GB');
+    }
+    // 点过「仍然继续」之后，才轮到去下模型
+    sb2.window.P2W_ACTS.ackGate();
+    if (st.page !== 'model') throw new Error('放行之后没接着去下模型，用户会停在没模型的主界面');
+  });
+
+  ck('缺 node 时给的是 nodejs.org，不是「重装一次」', () => {
+    // 「重新安装一次应该能解决」是句错话：setup_env.py 根本不装 node，
+    // 重装我们的软件不会带来它。说一句解决不了问题的话比不说更糟。
+    const st = ready(sb);
+    st.env.node = { ok: false };
+    st.env.formula = { ok: false,
+      why: '缺少 Node.js —— 公式的第一步转换要用到它，而这台电脑上没有。'
+         + '到 nodejs.org 装一个「LTS」版本（一路下一步即可），装完回来点「重新检查」。' };
+    const h = fn(st);
+    if (!h.includes('nodejs.org')) throw new Error('没告诉用户去哪装');
+    if (!h.includes('data-act="openNode"')) throw new Error('没给下载入口');
+    if (h.includes('重新安装一次')) throw new Error('还在说那句解决不了问题的错话');
+  });
+
   ck('缺 node 时说是安装包的问题，别让用户去装 Office', () => {
     // Office 有、node 没有 —— 这是我们打包漏了东西，不该让用户背锅
     const st = ready(sb);
     st.env.node = { ok: false };
     st.env.formula = { ok: false, why: '缺少 Node.js 运行环境 —— 公式的第一步转换要用到它。' };
     const h = fn(st);
-    if (!h.includes('安装包不完整')) throw new Error('把打包问题说成了用户的问题');
     if (h.includes('data-act="openOffice"')) throw new Error('Office 明明有，还让人去装');
+    if (!h.includes('Node')) throw new Error('没说清楚缺的是什么');
   });
 
   ck('安装目录不可写时拦住，并告诉用户挪到哪', () => {

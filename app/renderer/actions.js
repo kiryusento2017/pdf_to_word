@@ -54,12 +54,23 @@
       window.api.openUrl('https://www.microsoft.com/zh-cn/microsoft-365');
     },
 
+    // node 缺失时的出路。以前那句「重装一次应该能解决」是错话 ——
+    // setup_env.py 根本不装 node，重装我们的软件不会带来它。
+    openNode: function () {
+      window.api.openUrl('https://nodejs.org/zh-cn/download');
+    },
+
     quit: function () { window.close(); },
 
     // 显卡不满足时用户选了「仍然继续」。**只有用户能按这个** ——
     // 软件不替他做主，但按过之后就不再拦第二次。
     ackGate: function () {
       st.gateAck = true;
+      // 放行之后补上首启该做的那一步：没模型就去选源。
+      // 不补的话用户会停在主界面，而模型根本还没下。
+      if (!window.P2W_BLOCKED(st) && !((st.env || {}).models || {}).ok) {
+        st.page = 'model';
+      }
       render();
     },
 

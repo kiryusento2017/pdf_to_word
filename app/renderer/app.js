@@ -62,14 +62,18 @@ function isRunning(st) {
   return !!(st.task && st.task.state === 'running');
 }
 
-// 有没有「不解决就没法用」的问题。用来决定首启该不该去下模型 ——
-// 连 Office 都没有的话，先解决那个，下了模型也白搭。
-// 判据要和 pages.js 里 gateKind 的硬拦部分保持一致。
+// 首启该不该先去下模型。**任何一道拦截没过就先别下** ——
+// 4.6 GB 下完之后再告诉人家「你显卡不满足，要不要退出」，
+// 顺序是反的：该问的话要问在花时间之前。
+// 判据跟 pages.js 的 gateKind 一致，**包括显卡那道软拦**：
+// 用户点过「仍然继续」（gateAck）之后才轮到下模型。
 function isBlocked(st) {
   var e = st.env || {};
-  return !(e.writable || {}).ok
-      || !(e.formula || {}).ok
-      || !(e.mineru || {}).ok;
+  if (!(e.writable || {}).ok) return true;
+  if (!(e.formula || {}).ok) return true;
+  if (!(e.mineru || {}).ok) return true;
+  if (!(e.gpu || {}).ok && !st.gateAck) return true;
+  return false;
 }
 
 // ── 跟后端说话 ─────────────────────────────────────────────────────────
