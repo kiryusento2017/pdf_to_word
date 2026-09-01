@@ -120,6 +120,64 @@ async def list_sources():
     }
 
 
+# ── 下载模型 ────────────────────────────────────────────────────────────
+# 单例：一台机器同时只可能下一次。存内存里就够 —— 软件关掉重开会重新
+# 判断模型在不在，没必要持久化一个「上次下到一半」的状态。
+_DL = {'state': 'idle', 'got': 0, 'total': models.TOTAL_BYTES,
+       'error': '', 'line': '', 'cancel': False}
+
+
+class DownloadReq(BaseModel):
+    source: str = 'modelscope'
+
+
+def _dl_work(source):
+    def on_prog(got, total):
+        with _LOCK:
+            _DL['got'], _DL['total'] = got, total
+
+    def on_log(line):
+        with _LOCK:
+            _DL['line'] = line[-200:]
+
+    def stopped():
+        with _LOCK:
+            return _DL['cancel']
+
+    ok, err = models.download(source, on_progress=on_prog, on_log=on_log,
+                              stop_flag=stopped)
+    with _LOCK:
+        _DL['state'] = 'done' if ok else 'error'
+        _DL['error'] = err
+
+
+@app.post('/api/models/download')
+async def start_download(req: DownloadReq):
+    with _LOCK:
+        if _DL['state'] == 'running':
+            return {'ok': True, 'already': True}
+        _DL.update({'state': 'running', 'got': 0, 'error': '',
+                    'line': '', 'cancel': False})
+    threading.Thread(target=_dl_work, args=(req.source or 'modelscope',),
+                     daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/models/download')
+async def download_status():
+    with _LOCK:
+        d = dict(_DL)
+    d['ready'] = models.ready()
+    return d
+
+
+@app.post('/api/models/download/cancel')
+async def cancel_download():
+    with _LOCK:
+        _DL['cancel'] = True
+    return {'ok': True}
+
+
 class UseLocalReq(BaseModel):
     dir: str = ''
 

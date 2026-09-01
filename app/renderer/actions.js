@@ -34,6 +34,38 @@
     });
   }
 
+  // ── 下载模型的轮询。跟转换那个分开：两者可以先后发生，
+  //    共用一个计时器会在切换时互相踩。
+  var dlPoller = null;
+
+  function stopDlPolling() {
+    if (dlPoller) { clearInterval(dlPoller); dlPoller = null; }
+  }
+
+  function pollDl() {
+    HTTP.get('/api/models/download').then(function (d) {
+      st.dl = {
+        running: d.state === 'running',
+        got: d.got || 0, total: d.total || 0, line: d.line || '',
+      };
+      if (d.state === 'done' || d.ready) {
+        stopDlPolling();
+        st.dl = null;
+        if (st.env) st.env.models = { ok: true, dir: '' };
+        st.page = 'main';                 // 下好了直接进主界面开工
+      } else if (d.state === 'error') {
+        stopDlPolling();
+        st.dl = null;
+        // 失败要留在这一屏并说清楚原因，用户才能重试或改选别的源。
+        // 跳走等于把失败藏起来。
+        st.srcError = d.error || '下载失败';
+      }
+      render();
+    }).catch(function () {
+      // 单次轮询失败不惊动用户，下一轮还会问
+    });
+  }
+
   function poll() {
     if (!st.taskId) return;
     HTTP.get('/api/convert/' + st.taskId).then(function (d) {
@@ -181,12 +213,29 @@
 
     pickSource: function (id) { st.srcPick = id; render(); },
 
+    // 真的开始下。这个按钮以前只有一句 `st.page='main'` —— 用户点完
+    // 界面跳走，他以为下好了，其实一个字节都没下；不转换就关软件的话，
+    // 下次开机又被丢进这一屏，无限循环。
+    //
+    // 下载本身交给 MinerU 自带的下载器（不自己实现，见 models.download
+    // 的注释），这里只负责起任务 + 轮询进度。
     startDownload: function () {
-      // 模型下载由 MinerU 自己在首次提取时触发（它认 MINERU_MODEL_SOURCE），
-      // 这里只把选中的源记下来并放行 —— 自己再实现一套下载器等于跟它抢活，
-      // 两边对模型清单的理解一旦不一致就会下出一个跑不起来的半套。
-      st.page = 'main';
+      st.srcError = '';
+      st.dl = { running: true, got: 0, total: 0, line: '' };
       render();
+      HTTP.post('/api/models/download', { source: st.srcPick }).then(function () {
+        stopDlPolling();
+        dlPoller = setInterval(pollDl, 1000);
+        pollDl();
+      }).catch(function (e) {
+        st.dl = null;
+        st.srcError = String(e && e.message || e);
+        render();
+      });
+    },
+
+    cancelDownload: function () {
+      HTTP.post('/api/models/download/cancel', {}).catch(function () {});
     },
 
     // 「我已经有模型了」。以前这里只是跳页，什么也没做 —— 用户选完

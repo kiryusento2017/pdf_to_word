@@ -147,3 +147,103 @@ def where():
         if d and os.path.isdir(d):
             return d
     return ''
+
+
+# ── 下载 ────────────────────────────────────────────────────────────────
+# 模型总量按 MinerU 实际拉下来的量估。用来算进度百分比，估偏一点不要紧，
+# 界面显示的是「已下 X GB」这个真数，百分比只是个参考。
+TOTAL_BYTES = int(4.6 * 1024 * 1024 * 1024)
+
+
+def download_exe():
+    """MinerU 自带的模型下载器。找不到返回空串。"""
+    p = os.path.join(paths.ROOT, '.venv', 'Scripts', 'mineru-models-download.exe')
+    return p if os.path.isfile(p) else ''
+
+
+def download(source='modelscope', on_progress=None, on_log=None,
+             stop_flag=None):
+    r"""下模型。返回 (ok, error)。
+
+    **不自己实现下载器**，调 MinerU 自带的 `mineru-models-download` ——
+    自己实现等于跟它抢活，两边对模型清单的理解一旦不一致，就会下出一个
+    结构看着对、跑起来缺文件的半套。它下完还会把路径写进配置，
+    而 `paths.child_env()` 已经把配置文件指向我们自己那份了。
+
+    进度**不解析它的 tqdm 输出**：那格式带单位（`1.2G/2.7G`）、随
+    modelscope/huggingface 的版本变，解析器很容易在某次升级后静默失效。
+    改成每秒统计目标目录的实际大小 —— 实测 walk 4.6 GB 只要 1 毫秒，
+    而且这个数就是用户真正关心的「下了多少」。
+
+    stop_flag: 一个可调用对象，返回 True 表示用户要求中止。
+    """
+    exe = download_exe()
+    if not exe:
+        return False, '找不到 mineru-models-download，安装环境不完整'
+
+    import subprocess
+    import threading
+    import time
+
+    target = paths.ensure(paths.MODELS)
+    env = paths.child_env({'MINERU_MODEL_SOURCE': source} if source else None)
+
+    stop_watch = threading.Event()
+
+    def watch():
+        """每秒报一次已下多少。"""
+        while not stop_watch.is_set():
+            try:
+                got = 0
+                for dp, _dn, fns in os.walk(target):
+                    for fn in fns:
+                        try:
+                            got += os.path.getsize(os.path.join(dp, fn))
+                        except OSError:
+                            pass
+                if on_progress:
+                    on_progress(got, TOTAL_BYTES)
+            except Exception:
+                pass
+            stop_watch.wait(1.0)
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    try:
+        p = subprocess.Popen(
+            [exe, '-s', source or 'modelscope', '-m', 'all'],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=env, cwd=paths.ROOT)
+        buf = b''
+        while True:
+            if stop_flag and stop_flag():
+                p.terminate()
+                return False, '已取消'
+            chunk = p.stdout.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            # CR 和 LF 都算行尾 —— tqdm 用回车刷新不换行，
+            # 按行读会一直卡到进度条结束（extract.py 那边栽过这个）
+            while True:
+                i = min([x for x in (buf.find(b'\r'), buf.find(b'\n')) if x >= 0]
+                        or [-1])
+                if i < 0:
+                    break
+                line = buf[:i].decode('utf-8', 'replace').strip()
+                buf = buf[i + 1:]
+                if line and on_log:
+                    on_log(line)
+        p.wait()
+        rc = p.returncode
+    except Exception as e:
+        return False, '%s: %s' % (type(e).__name__, str(e)[:200])
+    finally:
+        stop_watch.set()
+        time.sleep(0)
+
+    if rc != 0:
+        return False, '下载器退出码 %s，多半是网络断了，可以重试' % rc
+    if not ready():
+        return False, '下载结束了，但没找到可用的模型文件'
+    return True, ''

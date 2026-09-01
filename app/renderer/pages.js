@@ -356,14 +356,22 @@ function pageModel(st) {
   // 列表为空而显示「还没测速」，用户会以为下载没开始。
   var dl = st.dl;
   if (dl && dl.running) {
+    // 显示真实字节数而不只是百分比：总量 4.6 GB 是估的，百分比可能
+    // 冲到 103% 或停在 97%，但「已下 2.3 GB」永远是真的。
+    var pct = dl.total ? Math.min(100, Math.round(100 * dl.got / dl.total)) : 0;
     return shell(top,
       '<div class="fill">'
-      + '<div style="font-size:13px;font-weight:600">正在下载…'
-      + (dl.total ? '　' + Math.round(100 * dl.got / dl.total) + '%' : '') + '</div>'
+      + '<div style="font-size:13px;font-weight:600">正在下载模型…'
+      + (dl.total ? '　' + pct + '%' : '') + '</div>'
       + '<div style="width:70%">' + bar(dl.got, dl.total || 1) + '</div>'
+      + '<div class="f-dim">已下 ' + F.gb(dl.got) + ' / 约 ' + F.gb(dl.total) + '</div>'
+      + (dl.line ? '<div class="f-dim mono ell" style="max-width:80%;font-size:11px">'
+          + esc(dl.line) + '</div>' : '')
       + '<div class="f-dim">下载中断了也不要紧，重开软件会接着上次的位置继续。</div>'
       + '</div>',
-      '<span class="f-dim">下载完成后自动进入主界面</span>');
+      '<span class="f-dim">下载完成后自动进入主界面</span>'
+      + '<span class="grow"></span>'
+      + btn('cancelDownload', '停止下载'));
   }
 
   if (st.srcLoading) {

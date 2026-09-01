@@ -124,7 +124,8 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'pickFiles', 'pickDir', 'pickOut', 'outDefault', 'toggle',
                      'selAll', 'selNone', 'clear', 'start', 'cancel',
                      'probeSources', 'pickSource', 'startDownload', 'pickLocal',
-                     'openFile', 'openPath', 'openOffice', 'openNode']) {
+                     'openFile', 'openPath', 'openOffice', 'openNode',
+                     'cancelDownload']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });
@@ -676,13 +677,29 @@ console.log('\n\u4e0b\u8f7d\u6a21\u578b\uff08\u9996\u6b21\u4f7f\u7528\uff09\uff1
     if (!h.includes('data-act="pickLocal"')) throw new Error('已有模型的人没路走');
   });
 
-  ck('下载中说明断了也能续', () => {
+  ck('下载中显示真实字节数，不只是百分比', () => {
+    // 总量 4.6 GB 是估的，百分比可能冲到 103% 或停在 97%，
+    // 但「已下 1.0 GB」永远是真的。
     const st = ready(sb);
-    st.dl = { running: true, got: 1e9, total: 4.6e9 };
+    st.dl = { running: true, got: 1.0 * 1024 * 1024 * 1024,
+              total: 4.6 * 1024 * 1024 * 1024, line: 'Downloading layout.pth' };
     const h = fn(st);
     if (!h.includes('正在下载')) throw new Error('没显示下载中');
     if (!h.includes('接着上次的位置继续')) throw new Error('没说明能续传');
+    if (!h.includes('1.0 GB')) throw new Error('没显示已下多少');
+    if (!h.includes('4.6 GB')) throw new Error('没显示总量');
     if (!h.includes('22%')) throw new Error('没显示百分比');
+    if (!h.includes('data-act="cancelDownload"')) throw new Error('下到一半没法停');
+  });
+
+  ck('百分比不会超过 100', () => {
+    // 总量是估的，实际下的可能更多 —— 显示 108% 会让人以为出错了
+    const st = ready(sb);
+    st.dl = { running: true, got: 5.0e9, total: 4.6e9 };
+    const h = fn(st);
+    // 正则要排除 100 本身 —— bar() 生成的 width:100% 是合法的
+    if (/1(?:0[1-9]|[1-9][0-9])%/.test(h)) throw new Error('百分比超过 100 了');
+    if (!h.includes('100%')) throw new Error('没封顶到 100%');
   });
 
   ck('测速失败时把原因显示出来', () => {

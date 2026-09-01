@@ -56,6 +56,16 @@ function baseName(p) {
   return m[m.length - 1] || p;
 }
 
+// 字节转人看的单位。下载那屏显示「已下 2.3 GB / 约 4.6 GB」——
+// 总量 4.6 GB 是估的，百分比可能冲到 103% 或停在 97%，
+// 但「已下多少」永远是真的。
+function fmtGB(n) {
+  n = Number(n) || 0;
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(0) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+}
+
 // 转换正在进行 —— 好几处要判断（拖放要不要拦、状态栏显示什么、
 // 表格是待转清单还是进度），抽出来免得各写各的判断口径不一。
 function isRunning(st) {
@@ -188,7 +198,7 @@ window.addEventListener('DOMContentLoaded', function () {
 window.P2W_STATE = state;
 window.P2W_RENDER = render;
 window.P2W_ESC = esc;
-window.P2W_FMT = { sec: fmtSec, base: baseName };
+window.P2W_FMT = { sec: fmtSec, base: baseName, gb: fmtGB };
 window.P2W_RUNNING = isRunning;
 window.P2W_BLOCKED = isBlocked;
 window.P2W_HTTP = { get: get, post: post };
