@@ -127,6 +127,22 @@
 
   .dot { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
   .mono { font-family: Consolas, "Cascadia Mono", monospace; }
+
+  /* ── 下载日志区 ────────────────────────────────────────────────
+     小蔡 2026-09-02：「下载任何文件都应该显示进度条，并且要弹出背后的
+     命令，这样下载的人才知道完整的进度，而不是黑盒。」
+     深底浅字是终端的样子 —— 一眼能认出「这是程序在跑的输出」，
+     不会被当成界面文案去读。 */
+  .log {
+    width: 100%; flex: 1; min-height: 90px; overflow-y: auto;
+    background: #1e1e1e; color: #d4d4d4; border-radius: 4px;
+    padding: 8px 10px; text-align: left;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 11px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .log .cmd { color: #4ec9b0; }          /* 命令本身，跟输出区分开 */
+  .log .l { display: block; }
   .f-ok { color: var(--ok); } .f-warn { color: var(--warn); }
   .f-bad { color: var(--bad); } .f-dim { color: var(--ink3); }
 

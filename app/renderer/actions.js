@@ -75,18 +75,32 @@
       st.dl = {
         running: d.state === 'running',
         got: d.got || 0, total: d.total || 0, line: d.line || '',
+        // 下面这几样是给下载面板用的：滚动日志、跑的那条命令、
+        // 完整日志的路径、现在处在哪一步（装运行库 / 下模型）
+        lines: d.lines || [], cmd: d.cmd || '', log: d.log || '',
+        phase: d.phase || '',
       };
-      if (d.state === 'done' || d.ready) {
+      // 🔴 完成**只认后端的 state**，不看 d.ready。
+      //    d.ready 是 models.ready()，判据是「模型目录里有没有 >1 MB 的
+      //    文件」—— 下载才开始、第一个文件刚落盘它就成立了。
+      //    2026-09-02 真机现象：点完下载，进度条跑了一点点就跳到主界面，
+      //    后台还在下。用户以为下完了直接去转换，而模型只有一小部分。
+      //    只有后端跑完整个流程才会把 state 置成 'done'。
+      if (d.state === 'done') {
         stopDlPolling();
         st.dl = null;
         if (st.env) st.env.models = { ok: true, dir: '' };
         st.page = 'main';                 // 下好了直接进主界面开工
       } else if (d.state === 'error') {
         stopDlPolling();
-        st.dl = null;
-        // 失败要留在这一屏并说清楚原因，用户才能重试或改选别的源。
-        // 跳走等于把失败藏起来。
-        st.srcError = d.error || '下载失败';
+        // 🔴 **不要清掉 st.dl**。清了整个下载面板连同日志一起消失，
+        //    然后落到「测速失败」那一屏 —— 下载失败被显示成测速失败，
+        //    用户会去怀疑网络和下载源，而真正的原因一个字都看不到。
+        //    2026-09-02 真机上，那次失败的原因是 torch 的 c10.dll
+        //    加载不了，跟网络毫无关系；小蔡是靠界面给的日志路径
+        //    自己去翻文件才找到的。日志就该留在眼前。
+        st.dl.running = false;
+        st.dl.error = d.error || '下载失败';
       }
       render();
     }).catch(function () {
@@ -112,6 +126,18 @@
     // 打开微软自己的站。
     openOffice: function () {
       window.api.openUrl('https://www.microsoft.com/zh-cn/microsoft-365');
+    },
+
+    // GPU 运行库加载不了时最常见的解法：装 Visual C++ 运行库。
+    // 直接给下载地址，不让人自己去搜 —— 搜「vc运行库」出来的
+    // 前几条常常是第三方打包站。
+    openVcRedist: function () {
+      window.api.openUrl('https://aka.ms/vs/17/release/vc_redist.x64.exe');
+    },
+
+    // 驱动太旧时的出路
+    openDriver: function () {
+      window.api.openUrl('https://www.nvidia.cn/geforce/drivers/');
     },
 
     // node 缺失时的出路。以前那句「重装一次应该能解决」是错话 ——
@@ -222,6 +248,13 @@
       HTTP.post('/api/convert/' + st.taskId + '/cancel', {}).catch(function () {});
     },
 
+    // 转换时看实时日志。覆盖主区，顶上的剩余时间和总进度条留着。
+    // 不做成固定一块是因为转一批书时文件列表本来就长，挤不起。
+    toggleLog: function () {
+      st.showLog = !st.showLog;
+      render();
+    },
+
     probeSources: function () {
       st.srcLoading = true;
       st.srcError = '';
@@ -249,7 +282,8 @@
     // 的注释），这里只负责起任务 + 轮询进度。
     startDownload: function () {
       st.srcError = '';
-      st.dl = { running: true, got: 0, total: 0, line: '' };
+      st.dl = { running: true, got: 0, total: 0, line: '',
+                lines: [], cmd: '', log: '', phase: '' };
       render();
       HTTP.post('/api/models/download', { source: st.srcPick }).then(function () {
         stopDlPolling();
@@ -281,17 +315,25 @@
 
     closeUpdate: function () { st.upd = null; render(); },
 
-    // 装 GPU 运行库（CUDA 版 PyTorch，约 2.5 GB）。
+    // 装 GPU 运行库（CUDA 版 PyTorch，约 2.8 GB）。
     // 发行版里不带它 —— 解压后 4.2 GB，打进安装包会让包涨到 1.5~2 GB，
     // 逼近 GitHub 单文件 2 GiB 上限，而且没显卡的人也得跟着下。
     installGpuLib: function () {
       st.gpuLibBusy = true;
       st.gpuLibError = '';
+      st.gpuLib = { got: 0, total: 0, lines: [], cmd: '', log: '' };
       render();
       var poll = setInterval(function () {
         HTTP.get('/api/gpulib/install').then(function (d) {
           st.gpuLibLine = d.line || '';
-          if (d.state === 'done' || d.ready) {
+          st.gpuLib = {
+            got: d.got || 0, total: d.total || 0,
+            lines: d.lines || [], cmd: d.cmd || '', log: d.log || '',
+          };
+          // 同上：完成只认后端 state。d.ready 是 torchdep.ready()，
+          // 判据是 torch/version.py 在不在 —— pip 装到一半那个文件就已经
+          // 落盘了，拿它当完成条件同样会提前跳走。
+          if (d.state === 'done') {
             clearInterval(poll);
             st.gpuLibBusy = false;
             // 装好了整页重载 —— 会重新体检，cuda_torch 变绿，

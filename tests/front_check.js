@@ -349,18 +349,49 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     if (!h.includes('GPU 运行库')) throw new Error('没说缺什么');
     if (!h.includes('CPU 版 PyTorch')) throw new Error('没把后端给的原因显示出来');
     if (!h.includes('data-act="installGpuLib"')) throw new Error('没有安装按钮');
-    if (!h.includes('2.5 GB')) throw new Error('没说要下多大，用户没法决定现在装还是等会儿');
+    if (!h.includes('2.8 GB')) throw new Error('没说要下多大，用户没法决定现在装还是等会儿');
   });
 
-  ck('装 GPU 运行库时显示进度而不是干等', () => {
+  ck('装 GPU 运行库时显示进度条、命令和滚动日志', () => {
+    // 小蔡 2026-09-02：「下载任何文件都应该显示一个进度条，并且要弹出
+    // 背后的命令，这样下载的人才可以知道完整的进度，而不是黑盒。」
+    // 他那次就是靠界面给的日志路径去翻文件才找到原因的 —— 说明光给
+    // 路径不够，日志得直接摆在界面上。
     const st = ready(sb);
     st.env.cuda_torch = { ok: false, why: '还没装 GPU 运行库（PyTorch）。' };
     st.gpuLibBusy = true;
-    st.gpuLibLine = 'Downloading torch-2.11.0+cu128-cp312-win_amd64.whl (2.4 GB)';
+    st.gpuLib = {
+      got: 1.4 * 1024 * 1024 * 1024, total: 2.8 * 1024 * 1024 * 1024,
+      cmd: 'python.exe -m pip install --upgrade torch torchvision '
+         + '--index-url https://download.pytorch.org/whl/cu128',
+      lines: ['Collecting torch',
+              'Downloading torch-2.11.0+cu128-win_amd64.whl (2753.2 MB)'],
+      log: 'D:\\PDF2Word\\logs\\torch_install.log',
+    };
     const h = fn(st);
     if (!h.includes('正在装')) throw new Error('没说在装');
+    if (!h.includes('50%')) throw new Error('没显示百分比');
     if (!h.includes('Downloading torch')) throw new Error('没显示 pip 的输出，看着像卡死了');
+    if (!h.includes('pip install')) throw new Error('没显示跑的是哪条命令');
+    if (!h.includes('torch_install.log')) throw new Error('没给完整日志的路径');
     if (h.includes('data-act="installGpuLib"')) throw new Error('装着还能再点一次');
+  });
+
+  ck('装失败时按错误原因给对应的出路按钮', () => {
+    // 「陌生人的电脑」上没人会去翻日志，所以错误里说缺什么，
+    // 就得同时把那个东西的下载入口摆出来 —— 不能让老师自己去搜
+    //「vc运行库」，搜出来前几条常常是第三方打包站。
+    const st = ready(sb);
+    st.env.cuda_torch = { ok: false, why: '还没装 GPU 运行库（PyTorch）。' };
+    st.gpuLibError = '缺少 Visual C++ 运行库（少了 vcruntime140.dll），'
+                   + 'GPU 运行库加载不了。';
+    let h = fn(st);
+    if (!h.includes('data-act="openVcRedist"')) throw new Error('说缺运行库却不给下载入口');
+    if (h.includes('data-act="openDriver"')) throw new Error('跟驱动无关却给了驱动按钮');
+
+    st.gpuLibError = '显卡驱动是 470.05，撑不起这版 GPU 运行库（需要 570 以上）。';
+    h = fn(st);
+    if (!h.includes('data-act="openDriver"')) throw new Error('说驱动旧却不给更新入口');
   });
 
   ck('缺 GPU 运行库排在显卡不达标前面', () => {
@@ -547,7 +578,52 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
     const h = fn(runState());
     if (!h.includes('二.pdf')) throw new Error('没显示当前文件');
     if (!h.includes('识别公式')) throw new Error('没显示当前阶段');
-    if (!h.includes('4/10')) throw new Error('没显示阶段内进度');
+  });
+
+  ck('不显示阶段内的 x/y 数字', () => {
+    // 🔴 这条测试原来是反的：它**要求**显示「4/10」。
+    //
+    //    2026-09-02 真机把这个要求推翻了。MinerU 换阶段时总数会换单位 ——
+    //    先按页（0→11），下一个阶段按检测到的文本块（0→247）。
+    //    小蔡原话：「刚刚文件本来是 5/11，现在是 5/247，我无语了」。
+    //    在这之前他还问过「准备版面一直是 0，这阶段真的有用吗」——
+    //    同一个东西绊了他两次。
+    //
+    //    数字本身没算错，是它压根不该给用户看：单位在变、有些阶段不吐
+    //    中间值。用户真正要的「还要多久」在顶上单独显示。
+    const h = fn(runState());
+    if (/\b4\/10\b/.test(h)) throw new Error('又把阶段内的 x/y 显示出来了');
+    // 阶段名和那条比例进度条还得留着 —— 得让人看出「在动」
+    if (!h.includes('识别公式')) throw new Error('阶段名也被删了');
+  });
+
+  ck('转换时有「日志」按钮，点开能看实时输出', () => {
+    // 小蔡 2026-09-02：「你要考虑到，转换区万一一堆文件呢，提供一个
+    // 日志按钮吧，可以点击看真实的实时日志。」
+    // 固定占一块会挤掉文件列表 —— 转一批书的时候列表本来就长。
+    const st = runState();
+    st.task.lines = ['正在加载模型…', 'MFR model loaded in 12.3s'];
+    st.task.log = 'D:\\PDF2Word\\logs\\convert.log';
+
+    let h = fn(st);
+    if (!h.includes('data-act="toggleLog"')) throw new Error('没有日志按钮');
+    if (h.includes('MFR model loaded')) throw new Error('没点就把日志铺出来了');
+
+    st.showLog = true;
+    h = fn(st);
+    if (!h.includes('MFR model loaded')) throw new Error('点开了却看不到日志');
+    if (!h.includes('convert.log')) throw new Error('没给完整日志的路径');
+    // 顶部的剩余时间要留着 —— 看日志时也得知道整体跑到哪了
+    if (!h.includes('还要')) throw new Error('看日志时把剩余时间弄丢了');
+  });
+
+  ck('转换的状态栏不许再说「停止只在这份转完后生效」', () => {
+    // 2026-09-02 起停止是当场生效的（extract._spawn 里的 watch 线程
+    // 杀进程树）。留着一句过时的免责声明，比什么都不写更坏 ——
+    // 用户会因此不去点那个其实管用的按钮。
+    const h = fn(runState());
+    if (h.includes('转完之后生效')) throw new Error('还留着过时的说明');
+    if (!h.includes('data-act="cancel"')) throw new Error('停止按钮没了');
   });
 
   ck('只转一份时不显示「第几份」', () => {
@@ -568,10 +644,14 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
     if (h.includes('还要约')) throw new Error('估不出来还是给了个数');
   });
 
-  ck('转换中能停止，并说清楚停止的时机', () => {
+  ck('转换中能停止', () => {
+    // 这条测试原来还要求显示「当前这份转完之后生效」—— 那是 2026-09-02
+    // 之前的行为：取消只在两份 PDF 之间检查，只转一份的话根本不生效。
+    // 小蔡真机原话：「点击停止还没用，程序一共有几个停止，都有用吗？」
+    // 现在 extract._spawn 里有 watch 线程，点了当场杀进程树，
+    // 那句免责声明也就跟着删了（上面有条测试专门钉它不许回来）。
     const h = fn(runState());
     if (!h.includes('data-act="cancel"')) throw new Error('没有停止按钮');
-    if (!h.includes('当前这份转完之后生效')) throw new Error('没说清楚停止时机');
     if (!h.includes('已用 1 分 5 秒')) throw new Error('没显示已用时');
   });
 
@@ -899,6 +979,53 @@ console.log('\n\u4e0b\u8f7d\u6a21\u578b\uff08\u9996\u6b21\u4f7f\u7528\uff09\uff1
     // 正则要排除 100 本身 —— bar() 生成的 width:100% 是合法的
     if (/1(?:0[1-9]|[1-9][0-9])%/.test(h)) throw new Error('百分比超过 100 了');
     if (!h.includes('100%')) throw new Error('没封顶到 100%');
+  });
+
+  ck('下载没完不许跳回主界面', () => {
+    // 🔴 2026-09-02 真机：「点完下载，模型进度条跑了一点点就跳到了拖文件
+    //    的界面，然后后台在下载。」
+    //
+    //    原因是轮询里写了 `d.state === 'done' || d.ready`，而 d.ready 来自
+    //    models.ready()，判据是「模型目录里有没有 >1 MB 的文件」——
+    //    下载才开始、第一个文件刚落盘它就成立了。
+    //
+    //    后果比「界面跳了」严重：用户以为下完了直接去转换，而模型只有
+    //    一小部分，转换失败，他会以为是转换功能坏了。
+    //
+    //    这条用扫源码的方式钉：轮询逻辑不在渲染路径上，测不到，
+    //    而它又是那种「顺手加个兜底」就会被改回去的地方。
+    const src = fs.readFileSync(path.join(R, 'actions.js'), 'utf8');
+    if (/'done'\s*\|\|\s*d\.ready/.test(src)) {
+      throw new Error('又拿 d.ready 当下载完成的判据了');
+    }
+    if (!/d\.state === 'done'/.test(src)) {
+      throw new Error('没有按后端 state 判断完成');
+    }
+  });
+
+  ck('下载失败时日志留在眼前，不跳去「测速失败」', () => {
+    // 🔴 2026-09-02 真机：模型下载失败，界面跳到「测速失败」那一屏 ——
+    //    而真正的原因是 torch 的 c10.dll 加载不了，跟网络和下载源
+    //    毫无关系。用户被指去怀疑错的东西。
+    //    小蔡是靠界面给出的**日志文件路径**自己去翻文件才找到的，
+    //    说明光给路径不够，日志本身就该摆在界面上。
+    const st = ready(sb);
+    st.page = 'model';
+    st.dl = {
+      running: false,
+      error: 'GPU 运行库装上了，但这台电脑加载不了它（Windows 报'
+           + '「动态链接库初始化失败」）。',
+      got: 0, total: 2.8e9,
+      cmd: 'python.exe -m pip install --upgrade torch torchvision',
+      lines: ['Collecting torch',
+              'OSError: [WinError 1114] Error loading c10.dll'],
+      log: 'logs/torch_install.log', phase: 'gpulib',
+    };
+    const h = fn(st);
+    if (h.includes('测速失败')) throw new Error('下载失败被显示成测速失败');
+    if (!h.includes('c10.dll')) throw new Error('日志没留在眼前');
+    if (!h.includes('动态链接库')) throw new Error('没显示失败原因');
+    if (!h.includes('data-act="startDownload"')) throw new Error('没法重试');
   });
 
   ck('测速失败时把原因显示出来', () => {

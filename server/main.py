@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse            # noqa: E402
 from pydantic import BaseModel                        # noqa: E402
 
 import convert                                        # noqa: E402
+import extract                                        # noqa: E402
 import gpu                                            # noqa: E402
 import models                                         # noqa: E402
 import paths
@@ -224,12 +225,39 @@ async def update_download_status():
 # ── 下载模型 ────────────────────────────────────────────────────────────
 # 单例：一台机器同时只可能下一次。存内存里就够 —— 软件关掉重开会重新
 # 判断模型在不在，没必要持久化一个「上次下到一半」的状态。
+# 🔴 `lines` 保留最近 200 行，不是只存最后一行。
+#
+#    小蔡 2026-09-02：「你在下载任何文件的时候，都应该显示一个进度条，
+#    并且要弹出背后的命令，这样下载的人才可以知道完整的进度，而不是黑盒。」
+#
+#    原来只有 `line` 一格，被下一行随时覆盖 —— 用户看到的是一行不断跳变
+#    的文字，既看不出下到哪了，出问题也没有上下文。200 行够铺满界面的
+#    日志区并往回翻一段；完整的落在 logs/ 下，出问题能直接把文件发过来。
+_DL_MAX_LINES = 200
+
+# 转换任务在界面上留多少行日志。比下载那边少一些 —— 转换界面还得放
+# 文件表，日志区只占底下一条。全量的那份在 logs/convert.log 里。
+_TASK_MAX_LINES = 120
+
 _DL = {'state': 'idle', 'got': 0, 'total': models.TOTAL_BYTES,
-       'error': '', 'line': '', 'cancel': False,
+       'error': '', 'line': '', 'lines': [], 'cancel': False,
        # 'gpulib'（装 GPU 运行库）/ 'models'（下模型）/ ''（没在跑）——
        # 界面靠它说清楚现在在等什么，不然用户看着一个不动的进度条
        # 不知道是卡住了还是在装别的东西
-       'phase': ''}
+       'phase': '',
+       # 跑的是哪条命令。日志区第一行就显示它 —— 「弹出背后的命令」
+       'cmd': '',
+       # 完整日志落在哪，界面上给出来，出问题让用户直接发文件
+       'log': ''}
+
+
+def _dl_log(line):
+    """往下载日志里追一行。调用方已经持有 _LOCK 时别再调这个。"""
+    with _LOCK:
+        _DL['line'] = line[-200:]
+        _DL['lines'].append(line[-300:])
+        if len(_DL['lines']) > _DL_MAX_LINES:
+            del _DL['lines'][0:len(_DL['lines']) - _DL_MAX_LINES]
 
 
 class DownloadReq(BaseModel):
@@ -242,8 +270,7 @@ def _dl_work(source):
             _DL['got'], _DL['total'] = got, total
 
     def on_log(line):
-        with _LOCK:
-            _DL['line'] = line[-200:]
+        _dl_log(line)
 
     def stopped():
         with _LOCK:
@@ -261,8 +288,12 @@ def _dl_work(source):
     if not torchdep.ready():
         with _LOCK:
             _DL['phase'] = 'gpulib'
-            _DL['line'] = '正在装 GPU 运行库（约 2.5 GB）…'
-        ok, err = torchdep.install(on_log=on_log, stop_flag=stopped)
+            _DL['cmd'] = torchdep.install_cmd_text()
+            _DL['log'] = torchdep.log_path()
+            _DL['got'], _DL['total'] = 0, torchdep.DOWNLOAD_BYTES
+            _DL['lines'] = []
+        ok, err = torchdep.install(on_log=on_log, stop_flag=stopped,
+                                   on_progress=on_prog)
         if not ok:
             with _LOCK:
                 _DL.update({'state': 'error', 'error': err, 'phase': ''})
@@ -270,6 +301,10 @@ def _dl_work(source):
 
     with _LOCK:
         _DL['phase'] = 'models'
+        _DL['cmd'] = models.download_cmd_text(source)
+        _DL['log'] = models.log_path()
+        _DL['got'], _DL['total'] = 0, models.TOTAL_BYTES
+        _DL['lines'] = []
     ok, err = models.download(source, on_progress=on_prog, on_log=on_log,
                               stop_flag=stopped)
     with _LOCK:
@@ -284,7 +319,8 @@ async def start_download(req: DownloadReq):
         if _DL['state'] == 'running':
             return {'ok': True, 'already': True}
         _DL.update({'state': 'running', 'got': 0, 'error': '',
-                    'line': '', 'cancel': False})
+                    'line': '', 'lines': [], 'cancel': False,
+                    'cmd': '', 'log': ''})
     threading.Thread(target=_dl_work, args=(req.source or 'modelscope',),
                      daemon=True).start()
     return {'ok': True}
@@ -300,14 +336,23 @@ async def download_status():
 
 def _gpulib_work():
     def on_log(line):
+        _dl_log(line)
+
+    def on_prog(got, total):
         with _LOCK:
-            _DL['line'] = line[-200:]
+            _DL['got'], _DL['total'] = got, total
 
     def stopped():
         with _LOCK:
             return _DL['cancel']
 
-    ok, err = torchdep.install(on_log=on_log, stop_flag=stopped)
+    with _LOCK:
+        _DL['cmd'] = torchdep.install_cmd_text()
+        _DL['log'] = torchdep.log_path()
+        _DL['got'], _DL['total'] = 0, torchdep.DOWNLOAD_BYTES
+        _DL['lines'] = []
+    ok, err = torchdep.install(on_log=on_log, stop_flag=stopped,
+                               on_progress=on_prog)
     with _LOCK:
         _DL['state'] = 'done' if ok else 'error'
         _DL['error'] = err
@@ -325,7 +370,8 @@ async def install_gpulib():
         if _DL['state'] == 'running':
             return {'ok': True, 'already': True}
         _DL.update({'state': 'running', 'got': 0, 'error': '',
-                    'line': '', 'cancel': False, 'phase': 'gpulib'})
+                    'line': '', 'lines': [], 'cancel': False,
+                    'phase': 'gpulib', 'cmd': '', 'log': ''})
     threading.Thread(target=_gpulib_work, daemon=True).start()
     return {'ok': True}
 
@@ -341,6 +387,11 @@ async def gpulib_status():
 
 @app.post('/api/models/download/cancel')
 async def cancel_download():
+    r"""停止当前的下载/安装。
+
+    模型下载和装 GPU 运行库共用一套状态（同一时刻只可能跑一个），
+    所以这一个接口两边都管用。
+    """
     with _LOCK:
         _DL['cancel'] = True
     return {'ok': True}
@@ -401,15 +452,20 @@ def scan(req: ScanReq):
 
 # 每页要多久。**实测值**，不是拍的（2026-08-31，同一份 10 页数学讲义）：
 #   有显卡 262 秒 / 10 页 = 26 秒每页
-#   纯 CPU 460 秒 / 10 页 = 46 秒每页
 # 用来估「还要等多久」—— 那是用户唯一关心的数，而 MinerU 的阶段进度
 # 回答不了它（各阶段耗时差 100 倍，跑满一条也可能只花 1 秒）。
+#
+# 🔴 只有 GPU 这一个数了。同一次实测里纯 CPU 是 460 秒 / 10 页 = 46 秒每页，
+#    这里原来会在显卡不达标时改用那个数 —— 而 2026-09-02 起产品只用 GPU，
+#    显卡不行的话转换是**当场失败**（RuntimeError: No CUDA GPUs are
+#    available），根本跑不到用这个估值的时候。
+#    留着它的后果是：显卡不达标的人点了「仍然继续」，界面先给他算出
+#    「还要 8 分钟」，几秒后失败 —— 一个凭空编出来的数。
 SEC_PER_PAGE_GPU = 26.0
-SEC_PER_PAGE_CPU = 46.0
 
 
 def _sec_per_page():
-    return SEC_PER_PAGE_GPU if gpu.detect()['ok'] else SEC_PER_PAGE_CPU
+    return SEC_PER_PAGE_GPU
 
 
 # ── 转换 ────────────────────────────────────────────────────────────────
@@ -468,11 +524,67 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
                 s = _TASKS[_tid]
                 s['stage'], s['stage_cur'], s['stage_total'] = stage, cur, tot
 
+        def stopped(_tid=task_id):
+            with _LOCK:
+                return _TASKS[_tid]['cancel']
+
+        # 🔴 转换也落一份日志。
+        #    2026-09-02 小蔡真机转换卡住时，他手上一个字的证据都拿不出来 ——
+        #    模型下载和 GPU 运行库都落盘了，唯独最花时间、最容易出问题的
+        #    转换这条链没有。落在 logs/convert.log，出问题直接发文件。
+        conv_log = os.path.join(paths.ensure(paths.LOGS), 'convert.log')
+        with _LOCK:
+            _TASKS[task_id]['log'] = conv_log
+        try:
+            clog = io.open(conv_log, 'a', encoding='utf-8',
+                           errors='replace', newline='')
+            clog.write('\n===== %s =====\n%s\n'
+                       % (time.strftime('%Y-%m-%d %H:%M:%S'), pdf))
+        except Exception:
+            clog = None
+
+        def on_conv_log(line, _f=clog, _tid=task_id):
+            if _f:
+                try:
+                    _f.write(line + '\n')
+                    _f.flush()      # 卡住时也要能看见已经到哪一步
+                except Exception:
+                    pass
+            # 🔴 tqdm 的进度行**不进界面日志区**。MinerU 每秒刷几十行，
+            #    全塞进去会把真正有用的东西（模型加载、警告、报错）
+            #    在一秒内挤没。进度另有专门的显示（阶段名 + 比例条）。
+            #    落盘的那份是全的 —— 出问题要细看就去 logs/convert.log。
+            if extract.parse_progress(line) is not None:
+                return
+            with _LOCK:
+                t = _TASKS.get(_tid)
+                if t is None:
+                    return
+                t['lines'].append(line[-300:])
+                if len(t['lines']) > _TASK_MAX_LINES:
+                    del t['lines'][0:len(t['lines']) - _TASK_MAX_LINES]
+
         dest = out_dir or os.path.dirname(pdf)
         name = os.path.splitext(os.path.basename(pdf))[0] + '.docx'
-        rep = convert.pdf_to_word(pdf, os.path.join(dest, name), tmp,
-                                  on_progress=on_prog, prefer_xsl=prefer_xsl,
-                                  mineru=mineru, env=env)
+        try:
+            rep = convert.pdf_to_word(pdf, os.path.join(dest, name), tmp,
+                                      on_progress=on_prog, on_log=on_conv_log,
+                                      prefer_xsl=prefer_xsl,
+                                      mineru=mineru, env=env,
+                                      stop_flag=stopped)
+        finally:
+            if clog:
+                try:
+                    clog.close()
+                except Exception:
+                    pass
+
+        if rep.get('cancelled'):
+            # 用户主动停的：不记进结果，直接收尾。
+            with _LOCK:
+                _TASKS[task_id]['state'] = 'cancelled'
+            return
+
         rep['line'] = convert.summary_line(rep)
         with _LOCK:
             _TASKS[task_id]['results'].append(rep)
@@ -503,6 +615,7 @@ def start_convert(req: ConvertReq):
         _TASKS[tid] = {'state': 'running', 'total': len(req.paths), 'current': 0,
                        'current_name': '', 'stage': '', 'stage_cur': 0,
                        'stage_total': 0, 'results': [], 'cancel': False,
+                       'lines': [], 'log': '',
                        'error': '', 'started': time.time(),
                        'pages': pages, 'sec_per_page': _sec_per_page()}
     threading.Thread(target=_work, daemon=True,
@@ -560,8 +673,19 @@ def _remain(t, elapsed):
 
 @app.post('/api/convert/{task_id}/cancel')
 async def cancel(task_id: str):
-    r"""取消。**只在两份之间生效** —— MinerU 那步是子进程，
-    中途硬杀会留下半截产物，比多等一两分钟麻烦。
+    r"""取消。**当场中断，不用等这一份转完**。
+
+    2026-09-02 之前这里只在两份 PDF 之间检查 —— 只转一份的话循环没有
+    下一轮，检查点永远走不到，用户点了完全没反应。小蔡真机原话：
+    「点击停止还没用，程序一共有几个停止，都有用吗？」
+
+    当时不硬杀的理由写在这儿：「中途硬杀会留下半截产物，比多等一两分钟
+    麻烦」。那个理由现在不成立了 —— 退出码非零一律判失败、失败会把
+    pandoc 写出的 Word 删掉、中间产物本来就在 _tmp/ 里每次重来。
+
+    真正生效靠的是 extract._spawn 里的 watch 线程：读取循环阻塞在
+    p.stdout.read() 上，MinerU 处理一页几十秒可能一个字都不吐，
+    检查写在循环里够不着。
     """
     with _LOCK:
         t = _TASKS.get(task_id)

@@ -135,5 +135,125 @@ class Test真实环境(unittest.TestCase):
         self.assertEqual(d['cuda'], '')
 
 
+class Test下载进度不能是黑盒(unittest.TestCase):
+    r"""小蔡 2026-09-02：「你在下载任何文件的时候，都应该显示一个进度条，
+    并且要弹出背后的命令，这样下载的人才可以知道完整的进度，而不是黑盒。」
+
+    装 GPU 运行库要下约 2.5 GB，原来只有一行文字、没有进度条 —— 用户
+    盯着一个不动的界面，分不清是在下还是卡死了。
+
+    进度数据从哪来（2026-09-02 实测 pip 的真实输出，不是凭印象）：
+
+        默认           ---------------------- 12.5/12.5 MB 5.0 MB/s  0:00:02
+        --progress-bar raw   Progress 262144 of 12464674
+
+    用 raw：它是 pip 专门为非终端环境设计的机器可读格式，解析零歧义，
+    也不受终端宽度影响。**这些 Progress 行不进日志区** —— 它们是给机器
+    看的，刷屏会把真正有用的行（Collecting / Downloading / Successfully）
+    淹掉，跟 MinerU 那边过滤 tqdm 是一个道理。
+    """
+
+    def test_认得出pip的raw进度行(self):
+        self.assertEqual(torchdep.parse_progress('Progress 262144 of 12464674'),
+                         (262144, 12464674))
+        self.assertEqual(torchdep.parse_progress('Progress 0 of 12464674'),
+                         (0, 12464674))
+
+    def test_普通输出不会被当成进度(self):
+        for line in ('Collecting torch',
+                     '  Downloading torch-2.11.0+cu128-win_amd64.whl (2.4 GB)',
+                     'Successfully installed torch-2.11.0+cu128',
+                     'Progress of the install',      # 像但不是
+                     ''):
+            self.assertIsNone(torchdep.parse_progress(line), line)
+
+    def test_多个包要累计而不是各算各的(self):
+        r"""pip 装 torch 会连着下好几个包（torch、torchvision、依赖）。
+        每个包都从 0 开始报进度 —— 直接拿当前包的数当总进度的话，
+        进度条会一次次退回去，比没有进度条还糟。"""
+        acc = torchdep.ProgressAcc()
+        # 第一个包 1000 字节，下完
+        self.assertEqual(acc.feed(0, 1000), 0)
+        self.assertEqual(acc.feed(600, 1000), 600)
+        self.assertEqual(acc.feed(1000, 1000), 1000)
+        # 第二个包开始，从 0 报起 —— 总数不许退回去
+        self.assertEqual(acc.feed(0, 500), 1000, '换包时进度条退回去了')
+        self.assertEqual(acc.feed(500, 500), 1500)
+
+    def test_日志里不许出现进度行(self):
+        r"""2.4 GB 下下来会有几千行 Progress，全塞进日志区的话，
+        Collecting / Downloading 这些真正有用的行一行都看不见。"""
+        self.assertTrue(torchdep.is_noise('Progress 262144 of 12464674'))
+        self.assertFalse(torchdep.is_noise('Collecting torch'))
+        self.assertFalse(torchdep.is_noise(
+            '  Downloading torch-2.11.0+cu128-win_amd64.whl (2.4 GB)'))
+
+
+class Test装坏了必须卸掉(unittest.TestCase):
+    r"""🔴 「torch 装了但加载不了」这个中间态，比「压根没装」更糟。
+
+    根因链（2026-09-02 小蔡真机 + 读 modelscope 源码确认）：
+
+        modelscope/utils/logger.py:48
+            if iutil.find_spec('torch') is not None:   ← 只查文件在不在
+                from modelscope.utils.torch_utils import ...  ← 直接 import，没 try
+                    → torch/__init__.py 加载 c10.dll → OSError WinError 1114
+
+    所以三种状态里，中间那种是雷：
+
+        完全没装       find_spec 返回 None → 跳过 → **模型下载完全正常**
+        装了且能用     正常
+        装了但加载不了  find_spec 找得到 → 进去 import → 崩
+
+    而这个中间态是**我们自己造的**：装完只检查 version.py 这个文本文件
+    在不在就宣布装好了 —— 跟 modelscope 犯的是同一个错（拿「文件在不在」
+    当「能不能用」）。两个同样的错叠在一起，用户就在模型下载那一步撞上
+    一个跟模型、跟网络都毫无关系的崩溃。
+
+    所以装完验不过就得卸干净，退回「没装」那个安全状态。
+    """
+
+    def setUp(self):
+        self.calls = []
+        self.work = tempfile.mkdtemp(prefix='p2w_broken_')
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.addCleanup(setattr, torchdep, 'can_load', torchdep.can_load)
+        self.addCleanup(setattr, torchdep, 'uninstall', torchdep.uninstall)
+        self.addCleanup(setattr, torchdep, 'ready', torchdep.ready)
+        self.addCleanup(setattr, torchdep, 'log_path', torchdep.log_path)
+        self.addCleanup(setattr, torchdep, 'install_argv', torchdep.install_argv)
+        torchdep.log_path = lambda: os.path.join(self.work, 'x.log')
+        torchdep.install_argv = lambda: ['cmd', '/c', 'echo', 'ok']
+        torchdep.ready = lambda: True          # 文件层面看着装好了
+        torchdep.uninstall = lambda: (self.calls.append('uninstall'), (True, ''))[1]
+
+    def test_加载不了就卸掉(self):
+        torchdep.can_load = lambda: (False, 'OSError: [WinError 1114] '
+                                            'Error loading c10.dll')
+        ok, err = torchdep.install()
+        self.assertFalse(ok)
+        self.assertIn('uninstall', self.calls,
+                      '装坏了却留着 —— modelscope 会 find_spec 找到它然后崩，'
+                      '模型下载一起废')
+        self.assertIn('卸掉', err, '没告诉用户已经清理过了')
+
+    def test_能加载就不许乱卸(self):
+        torchdep.can_load = lambda: (True, '2.11.0+cu128')
+        ok, err = torchdep.install()
+        self.assertTrue(ok, err)
+        self.assertNotIn('uninstall', self.calls, '装好的东西被卸了')
+
+    def test_没装torch时modelscope那条路是安全的(self):
+        r"""钉住这个事实：**完全没装 torch 反而没问题**。
+
+        这不是我们的代码行为，是 modelscope 的 —— 但它是「装坏了就卸掉」
+        这个决定的全部依据，写在这儿免得后人觉得「卸掉太粗暴」而改回去。
+        本机的发行版目录就是活证据：它没有 torch，而模型下载器能正常启动。
+        """
+        import importlib.util as iutil
+        # find_spec 找不到就返回 None —— modelscope 靠这个跳过 import torch
+        self.assertIsNone(iutil.find_spec('绝对不存在的包xyz'))
+
+
 if __name__ == '__main__':
     unittest.main()

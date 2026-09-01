@@ -129,6 +129,15 @@ function render() {
   var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.main;
   el.innerHTML = page(state);
 
+  // 下载日志要自动滚到底 —— 不滚的话新行出现在看不见的地方，
+  // 用户盯着一屏不动的旧输出，跟没有日志一样。
+  // （这跟下面保住 .main 滚动位置是两回事：那边是别把用户翻到的位置
+  //   弄丢，这边是新内容必须自己露出来。）
+  if (el.querySelector) {
+    var lg = el.querySelector('#dllog');
+    if (lg) lg.scrollTop = lg.scrollHeight;
+  }
+
   if (top && el.querySelector) {
     var now = el.querySelector('.main');
     // 列表变短时浏览器自己会截断到最大值，不用管

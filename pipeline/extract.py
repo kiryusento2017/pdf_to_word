@@ -14,11 +14,13 @@ r"""调 MinerU 把 PDF 提取成 Markdown + 图片。
 但 txt / auto 丢了 38% 的公式（131 vs 213），因为文字层里没有公式。
 依据见 docs/DESIGN.md 第二节。
 """
+import codecs
 import os
 
 import paths
 import re
 import subprocess
+import threading
 
 # 提取参数。改这里之前先看 docs/DESIGN.md 第二节的实测表。
 BACKEND = 'hybrid-engine'
@@ -129,7 +131,7 @@ def _split_lines(buf):
     return out, buf
 
 
-def _spawn(argv, on_line, env=None):
+def _spawn(argv, on_line, env=None, stop_flag=None):
     r"""起子进程，逐行回调。抽出来是为了测试能拦住它，不必真跑 GPU。
 
     🔴 **不能用 readline**。tqdm 刷新进度用的是**回车符、不换行**，
@@ -140,31 +142,80 @@ def _spawn(argv, on_line, env=None):
     """
     # env 用来指定模型下载源（MINERU_MODEL_SOURCE / HF_ENDPOINT）。
     # **合并进现有环境而不是替换** —— 替换会丢掉 PATH，子进程直接起不来。
-    real_env = None
+    real_env = dict(os.environ)
     if env:
-        real_env = dict(os.environ)
         real_env.update(env)
+    # 🔴 强制子进程用 UTF-8 输出。
+    #    不设的话，Python 的 stdout 编码跟随系统 codepage —— 中文 Windows
+    #    上是 cp936(GBK)，而我们按 UTF-8 解，整段中文全是乱码。
+    #    2026-09-02 真机报「失败信息后面画一行乱码」就有这一半原因，
+    #    而错误信息看不懂 = 没有诊断信息。
+    real_env['PYTHONIOENCODING'] = 'utf-8'
+    real_env['PYTHONUTF8'] = '1'
+
     p = subprocess.Popen(argv, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, env=real_env)
+
+    # 🔴 「停止」的检查放在独立线程里，不放读取循环。
+    #
+    #    读取循环阻塞在 p.stdout.read() 上，MinerU 处理一页要几十秒、
+    #    期间可能一个字都不吐 —— 检查写在循环里的话，用户点了停止得等到
+    #    下一次有输出才生效，而「半天没动静」恰恰是他最想停的时候。
+    #
+    #    这是这个项目第三次栽在同一个模式上（models.download、
+    #    torchdep.install 是前两次），三处现在用的是同一套解法。
+    killed = []
+    stop_watch = threading.Event()
+
+    def watch():
+        while not stop_watch.is_set():
+            if stop_flag and stop_flag():
+                killed.append(True)
+                try:
+                    subprocess.run(
+                        ['taskkill', '/PID', str(p.pid), '/T', '/F'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+                return
+            stop_watch.wait(0.5)
+
+    watcher = None
+    if stop_flag:
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+
+    # 🔴 增量解码器，不是每块各自 decode。
+    #    一个中文字 3 字节，按固定 256 字节切块的话，字符会横跨两块 ——
+    #    前半在这块末尾、后半在下块开头，两边 decode 各吐一个 U+FFFD，
+    #    **每 256 字节就吃掉一个字**。增量解码器会把不完整的字节序列
+    #    留着，等下一块补齐了再吐出来。
+    dec = codecs.getincrementaldecoder('utf-8')('replace')
     buf = ''
     try:
         while True:
             chunk = p.stdout.read(256)
             if not chunk:
                 break
-            buf += chunk.decode('utf-8', 'replace')
+            buf += dec.decode(chunk)
             lines, buf = _split_lines(buf)
             for ln in lines:
                 on_line(ln)
+        buf += dec.decode(b'', True)      # 收尾，吐出残留
         if buf.strip():
             on_line(buf)
     finally:
+        stop_watch.set()
         p.stdout.close()
     return p.wait()
 
 
 def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
-        env=None, **kw):
+        env=None, stop_flag=None, **kw):
     r"""提取一份 PDF。返回报告 dict，**不抛异常**。
 
     on_progress(阶段中文名, 当前, 总数) —— 真进度，来自 MinerU 的 tqdm
@@ -173,7 +224,7 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
     报告字段：ok / error / auto_dir / md / pages / tail
     """
     rep = {'ok': False, 'error': '', 'auto_dir': '', 'md': '',
-           'pages': 0, 'tail': '', 'stage': ''}
+           'pages': 0, 'tail': '', 'stage': '', 'cancelled': False}
     mineru = mineru or paths.mineru_cmd()
     if isinstance(mineru, str):
         # 老写法：给的是一个可执行文件路径
@@ -206,9 +257,17 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
                 on_progress(stage, cur, tot)
 
     try:
-        rc = _spawn(build_argv(mineru, pdf, out_dir, **kw), on_line, env=env)
+        rc = _spawn(build_argv(mineru, pdf, out_dir, **kw), on_line, env=env,
+                    stop_flag=stop_flag)
     except Exception as e:
         rep['error'] = '起 mineru 失败：%s: %s' % (type(e).__name__, str(e)[:120])
+        return rep
+
+    if stop_flag and stop_flag():
+        # 用户主动停的，不是故障 —— 别报一堆退出码和最后几行输出，
+        # 那会让人以为出错了。
+        rep['error'] = '已停止'
+        rep['cancelled'] = True
         return rep
 
     stem = os.path.splitext(os.path.basename(pdf))[0]

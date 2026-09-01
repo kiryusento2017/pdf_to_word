@@ -132,6 +132,16 @@ def ready():
     判据是**配置里指的那个目录真有权重**，而不是「models/ 目录非空」——
     用户可能把模型放在别处（我们支持指过去），也可能下载中断留下空壳。
     两种情况只看目录都会判错。
+
+    ⚠️ **这个判据宽松，绝不能拿来判断「下载完成了没有」。**
+       它只看「有没有 >1 MB 的文件」，下载刚开始、第一个文件落盘就成立。
+       2026-09-02 真机上前端拿它当完成条件，结果进度条跑了一点点就跳回
+       主界面、后台还在下，用户以为下完了直接去转换。
+       判断下载完成要看下载流程自己的状态（server 那边的 _DL['state']）。
+
+       为什么不把它改严（比如按总大小卡）：那会误判**已经下好**的用户，
+       逼他重下 4.6 GB，代价比漏判大。它的本职是「启动时判断模型在不在」，
+       在那个场景下宽松是对的 —— 真下坏了转换会失败并报错，重下即可。
     """
     p, v = configured_dirs()
     for d in (p, v):
@@ -165,6 +175,21 @@ def download_cmd():
        详见 paths.py 里那段说明。
     """
     return paths.models_download_cmd()
+
+
+def download_argv(source='modelscope'):
+    """下模型的完整命令。"""
+    return download_cmd() + ['-s', source or 'modelscope', '-m', 'all']
+
+
+def download_cmd_text(source='modelscope'):
+    """命令的可读形式，显示在日志区第一行。"""
+    return ' '.join(download_argv(source))
+
+
+def log_path():
+    """完整日志落在哪。界面上把这个路径给用户，出问题直接发文件。"""
+    return os.path.join(paths.LOGS, 'model_download.log')
 
 
 def download(source='modelscope', on_progress=None, on_log=None,
@@ -217,9 +242,10 @@ def download(source='modelscope', on_progress=None, on_log=None,
     #    「多半是网络断了」—— 那句话是猜的，真实原因（磁盘满？SSL？
     #    代理？权限？）被丢得一干二净，隔着几百公里没法查。
     #    日志落在安装目录内的 logs/，符合「删文件夹 = 卸载干净」。
-    log_path = os.path.join(paths.ensure(paths.LOGS), 'model_download.log')
+    paths.ensure(paths.LOGS)
+    log_file = log_path()
     try:
-        log_fp = io.open(log_path, 'w', encoding='utf-8', errors='replace')
+        log_fp = io.open(log_file, 'w', encoding='utf-8', errors='replace')
         log_fp.write('# %s\n' % ' '.join(cmd + ['-s', source or 'modelscope',
                                                   '-m', 'all']))
         log_fp.write('# 目标: %s\n\n' % target)
@@ -344,8 +370,8 @@ def download(source='modelscope', on_progress=None, on_log=None,
         # 完整日志的路径也一并告诉用户，好让他直接把文件发过来。
         why = ' / '.join(tail[-3:])[:300]
         return False, ('下载失败（退出码 %s）。%s完整日志：%s'
-                       % (rc, ('下载器说：%s。' % why) if why else '', log_path))
+                       % (rc, ('下载器说：%s。' % why) if why else '', log_file))
     if not ready():
         return False, ('下载结束了，但没找到可用的模型文件。完整日志：%s'
-                       % log_path)
+                       % log_file)
     return True, ''

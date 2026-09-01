@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 208 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 220 条
 node tests\front_check.js                                   # 67 条
 ```
 
@@ -26,8 +26,18 @@ node tests\front_check.js                                   # 67 条
 
 ### 3. 文档跟上
 
-代码改了策略，README / DESIGN 必须同步。判断标准：
-**一个没参与过开发的人照着文档做，会不会做错。**
+先跑自动检查：
+
+```
+.venv\Scripts\python.exe tools\check_docs.py
+```
+
+它查两件事：文档提到的文件实际存不存在（照着做会不会撞墙），
+以及同一个事实在几处写的是不是同一个数（测试条数、安装包体积……）。
+真值取自代码和产物，不是取自另一份文档。
+
+**它查不了的那部分要人看**：代码改了策略，README / DESIGN 必须同步。
+判断标准：**一个没参与过开发的人照着文档做，会不会做错。**
 
 历史教训：09-01 把 XSL 从「优先」改成「硬性要求」，README 整节还写着
 「没装 Office 就用内置 Pandoc」，跟实际行为完全相反。
@@ -79,11 +89,23 @@ node tests\front_check.js                                   # 67 条
 `--sfx` 打的是 `dist\PDF2Word\` 里**当前**的内容。如果代码改了，
 先同步再打包，否则打出来的是旧代码：
 
+🔴 **前端的目标路径是 `resources\app\`，不是 `app\`。**
+源码里前端在 `app/`，发行版里在 `resources/app/`（Electron 标准形态）。
+同步到 `app\` 的话软件根本读不到，而且**不会报错** —— 它会安静地
+跑着旧的前端代码。
+
 ```
 robocopy pipeline dist\PDF2Word\pipeline /MIR
 robocopy server dist\PDF2Word\server /MIR
-robocopy app\renderer dist\PDF2Word\app\renderer /MIR
-copy app\main.js app\preload.js app\package.json dist\PDF2Word\app\
+robocopy app\renderer dist\PDF2Word\resources\app\renderer /MIR
+copy app\main.js app\preload.js app\package.json app\icon.ico ^
+     dist\PDF2Word\resources\app\
+```
+
+同步完记得清 `__pycache__`，不然它会被打进安装包（里面还嵌着开发机的路径）：
+
+```
+for /d /r dist\PDF2Word %d in (__pycache__) do @rd /s /q "%d" 2>nul
 ```
 
 ---
@@ -150,16 +172,28 @@ const ROOT = path.basename(path.dirname(__dirname)) === 'resources'
 一个 Release 挂**两个**附件 —— **首版（v0.0.1）例外，只挂安装包**：
 
 ```
-PDF2Word-Setup-v0.0.1.exe       357 MB   新用户下这个
-pdf_to_word-v0.0.1-update.zip   0.4 MB   软件「检查更新」自动下这个
+PDF2Word-Setup-v0.0.1.exe       287 MB   新用户下这个
+pdf_to_word-v0.0.2-update.zip   0.5 MB   软件「检查更新」自动下这个
 ```
 
+首版（只有安装包）：
+
 ```
-gh release create v0.0.1 ^
-  "dist\PDF2Word-Setup-v0.0.1.exe" ^
-  "dist\pdf_to_word-v0.0.1-update.zip" ^
+gh release create v0.0.1 "dist\PDF2Word-Setup-v0.0.1.exe" ^
   --title "v0.0.1" --notes-file 发布说明.md
 ```
+
+之后每一版（两个都要）：
+
+```
+gh release create v0.0.2 ^
+  "dist\PDF2Word-Setup-v0.0.2.exe" ^
+  "dist\pdf_to_word-v0.0.2-update.zip" ^
+  --title "v0.0.2" --notes-file 发布说明.md
+```
+
+覆盖已发布的附件用 `gh release upload <tag> <文件> --clobber`；
+删掉某个附件用 `gh release delete-asset <tag> <文件名> --yes`。
 
 ### 首版为什么不用挂更新包
 
@@ -177,9 +211,12 @@ v0.0.1 之前没有版本，不存在「从旧版更新上来」的人。代码�
 
 ### 🔴 只传安装包会怎样
 
-`update.py` 的 `_pick_asset` 找不到名字带 `update` 的附件，
-会退回用第一个 zip——如果那是完整包，老用户点「检查更新」会去下
-357 MB 来替换 0.4 MB 的改动。
+`update.py` 的 `_pick_asset` 只认名字带 `update` 的 `.zip`，
+找不到就返回 None，老用户点「检查更新」会看到
+「有新版本，但那个 Release 没有附更新包」—— 修复到不了他手上。
+
+（安装包现在是 `.exe` 不是 `.zip`，所以不会被误挑成更新包；
+  但换成 zip 分发的话就要小心这条了。）
 
 ---
 
@@ -190,8 +227,8 @@ v0.0.1 之前没有版本，不存在「从旧版更新上来」的人。代码�
 1. **怎么装**——下哪个文件、双击之后干什么
 2. **用之前要知道的**——必须装 Office（且**只装 WPS 不行**）、
    **必须有 NVIDIA 独立显卡**（只用 GPU，没有 N 卡装了也转不了）、
-   别装 `C:\Program Files`、首次要下约 7 GB
-   （4.6 GB 模型 + 2.5 GB GPU 运行库）
+   别装 `C:\Program Files`、首次要下约 7.4 GB
+   （4.6 GB 模型 + 2.8 GB GPU 运行库）
 3. **不想用了怎么办**——删文件夹即可，干净
 4. **以后怎么更新**——软件里点「检查更新」，不用再来 GitHub
 
@@ -216,7 +253,8 @@ v0.0.1 之前没有版本，不存在「从旧版更新上来」的人。代码�
 
 | | 靠什么 |
 |---|---|
-| 模型、临时文件、MinerU 配置 | `paths.child_env()` 的三个环境变量 |
+| 模型、临时文件、MinerU 配置 | `paths.child_env()` 的前三个环境变量 |
+| 日志 | `logs/model_download.log`、`logs/torch_install.log` |
 | Electron 缓存 | `app.setPath('userData'/'sessionData')`，**必须在 app ready 之前调** |
 | 转好的 Word | 用户自己选的目录（唯一的例外） |
 
@@ -236,6 +274,20 @@ MinerU 的东西。我们通过 `MINERU_TOOLS_CONFIG_JSON` 指向自己那份。
 ⚠️ Pandoc **不能从包里去掉**：整个 docx 是它生成的（md→html→docx），
 XSL 只是把生成物里的公式替换掉。
 
+### 任何耗时操作都不给黑盒
+
+下载（GPU 运行库 / 模型 / 更新包）要有：进度条 + 真实字节数 +
+**跑的那条命令** + 滚动日志；失败时日志留在原地不跳走。
+转换的日志在状态栏「日志」按钮后面，全量落 `logs/convert.log`。
+
+这条不是锦上添花：2026-09-02 小蔡在外面测试时，唯一能定位问题的途径
+就是界面给出的那个日志路径。**没有日志 = 远程排查等于零**。
+
+停止也要当场生效。曾经的实现只在「两份 PDF 之间」检查，只转一份的话
+用户点了完全没反应 —— 这类「检查点够不着」的 bug 在本项目出现过三次
+（models.download / torchdep.install / extract），解法统一是独立的
+watch 线程加 taskkill /T，别再把检查写进会阻塞的读取循环里。
+
 ### 只用 GPU，不用 CPU
 
 2026-09-02 小蔡定的。理由不是 CPU 跑不动（实测只慢 2 倍），是
@@ -252,11 +304,20 @@ XSL 只是把生成物里的公式替换掉。
 
 ### CUDA 版 torch 不打进安装包
 
-它解压后 4.2 GB，打进去包会从 356 MB 涨到 1.5~2 GB，逼近 GitHub 单文件
-2 GiB 上限，而且没显卡的人也得跟着下。
+它解压后 4.2 GB（wheel 约 2.8 GB），打进去包会从 287 MB 涨到 1.5~2 GB，
+逼近 GitHub 单文件 2 GiB 上限，而且没显卡的人也得跟着下。
+
+**下哪个 CUDA 版本由用户的驱动决定，不写死**（`torchdep.pick_channel`）：
+驱动 ≥570 用 cu128、≥525 用 cu126、其余用 cu118。写死最新的 cu128 会让
+驱动低于 570 的机器在 `import torch` 时报 WinError 1114，而 modelscope
+的 import 链里有 `import torch` —— **连模型下载都一起废**。
+
+装完还要**真 import 一次**才算装好；验不过就把 torch 卸掉，退回
+「干净的没装」状态。留着一个「在、但加载不了」的 torch 比没装更糟：
+modelscope 用 `find_spec` 判断它在不在（只看文件），找得到就直接 import。
 
 `install_deps()` 装完依赖会**把 torch 卸掉**（pip 装 mineru 时会自己拉一份
-CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.5 GB），
+CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.8 GB），
 跟那 4.6 GB 模型走同一个下载流程。
 
 ⚠️ `--cuda` 构建是例外：那种包直接把 GPU 版打进去，装完即用不用联网，
@@ -279,7 +340,12 @@ CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.5
 2. **验证检查更新**。把 `version.json` 里的 tag 改成上一个版本，
    点「检查更新」，确认能查到、挑对包（是 update 不是 full）、能装上。
 
-3. **进度档更新**（`_scratch\pdf_to_word_progress.md`）。
+3. **在一台不是开发机的电脑上装一次**。这条比什么都重要 ——
+   v0.0.1 发出去之后才发现它在任何非开发机上都跑不了
+   （pip launcher 硬编码了打包机器的解释器路径），
+   而开发机上七项自检全绿。
+
+4. **进度档更新**（`_scratch\pdf_to_word_progress.md`）。
 
 ---
 
@@ -288,8 +354,11 @@ CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.5
 | | 说明 |
 |---|---|
 | 中文安装路径 | **没测过**。默认给英文路径，SFX 提示里也写了「路径最好别有中文和空格」 |
-| 首次启动要装依赖 | `--slim` 打的包里没有 Layer 1，用户首次打开要跑 `安装依赖.cmd`（联网几分钟）。默认构建已经装好，不走这条路 |
-| GitHub 单文件 2 GiB | 安装包 357 MB 没超。哪天依赖膨胀到超了，7-Zip 支持分卷 SFX |
+| 首次启动要装依赖 | `--slim` 打的包里没有 Layer 1，用户首次打开要跑 `首次安装.cmd`（联网几分钟）。默认构建已经装好，不走这条路 |
+| GitHub 单文件 2 GiB | 安装包 287 MB，离上限还远。**但 `--cuda` 构建会到 1.5~2 GB**，那种包逼近上限；真要发的话先量一下，7-Zip 支持分卷 SFX |
 | SmartScreen | exe 没有代码签名，Windows 会弹「未知发布者」。老师需要点「更多信息 → 仍要运行」。签名要买证书（一年几百到几千）。**7z 自解压格式触发率更高**，Edge 可能直接「已阻止此不安全下载」——真发给老师时考虑改发 zip，或者直接微信/U盘传 |
 | 模型完整性 | `models.ready()` 的判据是「配置指的目录里有 >1 MB 的文件」，**下到一半也算就绪**。改严的话（比如按总大小卡）会误判已经下好的用户、逼他重下 4.6 GB，代价比漏判大，所以维持现状。真下坏了转换会失败并报错，重下一次即可 |
 | pip launcher | `runtime/python/Scripts/*.exe` 里硬编码着打包机器的解释器路径，**换台机器全废**。跑 MinerU 一律走 `paths.mineru_cmd()`（解释器 + `-m` 模块），别再用 `find_exe('mineru')`。v0.0.1 就是栽在这上面 |
+| 更新包路径 | 前端在源码里是 `app/`，在发行版里是 `resources/app/`。`UPDATE_PARTS` 写的是「源路径 → 发行版路径」的映射，**两边不一样**。写错不会报错，只会安静地只更新一半（Python 那半路径一致所以是好的） |
+| 「装了但坏了」 | 任何「装完就宣布成功」的地方都要问一句：装上了 ≠ 能用。torch 的 `version.py` 在，不代表 `c10.dll` 加载得起来；modelscope 和我们同时栽在这个判据上，叠加起来就是「模型下载器崩在一个跟模型无关的地方」 |
+| 网吧还原机 | 重启就重置，装什么都留不住，而且文件系统被 hook 过，DLL 加载可能异常。**不是有效的测试环境**，测出来的故障未必会在真实用户身上出现 |

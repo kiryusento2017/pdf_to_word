@@ -12,22 +12,27 @@
 
 ## 给使用者
 
-下载 `PDF2Word-Setup-v0.0.1.exe`（357 MB），双击 → 选文件夹 → 解压完成 →
-双击里面的 `PDF转Word.exe`。装完占硬盘约 1.7 GB。
+下载 `PDF2Word-Setup-v0.0.1.exe`（287 MB），双击 → 选文件夹 → 解压完成 →
+双击里面的 `PDF转Word.exe`。
 
-**三件事得先知道**：
+**四件事得先知道**：
 
-1. **必须装微软 Office**。公式要用 Office 自带的 `MML2OMML.XSL` 转换，
+1. **必须有 NVIDIA 独立显卡。** 这软件只用显卡转换，不用 CPU 顶替
+   （理由见下面「没有显卡能用吗」）。没有 N 卡的机器装了也转不了，
+   点开始会当场报错，不会让你白等。
+2. **必须装微软 Office**。公式要用 Office 自带的 `MML2OMML.XSL` 转换，
    那是微软的文件不能随本软件分发。**只装 WPS 不行**——实测扫过 WPS 的
    3506 个文件，一个 `.xsl` 都没有。软件打开时会自己检查并告诉你。
-2. **别装在 `C:\Program Files`**，路径里也别有中文和空格。
+3. **别装在 `C:\Program Files`**，路径里也别有中文和空格。
    所有文件都留在软件自己的文件夹里，而那个位置普通用户写不了文件。
-3. **第一次打开要下识别模型**（约 4.6 GB）。软件会并发实测各下载源的
-   真实速度，最快的默认选中，直接点开始就行。
+4. **第一次打开要下约 7.4 GB**：GPU 运行库 2.8 GB + 识别模型 4.6 GB。
+   两件事在同一个流程里，只等一次。软件会实测各下载源的真实速度，
+   最快的默认选中。
 
-不想用了直接删掉整个文件夹，不留注册表、不留 AppData。转好的 Word 不受影响。
+装完连同下载的东西一共占硬盘约 10 GB。不想用了直接删掉整个文件夹，
+不留注册表、不留 AppData。转好的 Word 不受影响。
 
-更新：软件里点「检查更新」→ 自动下载安装（0.4 MB）→ 点「立即重启」。
+更新：软件里点「检查更新」→ 自动下载安装（约 0.5 MB）→ 点「立即重启」。
 不用再来 GitHub。
 
 ## 界面
@@ -50,9 +55,24 @@
 每行显示自己的状态（绿点完成、蓝点正在转、灰点排队），转完的行就地长出
 「打开 / 文件夹」两个链接。
 
-环境自检压在状态栏，只有必须让用户拿主意时才拦主区：转换引擎缺失（拦死）、
-没装 Office（引导去装）、安装目录不可写（告诉他挪地方）。显卡不满足时给
-「仍然继续」和「退出」两个按钮**自己选**，并写明具体要等多少分钟。
+环境自检压在状态栏，只有必须让用户拿主意时才拦主区，按严重度排：
+安装目录不可写 → 没装 Office → 转换引擎缺失 → **缺 GPU 运行库** → 显卡不达标。
+前四种硬拦（但都给出路，比如缺运行库那屏有「现在就装」按钮）；
+显卡不达标是**软拦**，给「仍然继续」和「退出」让用户自己选。
+
+### 不给黑盒
+
+**下载**（GPU 运行库、模型、更新包）显示三样东西：进度条（带真实字节数）、
+**跑的那条完整命令**、滚动的输出日志。失败了日志**留在原地**不跳走——
+2026-09-02 真机上就是靠这个才定位到「torch 的 c10.dll 加载不了」，
+而那跟网络毫无关系。
+
+**转换**的日志在状态栏一个「日志」按钮后面，点开覆盖主区，顶上的剩余
+时间和总进度条保留。不做成固定一块是因为转一批书时文件列表本来就长。
+全量日志落在 `logs/convert.log`（含进度刷屏），界面上那份滤掉了 tqdm。
+
+**停止**是当场生效的：转换中点停止会直接杀掉 MinerU 的进程树，不用等
+这一份转完。（09-02 之前只在两份 PDF 之间检查，只转一份的话等于没有。）
 
 ## 转出来是什么样
 
@@ -62,7 +82,7 @@
 公式 213 个   全部是 Word 原生公式对象，可编辑可搜索，不是图片
 表格 2 个     含合并单元格，有边框
 图 4 张       按原书尺寸还原（4.45 / 1.29 / 1.61 / 1.25 英寸）
-用时 262 秒   其中 MinerU 提取占绝大部分
+用时 252 秒   其中 MinerU 提取占绝大部分
 ```
 
 ## 进度条为什么显示「还要多久」而不是百分比
@@ -78,9 +98,14 @@
 处理页面  0→10    250 秒   ← 只要 1 秒
 ```
 
+而且**阶段内的 x/y 数字不显示给用户**：MinerU 换阶段时总数会换单位——
+前一个阶段按页（0→11），下一个按检测到的文本块（0→247）。用户看到
+「5/11」变成「5/247」，第一反应是出 bug 了。界面只留阶段名和一条比例条，
+能看出在动就够了。
+
 「分析版面 10/10 完成」看着像快好了，其实才走了 6%。所以首屏显示剩余时间：
-页数在体检时就知道，速率是实测的（GPU 26 秒/页、CPU 46 秒/页），
-转完一份后还会用真实耗时反推速率替掉出厂估值。
+页数在体检时就知道，速率是实测的（26 秒/页），转完一份后还会用真实耗时
+反推速率替掉出厂估值。
 
 估不出来时显示「正在估算…」——宁可不显示，也不给一个编的数。
 
@@ -102,7 +127,8 @@ LaTeX --KaTeX(打包的 node)--> MathML --MML2OMML.XSL(用户的 Office)--> OMML
 
 与其让一部分人拿到次等产物还不知情，不如在门口说清楚要装 Office。
 公式转不出来时（没 XSL、没 node、数量对不上、部分转不了）**一律判失败**，
-不静默产出混着两种引擎的 Word。
+不静默产出混着两种引擎的 Word。失败时会**把已经写出的那份 Word 删掉**——
+留着的话，界面说失败、目录里却躺着一份能打开的文件，多数人会当成功。
 
 ⚠️ **Pandoc 不能从包里去掉**：整个 docx 是它生成的（md→html→docx），
 XSL 只是把生成物里的公式替换掉。
@@ -151,11 +177,29 @@ XSL 探测：先查注册表（Click-to-Run 和传统 MSI 两种键位都读）�
 ### GPU 运行库要单独下
 
 安装包里**不带** CUDA 版 PyTorch。它解压后 4.2 GB，打进安装包会让包从
-356 MB 涨到 1.5~2 GB，逼近 GitHub 单文件 2 GiB 的上限，而且没有显卡的人
+287 MB 涨到 1.5~2 GB，逼近 GitHub 单文件 2 GiB 的上限，而且没有显卡的人
 也得跟着下这 4 GB。
 
-改成首次启动时按需下（约 2.5 GB），跟那 4.6 GB 模型走同一个流程，
+改成首次启动时按需下（wheel 约 2.8 GB），跟那 4.6 GB 模型走同一个流程，
 用户只等一次。软件会自己检查并在界面上给一个「现在就装」的按钮。
+
+**下哪个 CUDA 版本由驱动决定**，不写死：
+
+| 驱动 | 用哪个 | 为什么 |
+|---|---|---|
+| ≥ 570 | cu128（CUDA 12.8） | 最新 |
+| ≥ 525 | cu126（CUDA 12.6） | 版本一样新，驱动门槛低一档 |
+| 其余 / 读不到 | cu118（CUDA 11.8） | 最保守 |
+
+写死 cu128 的话，驱动低于 570 的机器会在 `import torch` 时报
+`[WinError 1114] 动态链接库(DLL)初始化例程失败`——而 modelscope 的
+import 链里有 `import torch`，**连模型下载都一起废掉**，用户看到的是
+「下载器崩了」，完全猜不到跟显卡驱动有关。
+
+装完还会**真的 import 一次**再说「装好了」：`torch/version.py` 是个文本
+文件，它在不代表 `c10.dll` 加载得起来。加载失败时软件会自己查
+`vcruntime140.dll` 之类在不在，缺了就直接说「缺 Visual C++ 运行库」
+并给下载按钮，而不是甩一句看不懂的 WinError。
 
 ---
 
@@ -179,21 +223,23 @@ XSL 探测：先查注册表（Click-to-Run 和传统 MSI 两种键位都读）�
 ```
 pipeline/   probe(体检) gpu(显卡) extract(调MinerU) tomath(XSL公式)
             todocx(出Word) convert(串起来) sources(多源测速)
-            paths(落点集中管理) models(模型认领与下载) update(检查更新)
+            paths(落点集中管理 + 怎么跑 MinerU) models(模型认领与下载)
+            torchdep(GPU 运行库在不在、怎么装) update(检查更新)
             tex2mml.js(KaTeX 转 MathML) vendor/katex
 server/     FastAPI，只绑 127.0.0.1，端口系统分配
 app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源屏）
-runtime/    pandoc.exe + 许可证
-tools/      setup_env(装开发环境) build_release(组装发行版)
-tests/      208 条 Python + 67 条前端检查 + 四个真实数据验证脚本
+            icon.ico / icon_source.png（GitHub 头像做的图标）
+runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
+tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
+tests/      220 条 Python + 73 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 208 条，8 秒
-node tests\front_check.js                                   # 67 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 220 条，9 秒
+node tests\front_check.js                                   # 73 条，真渲染
 ```
 
 这两个都是离线的、秒级的。另有四个**依赖本机真实文件**的验证脚本，
@@ -209,7 +255,9 @@ tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 
 ```
 
 它们存在的理由：单元测试用的是脚本造的假数据，只能证明逻辑自洽，
-不能证明在真书上做对了。这个项目里已经栽过两次「测试全绿但实际没生效」。
+不能证明在真书上做对了。这个项目里已经栽过三次「测试全绿但实际没生效」，
+最近一次是 v0.0.1 发出去之后才发现**它在任何非开发机上都跑不了**
+（详见 `docs/RELEASE.md` 已知的坑里那条 pip launcher）。
 
 ### 发行版
 
@@ -217,9 +265,9 @@ tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 
 上传清单、不能破坏的硬约束。**发版前从头照着走一遍**，别凭记忆。
 
 ```
-tools\build_release.py --version v0.0.1                  组装 + 装依赖
-tools\build_release.py --version v0.0.1 --sfx            打成自解压 exe
-tools\build_release.py --version v0.0.1 --update-only    只打更新包
+.venv\Scripts\python.exe tools\build_release.py --version v0.0.1               组装 + 装依赖
+.venv\Scripts\python.exe tools\build_release.py --version v0.0.1 --sfx         打成自解压 exe
+.venv\Scripts\python.exe tools\build_release.py --version v0.0.1 --update-only 只打更新包
 ```
 
 ### 落点：全部在安装文件夹内
@@ -228,14 +276,33 @@ tools\build_release.py --version v0.0.1 --update-only    只打更新包
 
 | | 靠什么 |
 |---|---|
-| 模型 / 临时文件 / MinerU 配置 | `paths.child_env()` 的三个环境变量 |
+| 模型 / 临时文件 / MinerU 配置 / 设备模式 | `paths.child_env()` 的四个环境变量 |
 | Electron 缓存 | `app.setPath`，**必须在 app ready 之前调** |
 | 转好的 Word | 用户自己选（唯一的例外） |
+
+那四个环境变量：`MODELSCOPE_CACHE`、`HF_HOME`、`MINERU_TOOLS_CONFIG_JSON`
+（前三个管落点）、`MINERU_DEVICE_MODE=cuda`（管不许悄悄用 CPU）。
+
+日志落在 `logs/`：`model_download.log`、`torch_install.log`、`convert.log`。
+出问题让用户直接把文件发过来，比让他描述现象快得多——2026-09-02 那次
+就是靠界面给出的日志路径才定位到根因的。
 
 代价是不能装进 `C:\Program Files`，`paths.writable()` 在启动自检里拦这种情况。
 
 另外**不碰用户的全局 `~/mineru.json`**——那是 MinerU 的全局配置，用户机器上
 可能装着别的用 MinerU 的东西，我们通过 `MINERU_TOOLS_CONFIG_JSON` 指向自己那份。
+
+### 跑 MinerU 一律用「解释器 + `-m` 模块」
+
+```python
+paths.mineru_cmd()           # [python.exe, '-m', 'mineru.cli.client']
+paths.models_download_cmd()  # [python.exe, '-m', 'mineru.cli.models_download']
+```
+
+**绝不调 `runtime/python/Scripts/mineru*.exe`。** 那些是 pip 给
+console_scripts 生成的 launcher，尾部硬编码着生成它那一刻的 python.exe
+绝对路径——换台机器（或者换个解压位置）就找不到解释器。v0.0.1 就是栽在
+这上面：模型下载和转换全废，而开发机上永远是好的，因为包就是在那个路径下打的。
 
 ## 许可证
 
@@ -243,6 +310,7 @@ tools\build_release.py --version v0.0.1 --update-only    只打更新包
 |---|---|---|
 | MinerU | Apache 2.0 + 附加条款 | 商用免费（门槛月活 1 亿／月入 2000 万美元）；做在线服务须标注 |
 | Pandoc | GPL-2.0+ | 独立调用不传染；分发须附协议全文（见 `runtime/pandoc/COPYRIGHT.txt`） |
+| PyTorch | BSD-3-Clause | **不打包**，首次启动时从 pytorch.org 下到用户自己机器上 |
 | KaTeX | MIT | 见 `pipeline/vendor/katex/LICENSE` |
 | Node.js | MIT | 发行版里打包了 node.exe |
 | 微软 MML2OMML.XSL | 闭源 | 只读用户本机的，**不分发** |

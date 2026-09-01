@@ -165,7 +165,7 @@ class Test跑一次(unittest.TestCase):
     def _fake(self, lines, make_output=True, rc=0):
         self.seen_env = None
 
-        def fake(argv, on_line, env=None):
+        def fake(argv, on_line, env=None, stop_flag=None):
             self.seen_env = env
             for ln in lines:
                 on_line(ln)
@@ -258,7 +258,7 @@ class Test退出码不能不看(unittest.TestCase):
     def _spawn_rc(self, rc, lines=()):
         orig = extract._spawn
 
-        def fake(argv, on_line, env=None):
+        def fake(argv, on_line, env=None, stop_flag=None):
             for ln in lines:
                 on_line(ln)
             return rc
@@ -281,6 +281,112 @@ class Test退出码不能不看(unittest.TestCase):
     def test_退出码为零且有产物才算成功(self):
         self._spawn_rc(0, ['处理页面: 100%|##| 6/6'])
         rep = extract.run(self.pdf, self.out, mineru=['fake'])
+        self.assertTrue(rep['ok'], rep.get('error'))
+
+
+class Test停止要当场生效(unittest.TestCase):
+    r"""🔴 小蔡 2026-09-02 真机：「点击停止还没用，程序一共有几个停止，
+    都有用吗？」
+
+    当时转换的取消**只在两份 PDF 之间检查**：
+
+        for i, pdf in enumerate(pdf_paths):
+            if t['cancel']: return        ← 只有这一个检查点
+            convert.pdf_to_word(...)      ← 这一步几分钟，期间够不着
+
+    只转一份的话循环没有下一轮，那个检查点永远走不到 —— 用户点了完全
+    没反应，只能干等或者强杀软件。
+
+    当时不硬杀的理由（写在路由的 docstring 里）：「中途硬杀会留下半截
+    产物」。那个理由现在不成立了：退出码非零一律判失败、失败会把 pandoc
+    写出的 Word 删掉、中间产物本来就在 _tmp/ 里每次重来。
+
+    ⚠️ 这是同一个错误模式在本项目的**第三处**（models.download、
+       torchdep.install 是前两次）。三处的共同点：检查写在一个会阻塞
+       的读取循环里，而「半天没动静」恰恰是用户最想停的时候。
+       解法也统一：独立的 watch 线程 + taskkill /T。
+    """
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix='p2w_stop_')
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.pdf = os.path.join(self.work, 'x.pdf')
+        with io.open(self.pdf, 'wb') as f:
+            f.write(b'%PDF-1.4')
+        self.out = os.path.join(self.work, 'out')
+
+    def test_一份都还没转完就能停下来(self):
+        r"""关键点：**一份 PDF、没有「下一轮循环」**。
+        旧实现在这种情况下 100% 停不下来。"""
+        import subprocess
+        import threading
+        import time
+
+        class _Stuck(object):
+            """一个装死的 MinerU：不吐输出、也不退出。"""
+
+            def __init__(self):
+                self.pid = 0x7FFFFFFE
+                self.returncode = None
+                self._dead = threading.Event()
+                self.stdout = self
+
+            def read(self, n):
+                self._dead.wait(10)      # 真卡死时测试也不该挂在这
+                return b''
+
+            def close(self):
+                pass
+
+            def terminate(self):
+                self.returncode = 1
+                self._dead.set()
+
+            def wait(self):
+                self._dead.wait(10)
+                return self.returncode or 1
+
+        orig = subprocess.Popen
+        subprocess.Popen = lambda *a, **k: _Stuck()
+        self.addCleanup(lambda: setattr(subprocess, 'Popen', orig))
+
+        t0 = time.time()
+        rep = extract.run(self.pdf, self.out, mineru=['fake'],
+                          stop_flag=lambda: True)
+        used = time.time() - t0
+
+        self.assertTrue(rep.get('cancelled'), '停了却没标成「已取消」')
+        self.assertIn('已停止', rep['error'])
+        self.assertLess(used, 8,
+                        '点了停止还等了 %.1f 秒 —— 检查又被阻塞的读取挡住了'
+                        % used)
+
+    def test_没点停止就不许自己停(self):
+        import subprocess
+
+        class _Quick(object):
+            def __init__(self):
+                self.pid = 1
+                self.returncode = 0
+                self.stdout = io.BytesIO(b'Processing pages: 100%|##| 1/1\n')
+
+            def wait(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+        orig = subprocess.Popen
+        subprocess.Popen = lambda *a, **k: _Quick()
+        self.addCleanup(lambda: setattr(subprocess, 'Popen', orig))
+
+        d = os.path.join(self.out, 'x', 'hybrid_ocr')
+        os.makedirs(d)
+        with io.open(os.path.join(d, 'x.md'), 'w', encoding='utf-8') as f:
+            f.write('# x')
+        rep = extract.run(self.pdf, self.out, mineru=['fake'],
+                          stop_flag=lambda: False)
+        self.assertFalse(rep.get('cancelled'))
         self.assertTrue(rep['ok'], rep.get('error'))
 
 

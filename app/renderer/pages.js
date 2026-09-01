@@ -74,6 +74,55 @@ function gateKind(st) {
   return '';
 }
 
+// ── 下载面板 ───────────────────────────────────────────────────────────
+// 三处下载共用一个：装 GPU 运行库、下模型、下更新包。
+//
+// 小蔡 2026-09-02：「你在下载任何文件的时候，都应该显示一个进度条，
+// 并且要弹出背后的命令，这样下载的人才可以知道完整的进度，而不是黑盒。」
+//
+// 所以四样都要有：进度条、真实字节数、**跑的那条命令**、滚动的输出。
+// 只显示百分比不够 —— 总量常常是估的，百分比会冲到 103% 或停在 97%，
+// 而「已下 2.3 GB」永远是真的。
+function dlPanel(o) {
+  var got = o.got || 0, total = o.total || 0;
+  var pct = total ? Math.min(100, Math.round(100 * got / total)) : 0;
+  var lines = o.lines || [];
+  var h = '<div class="fill" style="justify-content:flex-start;gap:8px">'
+    + '<div style="font-size:13px;font-weight:600;align-self:center">'
+    + esc(o.title || '正在下载…') + (total ? '　' + pct + '%' : '') + '</div>'
+    + '<div style="width:86%;align-self:center">' + bar(got, total || 1) + '</div>'
+    + '<div class="f-dim" style="align-self:center">'
+    + (total ? '已下 ' + F.gb(got) + ' / 约 ' + F.gb(total)
+             : '已下 ' + F.gb(got))
+    + '</div>';
+  if (o.note) {
+    h += '<div class="f-dim" style="align-self:center;max-width:88%;'
+      + 'line-height:1.5">' + esc(o.note) + '</div>';
+  }
+  // 日志区：第一行是命令本身，后面是它的输出
+  h += '<div class="log" id="dllog">';
+  if (o.cmd) h += '<span class="l cmd">&gt; ' + esc(o.cmd) + '</span>';
+  for (var i = 0; i < lines.length; i++) {
+    h += '<span class="l">' + esc(lines[i]) + '</span>';
+  }
+  if (!o.cmd && !lines.length) {
+    h += '<span class="l">（还没有输出）</span>';
+  }
+  h += '</div>';
+  if (o.log) {
+    h += '<div class="f-dim mono ell" style="align-self:center;'
+      + 'max-width:92%;font-size:10px">完整日志：' + esc(o.log) + '</div>';
+  }
+  if (o.error) {
+    // 失败原因摆在日志下面、按钮上面 —— 用户的视线是从上往下的，
+    // 「出了什么事」要在「现在能做什么」之前。
+    h += '<div class="f-bad" style="align-self:center;max-width:92%;'
+      + 'line-height:1.6;text-align:left;font-size:12px">'
+      + esc(o.error) + '</div>';
+  }
+  return h + '</div>';
+}
+
 function gateView(st, kind) {
   var e = st.env || {};
 
@@ -142,29 +191,34 @@ function gateView(st, kind) {
     var busy = st.gpuLibBusy;
     var line = st.gpuLibLine || '';
     if (busy) {
-      return '<div class="fill">'
-        + '<div style="font-size:14px;font-weight:600">正在装 GPU 运行库…</div>'
-        + '<div class="f-dim" style="max-width:450px;line-height:1.6">'
-        + '要下约 2.5 GB，取决于网速，通常几分钟到十几分钟。'
-        + '装好会自己进主界面，这中间可以先去忙别的。</div>'
-        + (line ? '<div class="f-dim" style="max-width:450px;'
-                  + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-                  + esc(line) + '</div>' : '')
-        + '</div>';
+      var d = st.gpuLib || {};
+      return dlPanel({
+        title: '正在装 GPU 运行库',
+        got: d.got, total: d.total, cmd: d.cmd, lines: d.lines, log: d.log,
+        note: '要下约 2.8 GB，取决于网速。装好会自己进主界面，'
+            + '这中间可以先去忙别的。',
+      });
     }
     return '<div class="fill">'
       + '<div style="font-size:14px;font-weight:600">还差一个 GPU 运行库</div>'
       + '<div class="f-dim" style="max-width:460px;line-height:1.65;text-align:left">'
       + esc(cw)
       + '<br>这个软件只用显卡转换（不用 CPU 顶替，那样慢一倍还没人知道），'
-      + '所以要下一份能调用显卡的运行库，约 2.5 GB，装一次就够。'
+      + '所以要下一份能调用显卡的运行库，约 2.8 GB，装一次就够。'
       + '</div>'
       + (st.gpuLibError
          ? '<div class="f-dim" style="max-width:460px;color:#c0392b;'
-           + 'line-height:1.6">' + esc(st.gpuLibError) + '</div>'
+           + 'line-height:1.6;text-align:left">' + esc(st.gpuLibError) + '</div>'
          : '')
-      + '<div style="display:flex;gap:8px;margin-top:2px">'
-      + btn('installGpuLib', '现在就装', { cls: 'primary' })
+      + '<div style="display:flex;gap:8px;margin-top:2px;flex-wrap:wrap;'
+      + 'justify-content:center">'
+      + btn('installGpuLib', st.gpuLibError ? '再装一次' : '现在就装',
+            { cls: 'primary' })
+      // 装失败时才给这两个 —— 没失败的时候摆出来只会让人以为还得先干别的
+      + (st.gpuLibError && /Visual C\+\+|运行库/.test(st.gpuLibError)
+         ? btn('openVcRedist', '下载 Visual C++ 运行库') : '')
+      + (st.gpuLibError && /驱动/.test(st.gpuLibError)
+         ? btn('openDriver', '更新显卡驱动') : '')
       + btn('reload', '重新检查')
       + btn('quit', '退出') + '</div></div>';
   }
@@ -464,10 +518,28 @@ function mainRun(st) {
     if (cur) {
       return '<div class="it on">' + dot('#1d4ed8')
         + '<span class="grow ell">' + esc(name) + '</span>'
-        + '<span class="rt">' + esc(t.stage || '准备中')
-        + (t.stage_total ? ' ' + t.stage_cur + '/' + t.stage_total : '') + '</span>'
+        // 🔴 `cur > 0` 才显示数字和小进度条。
+        //    MinerU 有些阶段（「准备版面」这类）根本不吐中间进度，
+        //    一路 0 直到跳走 —— 显示一个永远不动的「0/11」加一条空条，
+        //    比什么都不显示更糟：用户会以为卡住了。
+        //    小蔡 2026-09-02 真机原话：「准备版面一直是 0 然后突然跳到
+        //    识别 2/11」，还问了句「这阶段真的有用吗」。
+        //    阶段名本身有用（知道在干什么），假的进度数字没用。
+        // 🔴 **不显示阶段内的 x/y 数字**，只显示阶段名和一条比例条。
+        //
+        //    MinerU 换阶段时总数会换单位：先按页（0→11），下一个阶段
+        //    按检测到的文本块（0→247）。用户看到「5/11」变成「5/247」，
+        //    第一反应是出 bug 了。小蔡 2026-09-02 原话：「刚刚文件本来是
+        //    5/11，现在是 5/247，我无语了」。
+        //
+        //    在这之前他还问过「准备版面一直是 0，这阶段真的有用吗」——
+        //    同一个东西绊了他两次。数字本身没错，是它压根不该给用户看：
+        //    单位在变、有些阶段不吐中间值，而用户真正要的是「还要多久」，
+        //    那个数在顶上单独显示。
+        + '<span class="rt">' + esc(t.stage || '准备中') + '</span>'
         + '<span style="width:56px;flex:none">'
-        + bar(t.stage_cur, t.stage_total || 1) + '</span></div>';
+        + (t.stage_cur > 0 ? bar(t.stage_cur, t.stage_total || 1) : '')
+        + '</span></div>';
     }
     return '<div class="it">' + dot('#d0d0d0')
       + '<span class="grow ell f-dim">' + esc(name) + '</span>'
@@ -477,16 +549,40 @@ function mainRun(st) {
   // ── 状态栏 ──────────────────────────────────────────────────────────
   var bot;
   if (!done) {
+    // 「停止只在当前这份转完之后生效」那句提示删了 —— 2026-09-02 起
+    // 停止是当场生效的（extract._spawn 里有 watch 线程杀进程树）。
+    // 留着一句过时的免责声明，比什么都不写更坏。
     bot = '<span>已用 ' + F.sec(t.elapsed) + '</span>'
-      + '<span class="grow f-dim ell">停止只在当前这份转完之后生效 ——'
-      + ' 中途硬停会留下半截文件</span>'
+      + '<span class="grow"></span>'
+      + btn('toggleLog', st.showLog ? '返回列表' : '日志')
       + btn('cancel', '停止');
   } else {
     bot = envLine(st)
       + '<span class="grow"></span>'
       + '<span>' + (badN ? ('成功 ' + okN + ' 份 · <span class="f-bad">失败 '
           + badN + ' 份</span>') : ('全部完成 ' + okN + ' 份'))
-      + ' · 用时 ' + F.sec(t.elapsed) + '</span>';
+      + ' · 用时 ' + F.sec(t.elapsed) + '</span>'
+      // 转完了也留一个入口 —— 有失败的时候，日志正是最该看的东西
+      + btn('toggleLog', st.showLog ? '返回列表' : '日志');
+  }
+
+  // 🔴 日志覆盖主区，但顶部（剩余时间 + 总进度条）留着。
+  //    620x440 太小，日志和文件表分屏的话两边都看不清；而整体进度
+  //    在顶上，看日志的时候不会「不知道跑到哪了」。
+  if (st.showLog) {
+    var lg = t.lines || [];
+    var main = '<div class="fill" style="justify-content:flex-start;gap:6px">'
+      + '<div class="log" id="dllog">'
+      + (lg.length
+          ? lg.map(function (x) { return '<span class="l">' + esc(x) + '</span>'; }).join('')
+          : '<span class="l">（还没有输出。MinerU 刚起来时会安静一阵子，'
+            + '模型加载要几十秒）</span>')
+      + '</div>'
+      + (t.log ? '<div class="f-dim mono ell" style="align-self:center;'
+                 + 'max-width:92%;font-size:10px">完整日志：' + esc(t.log)
+                 + '（含进度刷屏，这里只显示关键行）</div>' : '')
+      + '</div>';
+    return shell(top, main, bot);
   }
 
   return shell(top, rows || '<div class="fill"><div class="f-dim">没有要转的文件</div></div>', bot);
@@ -502,23 +598,34 @@ function pageModel(st) {
   // 原先排在「源列表为空」的 early return 之后，结果下载进行中却因为
   // 列表为空而显示「还没测速」，用户会以为下载没开始。
   var dl = st.dl;
-  if (dl && dl.running) {
+  // 失败了也要留在这一屏 —— 日志和错误原因都在面板里，
+  // 跳走等于把用户唯一能看懂的线索藏起来。
+  if (dl && (dl.running || dl.error)) {
     // 显示真实字节数而不只是百分比：总量 4.6 GB 是估的，百分比可能
     // 冲到 103% 或停在 97%，但「已下 2.3 GB」永远是真的。
-    var pct = dl.total ? Math.min(100, Math.round(100 * dl.got / dl.total)) : 0;
+    // phase 分两段：先装 GPU 运行库，再下模型。标题要说清楚现在在等哪一件，
+    // 不然用户看着一个从头开始的进度条会以为下载重来了。
+    var isLib = dl.phase === 'gpulib';
     return shell(top,
-      '<div class="fill">'
-      + '<div style="font-size:13px;font-weight:600">正在下载模型…'
-      + (dl.total ? '　' + pct + '%' : '') + '</div>'
-      + '<div style="width:70%">' + bar(dl.got, dl.total || 1) + '</div>'
-      + '<div class="f-dim">已下 ' + F.gb(dl.got) + ' / 约 ' + F.gb(dl.total) + '</div>'
-      + (dl.line ? '<div class="f-dim mono ell" style="max-width:80%;font-size:11px">'
-          + esc(dl.line) + '</div>' : '')
-      + '<div class="f-dim">下载中断了也不要紧，重开软件会接着上次的位置继续。</div>'
-      + '</div>',
-      '<span class="f-dim">下载完成后自动进入主界面</span>'
-      + '<span class="grow"></span>'
-      + btn('cancelDownload', '停止下载'));
+      dlPanel({
+        title: dl.error
+          ? (isLib ? 'GPU 运行库没装成' : '模型没下成')
+          : (isLib ? '正在装 GPU 运行库' : '正在下载模型'),
+        got: dl.got, total: dl.total, cmd: dl.cmd, lines: dl.lines,
+        log: dl.log, error: dl.error,
+        note: dl.error ? '' : (isLib
+          ? '这是第一步，约 2.8 GB。装完接着下识别模型。'
+          : '下载中断了也不要紧，重开软件会接着上次的位置继续。'),
+      }),
+      dl.error
+        ? ('<span class="f-dim">上面是完整的输出，出错的原因通常在最后几行'
+           + '</span><span class="grow"></span>'
+           + btn('startDownload', '再试一次', { cls: 'primary' })
+           + btn('probeSources', '换个源'))
+        : ('<span class="f-dim">'
+           + (isLib ? '第 1 步，共 2 步' : '第 2 步，共 2 步')
+           + '</span><span class="grow"></span>'
+           + btn('cancelDownload', '停止')));
   }
 
   if (st.srcLoading) {

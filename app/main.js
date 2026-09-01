@@ -246,6 +246,12 @@ const URL_WHITELIST = [
   'https://www.microsoft.com/',
   'https://www.microsoftstore.com.cn/',
   'https://nodejs.org/',
+  // Visual C++ 运行库。torch 的 c10.dll 依赖它，缺了整个 torch 都
+  // import 不了（Windows 只报一句「动态链接库初始化例程失败」）。
+  // aka.ms 是微软自己的短链域名，会跳到 download.visualstudio.microsoft.com。
+  'https://aka.ms/',
+  'https://www.nvidia.com/',        // 驱动太旧时引导去更新
+  'https://www.nvidia.cn/',
 ];
 
 // 更新装好之后重启。relaunch 排一个新实例，quit 关掉当前这个 ——

@@ -136,6 +136,68 @@ class Test版本比较看方向(unittest.TestCase):
         self.assertFalse(r['has_update'])
         self.assertEqual(r['error'], '', '同一个版本却报了错误：%s' % r['error'])
 
+    def test_API全断时退回网页拿版本号(self):
+        r"""小蔡 2026-09-02 在外面：「检查更新它现在疯狂显示，连不上 github」。
+
+        当时查版本只有 api.github.com 直连一条路 —— 那条断了整个功能就废。
+        重测发现镜像的行为会变（09-01 gh-proxy 代理 api 是 403，
+        09-02 反而能用，而 ghfast 从能用变成了 403），所以绑死一条路是脆的。
+
+        最后一道退路是网页版 `/releases/latest` 的 302：只能拿到版本号，
+        没有 asset 和校验值 —— 够告诉用户「有新版本，去页面手动下」，
+        装是装不了的。
+        """
+        self._local('v1.0.0', '')
+
+        def boom(url):
+            raise Exception('timed out')
+        update._api = boom
+        orig_web = update._latest_tag_via_web
+        update._latest_tag_via_web = lambda: 'v1.2.0'
+        self.addCleanup(setattr, update, '_latest_tag_via_web', orig_web)
+
+        r = update.check()
+        self.assertTrue(r['ok'], '有退路却报成彻底失败')
+        self.assertEqual(r['latest'], 'v1.2.0')
+        self.assertIn('手动下载', r['error'], '没告诉用户接下来怎么办')
+        self.assertFalse(r['has_update'],
+                         '没有校验值却让用户去点自动更新')
+
+    def test_API全断且本地已是最新时别吓人(self):
+        self._local('v1.2.0', '')
+
+        def boom(url):
+            raise Exception('timed out')
+        update._api = boom
+        orig_web = update._latest_tag_via_web
+        update._latest_tag_via_web = lambda: 'v1.2.0'
+        self.addCleanup(setattr, update, '_latest_tag_via_web', orig_web)
+
+        r = update.check()
+        self.assertTrue(r['ok'])
+        self.assertIn('已经是最新', r['error'])
+
+    def test_查版本会依次试镜像(self):
+        r"""钉住「不许只走一条路」。"""
+        tried = []
+
+        real_open = update.urllib.request.urlopen
+
+        def fake_open(req, timeout=None):
+            tried.append(req.full_url)
+            raise Exception('boom')
+
+        update.urllib.request.urlopen = fake_open
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real_open)
+        try:
+            update._api('https://api.github.com/x')
+        except Exception:
+            pass
+        self.assertGreater(len(tried), 1,
+                           '只试了一条路：%s' % tried)
+        self.assertTrue(any('gh-proxy' in u or 'ghfast' in u for u in tried),
+                        '没试镜像：%s' % tried)
+
     def test_有更新但没附更新包时说清楚(self):
         self._local('v1.0.0', '2026-09-01T00:00:00Z')
         self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z', assets=[]))
@@ -166,6 +228,11 @@ class Test版本比较看方向(unittest.TestCase):
         def boom(url):
             raise Exception('timed out')
         update._api = boom
+        # 🔴 网页退路也要挡掉 —— 不挡的话这条测试会真的去连 github，
+        #    单元测试打真网络等于把 CI 绑在别人的服务器上。
+        orig_web = update._latest_tag_via_web
+        update._latest_tag_via_web = lambda: ''
+        self.addCleanup(setattr, update, '_latest_tag_via_web', orig_web)
         r = update.check()
         self.assertFalse(r['ok'])
         self.assertIn('连不上 GitHub', r['error'])

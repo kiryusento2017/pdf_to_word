@@ -14,9 +14,9 @@ r"""检查更新 / 下载更新包。
 torch 4.2 GB、模型 4.6 GB 都不动。改的部分只占万分之一，
 所以绝不整包推。
 
-## 为什么查版本和下文件走两条不同的路
+## 查版本要多试几条路
 
-2026-09-01 实测（本机）：
+2026-09-01 实测：
 
     raw 直连          失败    SSL 被切断
     raw + gh-proxy    200     4.54 秒
@@ -24,8 +24,19 @@ torch 4.2 GB、模型 4.6 GB 都不动。改的部分只占万分之一，
     api 直连          200     1.14 秒
     api + gh-proxy    403     镜像明确拒绝代理 API
 
-所以：**查版本走 api.github.com 直连**（镜像会 403），
-**下文件走镜像**（直连会被切断）。
+据此当时把查版本写死成「api.github.com 直连」。**2026-09-02 这个结论
+翻车了** —— 小蔡在外面测试时一直「连不上 github」，重测发现：
+
+    api 直连                    200  1.6s
+    api + gh-proxy              200  1.8s   ← 09-01 还是 403，现在能用
+    api + ghfast                403         ← 反过来了
+    api + ghproxy.net           SSL 证书错误
+    api + moeyy                 SSL EOF
+    网页 /releases/latest 的 302  直连和 ghfast 都拿得到 tag
+
+**镜像的行为会变，而且是双向的变。** 所以查版本也依次试多条路，
+谁先通用谁；全都不通时退到网页版的 302 —— 那条只能拿到版本号
+（没有 asset 列表和校验值），只够告诉用户「有新版本，去页面手动下」。
 
 ## 镜像不可信，所以并发测速
 
@@ -38,6 +49,7 @@ torch 4.2 GB、模型 4.6 GB 都不动。改的部分只占万分之一，
 import io
 import json
 import os
+import urllib.error
 import urllib.request
 
 import paths
@@ -86,10 +98,69 @@ def write_version(tag, published_at=''):
 
 
 # ── 查远端 ──────────────────────────────────────────────────────────────
+# 查版本依次试这些前缀，谁先通用谁。空串 = 直连。
+# 顺序按 2026-09-02 的实测排：直连最快，gh-proxy 次之，剩下的当兜底。
+API_PREFIXES = ['', 'https://gh-proxy.com/', 'https://ghfast.top/',
+                'https://ghproxy.net/', 'https://github.moeyy.xyz/']
+
+# 单条路的超时。比原来的 10 秒短 —— 要试好几条，每条都等 10 秒的话
+# 用户要盯着转圈将近一分钟。
+API_TRY_TIMEOUT = 6
+
+
 def _api(url):
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=API_TIMEOUT) as r:
-        return json.loads(r.read().decode('utf-8'))
+    r"""查 GitHub API。**依次试直连和各镜像**，第一个成功的就用。
+
+    绑死一条路的下场：2026-09-02 小蔡在外面一直「连不上 github」，
+    而那条路（api 直连）在开发机上一直是通的 —— 又一个「在我这儿好好的」。
+
+    全都失败时抛最后一个异常，让上层报出人话。
+    """
+    last = None
+    for pre in API_PREFIXES:
+        try:
+            req = urllib.request.Request(pre + url if pre else url, headers=UA)
+            with urllib.request.urlopen(req, timeout=API_TRY_TIMEOUT) as r:
+                return json.loads(r.read().decode('utf-8'))
+        except Exception as e:
+            last = e
+            # 404 是「仓库还没发过版本」，换条路也是一样的结果，不用再试
+            if '404' in str(e):
+                raise
+            continue
+    raise last if last else RuntimeError('查不到版本')
+
+
+def _latest_tag_via_web():
+    r"""退路：从网页版 `/releases/latest` 的 302 里抠出版本号。
+
+    走的是 github.com（不是 api.github.com），镜像代理得了。
+    但只能拿到 tag —— 没有 asset 列表、没有校验值，所以**只够告诉用户
+    「有新版本」**，装不了。这是最后一道，聊胜于无。
+    """
+    import re as _re
+    web = 'https://github.com/%s/%s/releases/latest' % (OWNER, REPO)
+
+    class _NoRedir(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+
+    for pre in ('', 'https://ghfast.top/', 'https://gh-proxy.com/'):
+        try:
+            op = urllib.request.build_opener(_NoRedir)
+            req = urllib.request.Request(pre + web if pre else web, headers=UA)
+            loc = ''
+            try:
+                r = op.open(req, timeout=API_TRY_TIMEOUT)
+                loc = r.headers.get('Location', '') or ''
+            except urllib.error.HTTPError as e:
+                loc = e.headers.get('Location', '') or ''
+            m = _re.search(r'/releases/tag/([^/?#]+)', loc)
+            if m:
+                return m.group(1)
+        except Exception:
+            continue
+    return ''
 
 
 def _ver(tag):
@@ -168,7 +239,25 @@ def check():
             out['ok'] = True
             out['error'] = '仓库里还没有发布任何版本'
             return out
-        out['error'] = '连不上 GitHub：%s' % str(e)[:120]
+
+        # API 那几条路全断了 —— 再试一次网页版的 302，至少能知道
+        # 有没有新版本。拿不到 asset 和校验值，所以只能让用户手动去下。
+        tag = _latest_tag_via_web()
+        if tag:
+            out['ok'] = True
+            out['latest'] = tag
+            lv, rv = _ver(loc['tag']), _ver(tag)
+            newer = (lv and rv and rv > lv) or (not lv and tag != loc['tag'])
+            out['error'] = (
+                ('仓库里最新是 %s，比你现在这个新，但当前网络下载不了 —— '
+                 '到项目的 Release 页面手动下载安装包。' % tag) if newer
+                else ('已经是最新版本（%s）。'
+                      '（GitHub 的接口连不上，这个结果是从网页拿的）' % tag))
+            return out
+
+        out['error'] = ('连不上 GitHub（直连和几个镜像都试过了）。'
+                        '换个网络再试，或者到项目的 Release 页面手动下载。'
+                        '原因：%s' % str(e)[:100])
         return out
 
     out['ok'] = True
