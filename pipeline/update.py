@@ -379,8 +379,15 @@ def probe_mirrors(asset_url, seconds=2.0, size=0):
        对 0.4 MB 不成立。所以体积够小就按固定顺序试，不测。
     """
     if size and size < PROBE_WORTH_BYTES:
-        return [{'id': m['id'], 'name': m['name'], 'ok': True,
-                 'speed': 0, 'why': '包太小，没测速'} for m in GH_MIRRORS]
+        # 🔴 字段必须跟 sources.probe_all 给的那套一样（bps / error）。
+        #    这个列表会直接喂给 sources.pick_best，它读的是 `bps` ——
+        #    原来这里给的是 ok / speed / why，于是**点更新必崩**：
+        #    KeyError: 'bps'，跟网络毫无关系。
+        #
+        #    bps=0 会让 pick_best 返回 None，正好落到调用处的
+        #    `rows[0]` 兜底 —— 按固定顺序试第一个，正是这条捷径要的。
+        return [{'id': m['id'], 'name': m['name'], 'bps': 0,
+                 'error': '', 'why': '包太小，没测速'} for m in GH_MIRRORS]
     cand = [{'id': m['id'], 'name': m['name'], 'env': {},
              'probe': _mirrored(asset_url, m['prefix'])} for m in GH_MIRRORS]
     return sources.probe_all(cand, seconds=seconds)

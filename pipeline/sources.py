@@ -135,7 +135,11 @@ def eta_words(total_bytes, bps):
 def pick_best(rows):
     """选最快的那个。全都连不上时返回 None，由调用方决定怎么说。"""
     for r in rows:
-        if r['bps'] > 0:
+        # .get 而不是 [] —— 这个函数收的 dict 来自好几个地方
+        # （probe_all、update.probe_mirrors 的小包捷径、以后可能还有别的），
+        # 少一个字段就整个更新功能崩掉，代价跟收益完全不成比例。
+        # 2026-09-02 就是这么炸的：update 那边给的是 speed 不是 bps。
+        if r.get('bps', 0) > 0:
             return r
     return None
 

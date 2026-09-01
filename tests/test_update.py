@@ -657,5 +657,30 @@ class Test下载必须校验(unittest.TestCase):
         self.assertIn('地址', err)
 
 
+class 测速结果的字段契约(unittest.TestCase):
+    r"""probe_mirrors 的返回值要能直接喂给 sources.pick_best。
+
+    2026-09-02：小包捷径返回的是 ok/speed/why，而 pick_best 读 bps，
+    于是**任何人点一键更新都崩**（KeyError: 'bps'），跟网络无关。
+    端到端真跑一次才发现的 —— 单看两边代码都挑不出毛病。
+    """
+
+    def test_小包捷径的字段能喂给pick_best(self):
+        rows = update.probe_mirrors('https://example.com/x.zip', size=1024)
+        self.assertTrue(rows, '至少该给一个镜像')
+        for r in rows:
+            self.assertIn('bps', r, '少了 bps，pick_best 会 KeyError')
+            self.assertIn('id', r)
+            self.assertIn('name', r)
+        # 真喂一次，不是只看字段在不在
+        best = sources.pick_best(rows) or rows[0]
+        self.assertIn('id', best)
+
+    def test_大包才测速(self):
+        r"""小包不值当测 —— 五个镜像各下 2 秒，等于先下五遍再下第六遍。"""
+        small = update.probe_mirrors('https://example.com/x.zip', size=1024)
+        self.assertTrue(all(r.get('why') for r in small), '小包应该走捷径')
+
+
 if __name__ == '__main__':
     unittest.main()
