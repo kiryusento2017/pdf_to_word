@@ -51,9 +51,14 @@ function startServer() {
   return new Promise((resolve, reject) => {
     py = spawn(PYTHON, [SERVER], { cwd: ROOT });
     let buf = '';
+    // 超时给到两分钟：首次启动要 import torch / mineru，机械盘或者
+    // 网吧那种机器上二十秒根本不够 —— 超时了软件就直接打不开，
+    // 而它其实只是还在加载。
+    // 等这么久不会掩盖真故障：进程要是崩了，下面的 'exit' 会立刻
+    // reject，不用等到超时。
     const timer = setTimeout(() => {
-      reject(new Error('后台服务 20 秒没起来。最后的输出：\n' + buf.slice(-600)));
-    }, 20000);
+      reject(new Error('后台服务两分钟没起来。最后的输出：\n' + buf.slice(-600)));
+    }, 120000);
 
     py.stdout.on('data', (d) => {
       buf += d.toString();
@@ -97,6 +102,29 @@ function relocateUserData() {
 
 relocateUserData();
 
+// 🔴 只允许开一份。开两份的后果，按严重度排：
+//
+//   1. 两个 MinerU 同时吃 GPU → 8 GB 的卡直接 OOM，两边都失败
+//   2. 工作目录是写死的 _tmp/extract，两边转同名 PDF 时产物互相覆盖，
+//      find_output 可能读到另一份正在写的半成品 → **静默拿到错内容**
+//   3. 同时下模型 → 两个下载器写同一个 models/，互相破坏那 4.6 GB
+//   4. 两份 Electron + 两份 Python + 两份 torch 常驻内存
+//
+// 而触发它只需要手快双击两下。原来没有任何提示，就是安静地又开一个窗口。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  // 第二次点开时，把已经开着的那个窗口提到前面 —— 用户要的是「打开软件」，
+  // 给他看到窗口就是对的响应，静悄悄什么都不发生反而像是点坏了。
+  app.on('second-instance', () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+  });
+}
+
 function createWindow() {
   // 小工具的尺寸，参照 Geek Uninstaller 那一类。620 宽刚好放得下
   // 「文件名 + 无文字层提示 + 页数」三列，440 高能露出 15 行左右。
@@ -108,6 +136,11 @@ function createWindow() {
     minHeight: 300,
     backgroundColor: '#ffffff',   // 跟页面底色一致，开窗时不白闪
     title: 'PDF 转 Word',
+    // 图标：终末诗篇的手写落款。ico 里分档放了不同内容 ——
+    // 16/24/32 是单字「终」，48 以上才是四个字：四个字缩到 16px
+    // 每字只剩 8x8 像素，糊成一团灰，认不出来。
+    // 底色是白色圆角：源图是全透明底 + 黑墨迹，在深色任务栏上等于隐形。
+    icon: path.join(__dirname, 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -134,10 +167,32 @@ app.whenReady().then(async () => {
   });
 });
 
+// 🔴 kill(py) 只杀 Python 本身，**MinerU 是它的子进程** —— Python 死了
+//    MinerU 变成孤儿继续跑，用户关掉软件之后它还在后台吃着 GPU 直到转完。
+//    Windows 上要 taskkill /T（连整棵进程树）才能真正收干净。
+//    /F 是强杀：这时候窗口已经关了，没有「优雅退出」可谈，
+//    留着一个吃 4 GB 显存的孤儿进程比丢掉半个转换产物糟得多。
+function killTree(proc) {
+  if (!proc || proc.killed) return;
+  try {
+    if (process.platform === 'win32' && proc.pid) {
+      require('child_process').spawnSync(
+        'taskkill', ['/PID', String(proc.pid), '/T', '/F'],
+        { stdio: 'ignore', windowsHide: true });
+    } else {
+      proc.kill();
+    }
+  } catch (e) { /* 已经没了 */ }
+  try { proc.kill(); } catch (e) { /* 同上 */ }
+}
+
 app.on('window-all-closed', () => {
-  if (py) { try { py.kill(); } catch (e) { /* 已经没了 */ } }
+  killTree(py);
   app.quit();
 });
+
+// 进程被外面强制结束时也收一次 —— 任务管理器结束进程、Ctrl+C 之类。
+app.on('before-quit', () => { killTree(py); });
 
 // ── 渲染层要的系统能力 ────────────────────────────────────────────────
 ipcMain.handle('get-port', () => apiPort);

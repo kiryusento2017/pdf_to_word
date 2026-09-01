@@ -32,7 +32,8 @@ from pydantic import BaseModel                        # noqa: E402
 import convert                                        # noqa: E402
 import gpu                                            # noqa: E402
 import models                                         # noqa: E402
-import paths                                          # noqa: E402
+import paths
+import torchdep                                          # noqa: E402
 import probe                                          # noqa: E402
 import sources                                      # noqa: E402
 import todocx                                         # noqa: E402
@@ -66,6 +67,11 @@ def env():
                     'why': _formula_why(bool(xsl), node_ok)},
         'pandoc': {'ok': todocx.pandoc_available(), 'path': todocx.PANDOC},
         'mineru': {'ok': bool(_find_mineru()), 'path': _find_mineru() or ''},
+        # GPU 运行库和「有没有显卡」是两件独立的事，报错要分得清：
+        # 装的是 CPU 版 torch → 下一份 GPU 版就行；
+        # 没有 N 卡 → 换台机器。混成一句「GPU 不可用」谁也不知道该干嘛。
+        'cuda_torch': {'ok': torchdep.ready(), 'why': torchdep.why(),
+                       'version': torchdep.info().get('version', '')},
         # 模型和可写性 —— 首启要据此决定是拦住、还是先去下模型
         'models': {'ok': models.ready(), 'dir': models.where() or paths.MODELS,
                    'bytes': paths.models_size()},
@@ -92,17 +98,22 @@ def _formula_why(xsl_ok, node_ok):
 
 
 def _find_mineru():
-    r"""找 MinerU。发行版找 runtime/，开发环境找 .venv/Scripts/。
+    r"""MinerU 能不能跑，能的话返回运行它的命令前缀（list）；不能返回空。
 
     2026-08-31 之前这里有一条退路：找不到就用工作台的那份。
     环境独立之后撤掉了 —— 留着的话，别人机器上装漏了 MinerU 会静默失败，
     而在我这台机器上永远测不出来（因为工作台就在隔壁目录）。
     这种「只在开发机上能跑」的坑，宁可现在红。
 
-    2026-09-01 改走 paths.find_exe：路径不再写死在 .venv 上，
-    因为发行版里没有 .venv。
+    🔴 2026-09-02 改：判据从「mineru.exe 这个文件在不在」换成
+       「这个解释器找不找得到 mineru 这个包」。
+
+       旧判据在发行版上是**假绿**：文件确实在，自检一路放行，
+       而那个 exe 是 pip 生成的 launcher，尾部硬编码着打包机器上的
+       python.exe 路径，在别人机器上根本起不来。网吧实测的
+       「测速正常、下载一直失败」就是它 —— 详见 paths.py 的说明。
     """
-    return paths.find_exe('mineru')
+    return paths.mineru_cmd() if paths.mineru_available() else []
 
 
 # ── 下载源（B35：点下载时并发实测，不存历史成绩，不用 ping 判优）────────
@@ -214,7 +225,11 @@ async def update_download_status():
 # 单例：一台机器同时只可能下一次。存内存里就够 —— 软件关掉重开会重新
 # 判断模型在不在，没必要持久化一个「上次下到一半」的状态。
 _DL = {'state': 'idle', 'got': 0, 'total': models.TOTAL_BYTES,
-       'error': '', 'line': '', 'cancel': False}
+       'error': '', 'line': '', 'cancel': False,
+       # 'gpulib'（装 GPU 运行库）/ 'models'（下模型）/ ''（没在跑）——
+       # 界面靠它说清楚现在在等什么，不然用户看着一个不动的进度条
+       # 不知道是卡住了还是在装别的东西
+       'phase': ''}
 
 
 class DownloadReq(BaseModel):
@@ -234,11 +249,33 @@ def _dl_work(source):
         with _LOCK:
             return _DL['cancel']
 
+    # 🔴 先装 GPU 运行库，再下模型。
+    #
+    #    小蔡 2026-09-02 定「只用 GPU」，而发行版里**不带** CUDA 版 torch
+    #    （它解压后 4.2 GB，打进安装包会让包从 356 MB 涨到 1.5~2 GB，
+    #      逼近 GitHub 单文件 2 GiB 上限，没显卡的人还得跟着下）。
+    #    所以放在这里按需装 —— 反正首启本来就要下 4.6 GB 模型，
+    #    两件事合成一个流程，用户只等一次。
+    #
+    #    顺序不能反：模型下完了却发现 torch 是 CPU 版，等于白等半小时。
+    if not torchdep.ready():
+        with _LOCK:
+            _DL['phase'] = 'gpulib'
+            _DL['line'] = '正在装 GPU 运行库（约 2.5 GB）…'
+        ok, err = torchdep.install(on_log=on_log, stop_flag=stopped)
+        if not ok:
+            with _LOCK:
+                _DL.update({'state': 'error', 'error': err, 'phase': ''})
+            return
+
+    with _LOCK:
+        _DL['phase'] = 'models'
     ok, err = models.download(source, on_progress=on_prog, on_log=on_log,
                               stop_flag=stopped)
     with _LOCK:
         _DL['state'] = 'done' if ok else 'error'
         _DL['error'] = err
+        _DL['phase'] = ''
 
 
 @app.post('/api/models/download')
@@ -258,6 +295,47 @@ async def download_status():
     with _LOCK:
         d = dict(_DL)
     d['ready'] = models.ready()
+    return d
+
+
+def _gpulib_work():
+    def on_log(line):
+        with _LOCK:
+            _DL['line'] = line[-200:]
+
+    def stopped():
+        with _LOCK:
+            return _DL['cancel']
+
+    ok, err = torchdep.install(on_log=on_log, stop_flag=stopped)
+    with _LOCK:
+        _DL['state'] = 'done' if ok else 'error'
+        _DL['error'] = err
+        _DL['phase'] = ''
+
+
+@app.post('/api/gpulib/install')
+async def install_gpulib():
+    r"""只装 GPU 运行库，不下模型。
+
+    给模型已经有了、但 torch 还是 CPU 版的人用 —— 典型是从 v0.0.1
+    更新上来的老用户：更新包只有 0.4 MB，换不动那 4 GB 的运行库。
+    """
+    with _LOCK:
+        if _DL['state'] == 'running':
+            return {'ok': True, 'already': True}
+        _DL.update({'state': 'running', 'got': 0, 'error': '',
+                    'line': '', 'cancel': False, 'phase': 'gpulib'})
+    threading.Thread(target=_gpulib_work, daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/gpulib/install')
+async def gpulib_status():
+    with _LOCK:
+        d = dict(_DL)
+    d['ready'] = torchdep.ready()
+    d['why'] = torchdep.why()
     return d
 
 

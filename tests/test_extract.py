@@ -14,6 +14,7 @@ import io
 import os
 import shutil
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -227,6 +228,60 @@ class Test跑一次(unittest.TestCase):
         r = extract.run(self.pdf, self.out, mineru=os.path.join(WORK, '没有.exe'))
         self.assertFalse(r['ok'])
         self.assertIn('找不到', r['error'])
+
+
+class Test退出码不能不看(unittest.TestCase):
+    r"""🔴 原来的判据是「找不找得到 .md」，退出码 rc 只在**没有产物**时
+    才出现在错误信息里露个脸。
+
+    后果：MinerU 处理 10 页，第 7 页崩了（OOM / CUDA 错），前 6 页已经
+    写进 .md —— 找得到产物 → 判成功 → 老师拿到一份**只有前 6 页**的 Word，
+    而软件说「转好了」。少掉的四页没有任何地方会发现。
+
+    转换这件事，「少了几页」比「失败」严重得多：失败会重来，
+    残缺会被当成成品直接发给学生。
+    """
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix='p2w_rc_')
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.pdf = os.path.join(self.work, 'x.pdf')
+        with io.open(self.pdf, 'wb') as f:
+            f.write(b'%PDF-1.4 fake')
+        self.out = os.path.join(self.work, 'out')
+        # 造一份「产物在，但进程是崩掉的」的现场
+        auto = os.path.join(self.out, 'x', 'hybrid_ocr')
+        os.makedirs(auto)
+        with io.open(os.path.join(auto, 'x.md'), 'w', encoding='utf-8') as f:
+            f.write('# 只转了前 6 页就崩了\n')
+
+    def _spawn_rc(self, rc, lines=()):
+        orig = extract._spawn
+
+        def fake(argv, on_line, env=None):
+            for ln in lines:
+                on_line(ln)
+            return rc
+        extract._spawn = fake
+        self.addCleanup(lambda: setattr(extract, '_spawn', orig))
+
+    def test_有产物但退出码非零要判失败(self):
+        self._spawn_rc(1, ['torch.cuda.OutOfMemoryError: CUDA out of memory'])
+        rep = extract.run(self.pdf, self.out, mineru=['fake'])
+        self.assertFalse(rep['ok'],
+                         '进程崩了却判成功 —— 用户会拿到一份残缺的 Word')
+        self.assertIn('1', rep['error'], '没说退出码是多少')
+
+    def test_失败信息里要带上最后几行输出(self):
+        self._spawn_rc(1, ['torch.cuda.OutOfMemoryError: CUDA out of memory'])
+        rep = extract.run(self.pdf, self.out, mineru=['fake'])
+        self.assertIn('OutOfMemory', rep['error'] + rep['tail'],
+                      '没把原因带出来，只说「失败」谁也查不了')
+
+    def test_退出码为零且有产物才算成功(self):
+        self._spawn_rc(0, ['处理页面: 100%|##| 6/6'])
+        rep = extract.run(self.pdf, self.out, mineru=['fake'])
+        self.assertTrue(rep['ok'], rep.get('error'))
 
 
 if __name__ == '__main__':

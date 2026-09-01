@@ -155,12 +155,16 @@ def where():
 TOTAL_BYTES = int(4.6 * 1024 * 1024 * 1024)
 
 
-def download_exe():
-    r"""MinerU 自带的模型下载器。找不到返回空串。
+def download_cmd():
+    r"""跑 MinerU 模型下载器的命令前缀。
 
-    走 paths.find_exe —— 发行版里没有 .venv，路径不能写死。
+    🔴 **不用 `Scripts/mineru-models-download.exe`**。那个 exe 是 pip
+       生成的 launcher，尾部硬编码了打包机器上的 python.exe 绝对路径，
+       换台机器就找不到解释器 —— 2026-09-02 网吧实测就是栽在这儿：
+       测速正常（走我们自己的 Python 代码），下载一直失败（走 launcher）。
+       详见 paths.py 里那段说明。
     """
-    return paths.find_exe('mineru-models-download')
+    return paths.models_download_cmd()
 
 
 def download(source='modelscope', on_progress=None, on_log=None,
@@ -179,9 +183,9 @@ def download(source='modelscope', on_progress=None, on_log=None,
 
     stop_flag: 一个可调用对象，返回 True 表示用户要求中止。
     """
-    exe = download_exe()
-    if not exe:
-        return False, '找不到 mineru-models-download，安装环境不完整'
+    if not paths.mineru_available():
+        return False, '这个 Python 环境里没有 MinerU，安装环境不完整'
+    cmd = download_cmd()
 
     # 🔴 起下载器之前先把配置文件建出来。
     #
@@ -208,11 +212,50 @@ def download(source='modelscope', on_progress=None, on_log=None,
     target = paths.ensure(paths.MODELS)
     env = paths.child_env({'MINERU_MODEL_SOURCE': source} if source else None)
 
+    # 🔴 下载器说了什么，必须留下来。
+    #    2026-09-02 网吧实测：测速正常、下载一直失败，而这边只有一句
+    #    「多半是网络断了」—— 那句话是猜的，真实原因（磁盘满？SSL？
+    #    代理？权限？）被丢得一干二净，隔着几百公里没法查。
+    #    日志落在安装目录内的 logs/，符合「删文件夹 = 卸载干净」。
+    log_path = os.path.join(paths.ensure(paths.LOGS), 'model_download.log')
+    try:
+        log_fp = io.open(log_path, 'w', encoding='utf-8', errors='replace')
+        log_fp.write('# %s\n' % ' '.join(cmd + ['-s', source or 'modelscope',
+                                                  '-m', 'all']))
+        log_fp.write('# 目标: %s\n\n' % target)
+    except Exception:
+        log_fp = None
+    tail = []                      # 最后几行，失败时拼进错误信息
+
     stop_watch = threading.Event()
+    proc_box = []          # watch 线程通过它拿到进程对象
+    killed = []            # 记一下「是用户主动停的」
+
+    def kill_tree(p):
+        """连子孙一起杀。下载器自己不起子进程，但 /T 不会有坏处。"""
+        try:
+            subprocess.run(['taskkill', '/PID', str(p.pid), '/T', '/F'],
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        try:
+            p.terminate()
+        except Exception:
+            pass
 
     def watch():
-        """每秒报一次已下多少。"""
+        """每秒报一次已下多少，顺便看用户是不是要停。
+
+        🔴 停止检查放在这里，不放主循环 —— 主循环阻塞在
+           `p.stdout.read()` 上，下载器不吐东西时根本走不到检查那行，
+           而「卡住不动」正是用户最想点停止的时候。
+        """
         while not stop_watch.is_set():
+            if stop_flag and stop_flag() and proc_box:
+                killed.append(True)
+                kill_tree(proc_box[0])
+                return
             try:
                 got = 0
                 for dp, _dn, fns in os.walk(target):
@@ -231,14 +274,12 @@ def download(source='modelscope', on_progress=None, on_log=None,
     t.start()
     try:
         p = subprocess.Popen(
-            [exe, '-s', source or 'modelscope', '-m', 'all'],
+            cmd + ['-s', source or 'modelscope', '-m', 'all'],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=env, cwd=paths.ROOT)
+        proc_box.append(p)
         buf = b''
         while True:
-            if stop_flag and stop_flag():
-                p.terminate()
-                return False, '已取消'
             chunk = p.stdout.read(256)
             if not chunk:
                 break
@@ -252,18 +293,59 @@ def download(source='modelscope', on_progress=None, on_log=None,
                     break
                 line = buf[:i].decode('utf-8', 'replace').strip()
                 buf = buf[i + 1:]
-                if line and on_log:
-                    on_log(line)
+                if line:
+                    if log_fp:
+                        try:
+                            log_fp.write(line + '\n')
+                            log_fp.flush()   # 卡住时也要能看见已经到哪了
+                        except Exception:
+                            pass
+                    # tqdm 的进度条刷屏，别把 tail 占满 —— 只留非进度行
+                    if '%|' not in line:
+                        tail.append(line)
+                        if len(tail) > 40:
+                            del tail[0]
+                    if on_log:
+                        on_log(line)
+        # 🔴 最后一段常常没有换行符 —— 而进程崩掉时，最后那一行
+        #    恰恰是最重要的一行。原来的循环只处理带 \r 或 \n 的部分，
+        #    buf 里剩下的直接丢了。
+        last = buf.decode('utf-8', 'replace').strip()
+        if last:
+            if log_fp:
+                try:
+                    log_fp.write(last + '\n')
+                except Exception:
+                    pass
+            if '%|' not in last:
+                tail.append(last)
         p.wait()
         rc = p.returncode
     except Exception as e:
         return False, '%s: %s' % (type(e).__name__, str(e)[:200])
     finally:
         stop_watch.set()
+        if log_fp:
+            try:
+                log_fp.close()
+            except Exception:
+                pass
         time.sleep(0)
 
+    if killed:
+        # 用户主动停的，不是故障。
+        # **半截文件不删**：modelscope 支持断点续传，删了等于让人从头再下
+        # 4.6 GB。留着的代价只是占点硬盘，而那些文件本来就在 models/ 里，
+        # 删掉整个软件文件夹一样清得干净。
+        return False, '已取消'
+
     if rc != 0:
-        return False, '下载器退出码 %s，多半是网络断了，可以重试' % rc
+        # 不再说「多半是网络断了」—— 那是猜的。把下载器自己说的话给出来，
+        # 完整日志的路径也一并告诉用户，好让他直接把文件发过来。
+        why = ' / '.join(tail[-3:])[:300]
+        return False, ('下载失败（退出码 %s）。%s完整日志：%s'
+                       % (rc, ('下载器说：%s。' % why) if why else '', log_path))
     if not ready():
-        return False, '下载结束了，但没找到可用的模型文件'
+        return False, ('下载结束了，但没找到可用的模型文件。完整日志：%s'
+                       % log_path)
     return True, ''

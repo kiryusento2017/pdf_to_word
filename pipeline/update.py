@@ -92,6 +92,31 @@ def _api(url):
         return json.loads(r.read().decode('utf-8'))
 
 
+def _ver(tag):
+    r"""把 `v0.0.1` / `0.0.1` 解析成 (0, 0, 1)。看不懂就返回 None。
+
+    🔴 为什么不用发布时间当主判据（2026-09-02 改）：
+       `build_release.py` 写 version.json 时 published_at 那格是**空串**
+       （打包时还没发布，拿不到真实时间），于是原来那句
+       `if loc['published_at'] and rel.get('published_at')` 前半恒为假，
+       防降级保护从来没执行过 —— 本地装着 v0.0.3 测试版、远端是 v0.0.1
+       时，界面会提示「有新版本」，点更新就是降级。
+
+       测试当时是绿的，因为测试自己手写了一个非空的 published_at，
+       喂进去的形状和生产不一样。版本号是包里就有的、不依赖发版流程的
+       东西，拿它当主判据才不会再出这种「测试绿、生产坏」。
+
+    只认「数字.数字.数字」，后缀（v0.0.1-beta 的 -beta）忽略不比 ——
+    这个项目的 tag 规矩就是 v主.次.修（见 docs/RELEASE.md），
+    真出现看不懂的写法就返回 None，退回比发布时间。
+    """
+    import re
+    m = re.match(r'^\s*[vV]?(\d+)\.(\d+)\.(\d+)', tag or '')
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
 def _pick_asset(rel):
     r"""从 Release 的附件里挑更新包。
 
@@ -113,8 +138,16 @@ def _pick_asset(rel):
             pick = a
             break
     pick = pick or zips[0]
+    # digest 形如 "sha256:abc123..."。GitHub 的 Releases API 每个 asset
+    # 都带（2026-09-02 实测确认，v0.0.1 的两个附件都有）。
+    # 这一格是整条信任链的起点，详见 download() 的说明。
+    dg = (pick.get('digest') or '')
+    if dg.lower().startswith('sha256:'):
+        dg = dg.split(':', 1)[1].strip().lower()
+    else:
+        dg = ''
     return {'name': pick['name'], 'url': pick.get('browser_download_url', ''),
-            'size': pick.get('size', 0)}
+            'size': pick.get('size', 0), 'digest': dg}
 
 
 def check():
@@ -150,9 +183,18 @@ def check():
     if loc['tag'] == out['latest']:
         return out                       # 已是最新
 
-    # 🔴 tag 不同**不等于**有更新 —— 也可能本地比远端新（你手动发的测试版）。
-    #    比发布时间才不会误报：只有远端更晚才是真的有新版本。
-    if loc['published_at'] and rel.get('published_at'):
+    # 🔴 tag 不同**不等于**有更新 —— 也可能本地比远端新（手动发的测试版）。
+    #    主判据是版本号：包里自带，不依赖发版流程有没有填对时间。
+    lv, rv = _ver(loc['tag']), _ver(out['latest'])
+    if lv and rv:
+        if rv == lv:
+            return out                   # 同一版本，只是 tag 写法不同
+        if rv < lv:
+            out['error'] = ('本地版本（%s）比仓库里的（%s）还新，不用更新'
+                            % (loc['tag'], out['latest']))
+            return out
+    elif loc['published_at'] and rel.get('published_at'):
+        # 版本号看不懂时才退回比发布时间（老版本的 version.json 可能没版本号规矩）
         if rel['published_at'] <= loc['published_at']:
             out['error'] = ('本地版本（%s）比仓库里的还新，不用更新'
                             % loc['tag'])
@@ -170,13 +212,25 @@ def _mirrored(url, prefix):
     return prefix + url if prefix else url
 
 
-def probe_mirrors(asset_url, seconds=2.0):
+# 小于这个体积就不值得测速了（见 probe_mirrors）
+PROBE_WORTH_BYTES = 5 * 1024 * 1024
+
+
+def probe_mirrors(asset_url, seconds=2.0, size=0):
     r"""并发实测各镜像，返回按快慢排好的列表。
 
     探测的就是待会儿要下的那个文件 —— 用它自己测，测出来的才是真带宽。
     （模型源那边栽过：拿几 KB 的 API 接口测，算出来的是延迟，
       界面显示「约 44 小时」。）
+
+    🔴 但**小包不值得测**。更新包只有 0.4 MB：五个镜像各下最多 2 秒，
+       慢网下等于先下五遍再下第六遍，测速开销是下载本身的五倍。
+       「探测文件够大，通常轮不到下完」这句话对 4.6 GB 的模型成立，
+       对 0.4 MB 不成立。所以体积够小就按固定顺序试，不测。
     """
+    if size and size < PROBE_WORTH_BYTES:
+        return [{'id': m['id'], 'name': m['name'], 'ok': True,
+                 'speed': 0, 'why': '包太小，没测速'} for m in GH_MIRRORS]
     cand = [{'id': m['id'], 'name': m['name'], 'env': {},
              'probe': _mirrored(asset_url, m['prefix'])} for m in GH_MIRRORS]
     return sources.probe_all(cand, seconds=seconds)
@@ -246,36 +300,106 @@ def apply_update(zip_path):
                     dst.write(src.read())
                 staged.append((out, target))
 
-        # 都解出来了再搬。这一步失败得少，但仍逐个 try，
-        # 让部分失败也能报出是哪个文件。
+        # 都解出来了再搬。
+        #
+        # 🔴 搬运这一步**也会中途失败**（文件被占用是最常见的），
+        #    所以每覆盖一个之前先把原件备份到临时目录，任一失败就全部还原。
+        #
+        #    不这么做的话，上面那段注释承诺的原子性只兑现了一半：解压是
+        #    原子的，搬运不是 —— 失败就留下一半新一半旧的代码，
+        #    而那正是它自己说的「比不更新糟得多」的状态。
+        #    半新半旧最坏的地方在于它**还能启动**：新的 server 配着旧的
+        #    pipeline，报出来的错跟真实原因八竿子打不着。
         import shutil
+        backup_dir = os.path.join(tmp, '__backup__')
+        os.makedirs(backup_dir, exist_ok=True)
+        undo = []          # [(备份文件, 原位置)]，原位置本来没有文件时备份为 None
         done = 0
         for out, target in staged:
             os.makedirs(os.path.dirname(target) or root, exist_ok=True)
             try:
+                if os.path.isfile(target):
+                    bak = os.path.join(backup_dir, '%d.bak' % len(undo))
+                    shutil.copyfile(target, bak)
+                    undo.append((bak, target))
+                else:
+                    undo.append((None, target))     # 新增的文件，还原=删掉
                 shutil.copyfile(out, target)
                 done += 1
             except Exception as e:
+                # 还原：倒着来，最后动的先还原
+                restored = 0
+                for bak, tgt in reversed(undo):
+                    try:
+                        if bak is None:
+                            if os.path.isfile(tgt):
+                                os.remove(tgt)
+                        else:
+                            shutil.copyfile(bak, tgt)
+                        restored += 1
+                    except Exception:
+                        pass        # 还原也失败就没辙了，至少别把原错误吞掉
                 return (False,
                         '写入 %s 失败：%s。可能是软件正在用这个文件，'
-                        '关掉软件再试一次。'
-                        % (os.path.relpath(target, root), str(e)[:60]), done)
+                        '关掉软件再试一次。（已经改的 %d 个文件都还原了，'
+                        '现在还是更新前的状态）'
+                        % (os.path.relpath(target, root), str(e)[:60],
+                           restored), 0)
         return True, '', done
     finally:
         import shutil as _sh
         _sh.rmtree(tmp, ignore_errors=True)
 
 
-def download(asset_url, dest, on_progress=None, seconds=2.0):
+# 只认这个前缀的下载地址。GitHub Release 附件的 browser_download_url
+# 长这样：https://github.com/<owner>/<repo>/releases/download/<tag>/<name>
+ASSET_PREFIX = 'https://github.com/%s/%s/releases/download/' % (OWNER, REPO)
+
+
+def download(asset_url, dest, on_progress=None, seconds=2.0,
+             digest='', size=0):
     r"""下更新包。返回 (ok, error, 用了哪个源)。
 
     先并发测速挑最快的再下 —— 候选里当场坏掉的不在少数（实测六个坏三个），
     不测速就可能卡在一个吐不出数据的源上。
+
+    ## 下回来的东西必须校验（2026-09-02 加）
+
+    这个包会被解压覆盖安装目录里的 `.py` 和 `.js`，下次启动就执行 ——
+    也就是说，**谁能决定这个包的内容，谁就能在老师的电脑上跑代码**。
+    而它走的是 ghfast / gh-proxy / ghproxy.net / moeyy 四个第三方镜像。
+    原来的文档只把镜像的不可信定义成「可能挂」，但镜像同样可以
+    **返回假内容**，那是一条完整的远程执行路径。
+
+    信任链是这么闭合的：
+
+        校验值  ← api.github.com **直连** HTTPS（镜像访问 API 会 403，
+                  见本文件顶部的实测表）→ 可信
+        文件    ← 第三方镜像                                → 不可信
+        拿可信的值去验不可信的文件 → 装进去的东西可信
+
+    三道，缺一不可：
+      1. **地址**必须是本仓库的 Release 附件。服务只绑 127.0.0.1，
+         但本机任意进程都能 POST 一个自己的 URL 让它下载并覆盖安装目录；
+         zip slip 只挡住了目录外，目录内的 .py 照样能被换掉。
+      2. **长度**对得上 Content-Length。截断的包原来一路走到 apply_update
+         才报「更新包打不开」，把网络问题说成了文件问题。
+      3. **SHA256** 对得上 GitHub 给的 digest。拿不到 digest 时**拒绝安装** ——
+         「没法校验」和「校验失败」的风险是一样的，不能因为值取不到就放行。
     """
+    import hashlib
+
     if not asset_url:
         return False, '没有可下载的更新包', ''
-    rows = probe_mirrors(asset_url, seconds=seconds)
-    best = sources.pick_best(rows)
+    if not asset_url.startswith(ASSET_PREFIX):
+        return (False,
+                '这个下载地址不是本仓库的 Release 附件，出于安全没有下载', '')
+    if not digest:
+        return (False,
+                'GitHub 没给这个更新包的校验值，没法确认下回来的是不是原件，'
+                '出于安全没有下载。可以到项目的 Release 页面手动下载。', '')
+    rows = probe_mirrors(asset_url, seconds=seconds, size=size)
+    best = sources.pick_best(rows) or (rows[0] if rows else None)
     if not best:
         return False, '所有下载源都连不上，检查一下网络', ''
 
@@ -285,6 +409,7 @@ def download(asset_url, dest, on_progress=None, seconds=2.0):
             prefix = m['prefix']
             break
 
+    h = hashlib.sha256()
     try:
         req = urllib.request.Request(_mirrored(asset_url, prefix), headers=UA)
         with urllib.request.urlopen(req, timeout=30) as r:
@@ -297,9 +422,32 @@ def download(asset_url, dest, on_progress=None, seconds=2.0):
                     if not b:
                         break
                     f.write(b)
+                    h.update(b)
                     got += len(b)
                     if on_progress:
                         on_progress(got, total)
     except Exception as e:
         return False, '下载失败：%s' % str(e)[:120], best['name']
+
+    def _drop():
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+
+    if total and got != total:
+        _drop()
+        return (False, '没下完（只到了 %d / %d 字节），网络中断了，可以重试'
+                % (got, total), best['name'])
+
+    if h.hexdigest().lower() != digest.lower():
+        # 换源重试没有意义 —— 内容对不上说明这个源给的就不是原件。
+        # 坏包必须删掉：留在硬盘上，下次有人手滑双击就装了。
+        _drop()
+        return (False,
+                '更新包校验没通过 —— 从「%s」下回来的内容和 GitHub 上的原件'
+                '对不上，可能是这个下载源不干净。出于安全没有安装，'
+                '换个时间再试，或到项目的 Release 页面手动下载。'
+                % best['name'], best['name'])
+
     return True, '', best['name']

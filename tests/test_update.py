@@ -6,17 +6,22 @@ r"""检查更新。
   2. **版本比较要看方向** —— tag 不同不等于有更新，也可能本地比远端新
      （小蔡手动发给老师的版本会踩这个，装上就一直提示更新）
 """
+import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 
+import paths   # noqa: E402
+import sources  # noqa: E402
 import update  # noqa: E402
 
 
@@ -104,7 +109,32 @@ class Test版本比较看方向(unittest.TestCase):
         self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z'))
         r = update.check()
         self.assertFalse(r['has_update'], '本地更新却报了「有新版本」')
-        self.assertIn('比仓库里的还新', r['error'])
+        self.assertIn('比仓库里的', r['error'])
+        self.assertIn('还新', r['error'])
+
+    def test_本地比远端新时不报更新_用打包脚本真会写出的version(self):
+        r"""🔴 上一条测试自己造了 published_at，而 **build_release.py
+        写出来的 version.json 里那个字段是空串** —— 于是防降级判断的
+        前半 `if loc['published_at'] and ...` 恒为假，保护从来没生效过。
+
+        测试全绿，bug 却在生产里躺着：测试喂的是手写数据，生产喂的是
+        打包脚本的产物，两者不一样。这条测试就用打包脚本真会写出的形状。
+        """
+        self._local('v1.2.0', '')          # ← 打包脚本写的就是空串
+        self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z'))
+        r = update.check()
+        self.assertFalse(r['has_update'], '本地更新却报了「有新版本」')
+        self.assertIn('比仓库里的', r['error'])
+        self.assertIn('还新', r['error'])
+
+    def test_版本号相同但写法不同时算最新(self):
+        r"""tag 写成 `0.0.1` 和 `v0.0.1` 是同一个版本，不该提示更新，
+        也不该说「本地比远端新」。"""
+        self._local('v1.1.0', '')
+        self._remote(_rel('1.1.0', '2026-09-05T00:00:00Z'))
+        r = update.check()
+        self.assertFalse(r['has_update'])
+        self.assertEqual(r['error'], '', '同一个版本却报了错误：%s' % r['error'])
 
     def test_有更新但没附更新包时说清楚(self):
         self._local('v1.0.0', '2026-09-01T00:00:00Z')
@@ -229,6 +259,183 @@ class Test镜像(unittest.TestCase):
         ok, err, via = update.download('', os.path.join(self.__class__.__name__))
         self.assertFalse(ok)
         self.assertIn('没有可下载', err)
+
+
+class Test安装失败要回滚(unittest.TestCase):
+    r"""搬运阶段中途失败，已经搬过去的必须还原。
+
+    `apply_update` 的注释写着：「直接往安装目录解压的话，中途失败会留下
+    一半新一半旧的代码，那种状态比不更新糟得多。先全部解到临时目录，
+    都成功了再逐个搬过去。」
+
+    但**搬过去的那一步本身也会中途失败**（文件被占用是最常见的），
+    失败就直接 return，已经覆盖掉的不还原 —— 承诺的原子性只兑现了
+    解压那一半。一半新一半旧的代码，正是它自己说的最糟状态。
+    """
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix='p2w_roll_')
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.root = os.path.join(self.work, 'app')
+        os.makedirs(os.path.join(self.root, 'pipeline'))
+        self.addCleanup(setattr, paths, 'ROOT', paths.ROOT)
+        paths.ROOT = self.root
+        # 三个旧文件，等着被覆盖
+        for name in ('a.py', 'b.py', 'c.py'):
+            with io.open(os.path.join(self.root, 'pipeline', name), 'w',
+                         encoding='utf-8') as f:
+                f.write('# 旧的 %s\n' % name)
+        self.zip = os.path.join(self.work, 'u.zip')
+        with zipfile.ZipFile(self.zip, 'w') as z:
+            for name in ('a.py', 'b.py', 'c.py'):
+                z.writestr('pipeline/' + name, '# 新的 %s\n' % name)
+
+    def _read(self, name):
+        with io.open(os.path.join(self.root, 'pipeline', name),
+                     encoding='utf-8') as f:
+            return f.read()
+
+    def test_搬到一半失败要把已经换掉的还原(self):
+        import shutil as _sh
+        real = _sh.copyfile
+        seen = []
+
+        def flaky(src, dst):
+            seen.append(dst)
+            if len(seen) == 2:          # 第二个文件写不进去
+                raise OSError(13, '文件被占用')
+            return real(src, dst)
+
+        _sh.copyfile = flaky
+        self.addCleanup(lambda: setattr(_sh, 'copyfile', real))
+
+        ok, err, n = update.apply_update(self.zip)
+        self.assertFalse(ok)
+        self.assertIn('占用', err)
+        for name in ('a.py', 'b.py', 'c.py'):
+            self.assertIn('旧的', self._read(name),
+                          '%s 被换成新的却没还原 —— 现在是一半新一半旧' % name)
+
+    def test_全都成功时确实换成了新的(self):
+        ok, err, n = update.apply_update(self.zip)
+        self.assertTrue(ok, err)
+        self.assertEqual(n, 3)
+        for name in ('a.py', 'b.py', 'c.py'):
+            self.assertIn('新的', self._read(name))
+
+
+class Test下载必须校验(unittest.TestCase):
+    r"""更新包走的是第三方镜像（ghfast / gh-proxy / ghproxy.net / moeyy），
+    下回来直接解压覆盖安装目录里的 .py 和 .js，下次启动就执行。
+
+    镜像不可信这件事，原来的文档只把它定义成「可能挂」—— 但镜像同样
+    可以**返回假内容**。没有校验的话，任何一个镜像（或中间人）都能把
+    任意代码塞进老师的电脑，这是一条完整的远程执行路径。
+
+    校验值从哪来才可信：GitHub 的 Releases API 每个 asset 都带
+    `digest: "sha256:..."`（2026-09-02 实测确认，v0.0.1 的两个附件都有），
+    而 api.github.com 是**直连**的（镜像访问 API 会被 403 拒绝，
+    见 update.py 顶部的实测表）。所以校验值可信、文件不可信，
+    拿可信的值去验不可信的文件，链是完整的。
+    """
+
+    def setUp(self):
+        self.work = os.path.join(tempfile.gettempdir(), 'p2w_dl_test')
+        shutil.rmtree(self.work, ignore_errors=True)
+        os.makedirs(self.work)
+        self.dest = os.path.join(self.work, 'u.zip')
+        self._probe = update.probe_mirrors
+        self._pick = sources.pick_best
+        self._open = update.urllib.request.urlopen
+        # 测速固定挑「直连」，把测速这条变量从测试里拿掉
+        update.probe_mirrors = (lambda url, seconds=2.0, size=0:
+                        [{'id': 'direct'}])
+        sources.pick_best = lambda rows: {'id': 'direct', 'name': 'GitHub 官方'}
+
+    def tearDown(self):
+        update.probe_mirrors = self._probe
+        sources.pick_best = self._pick
+        update.urllib.request.urlopen = self._open
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def _serve(self, body, claim_len=None):
+        """让 urlopen 返回这段内容。claim_len 是 Content-Length 声称的长度。"""
+        class _Resp(object):
+            def __init__(self):
+                self.headers = {'Content-Length':
+                                str(len(body) if claim_len is None else claim_len)}
+                self._pos = 0
+
+            def read(self, n=-1):
+                if n is None or n < 0:
+                    b = body[self._pos:]
+                    self._pos = len(body)
+                    return b
+                b = body[self._pos:self._pos + n]
+                self._pos += n
+                return b
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        update.urllib.request.urlopen = lambda req, timeout=None: _Resp()
+
+    def test_校验值对得上就装(self):
+        body = b'PK\x03\x04 pretend this is a zip'
+        self._serve(body)
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256(body).hexdigest())
+        self.assertTrue(ok, err)
+        self.assertTrue(os.path.isfile(self.dest))
+
+    def test_内容被换掉就拒装并删掉文件(self):
+        r"""镜像返回了别的东西 —— 这正是要防的那一下。"""
+        self._serve('这不是我们发的包，是镜像塞的'.encode('utf-8'))
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256('原本该是这个'.encode('utf-8')).hexdigest())
+        self.assertFalse(ok, '内容对不上却装了')
+        self.assertIn('校验', err)
+        self.assertFalse(os.path.isfile(self.dest),
+                         '拒装了却把坏包留在硬盘上')
+
+    def test_没有官方校验值就不下(self):
+        r"""GitHub 没给 digest（老 Release，或哪天 API 变了）时宁可不更新。
+
+        更新包会直接覆盖会被执行的代码，"没法校验"和"校验失败"的
+        风险是一样的，不能因为拿不到值就放行。
+        """
+        self._serve(b'whatever')
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest='')
+        self.assertFalse(ok, '没有校验值却装了')
+        self.assertIn('校验', err)
+
+    def test_没下完就报没下完而不是报包坏了(self):
+        r"""截断的包原来一路走到 apply_update 才报「更新包打不开」，
+        那句话把网络问题说成了文件问题，用户会去怀疑错的东西。"""
+        body = '只下了一半'.encode('utf-8')
+        self._serve(body, claim_len=len(body) + 5000)
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256(body).hexdigest())
+        self.assertFalse(ok)
+        self.assertIn('没下完', err)
+
+    def test_不是本仓库的地址一律拒绝(self):
+        r"""服务只绑 127.0.0.1，但本机任意进程都能 POST 一个自己的 URL
+        让它下载并解压覆盖安装目录。zip slip 挡住了目录外，
+        目录内的 .py 照样能被换掉。"""
+        self._serve(b'x')
+        ok, err, via = update.download('https://evil.example.com/u.zip',
+                                       self.dest, digest='00' * 32)
+        self.assertFalse(ok, '陌生地址却下了')
+        self.assertIn('地址', err)
 
 
 if __name__ == '__main__':

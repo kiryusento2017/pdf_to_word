@@ -19,7 +19,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 
-import gpu  # noqa: E402
+import gpu
+import paths  # noqa: E402
 
 
 class Test解析nvidia_smi(unittest.TestCase):
@@ -81,13 +82,28 @@ class Test判够不够用(unittest.TestCase):
         self.assertTrue(v['why'])
 
     def test_不许说没有数的废话(self):
-        r"""「会慢很多」这种话等于没说。实测（2026-08-31，同一份 10 页讲义）：
-        GPU 262 秒 / 纯 CPU 460 秒 —— 慢 2.0 倍，10 页约 8 分钟。
-        这个数改变了产品判断：没显卡是**能用**的，不是能装但用不了。
-        所以话术里必须给具体分钟数，让人自己判断划不划算。"""
+        r"""「会慢很多」「可能不行」这种话等于没说。
+
+        2026-08-31 这条测试要求话术里必须有**具体分钟数** —— 当时的实测
+        （GPU 262 秒 / 纯 CPU 460 秒，慢 2.0 倍）把「没显卡」从「用不了」
+        改成了「能用，就是得等」，那个数直接影响用户划不划算的判断。
+
+        2026-09-02 小蔡定了只用 GPU，CPU 不再是退路，分钟数也就没了意义 ——
+        再写「10 页约 8 分钟」反而是在承诺一件不会发生的事。
+        要求跟着改：话术必须让人知道**这台机器到底行不行、不行怎么办**，
+        而不是一句模模糊糊的「可能有问题」。
+        """
         for v in (gpu.judge(None, wmi_names=['Intel(R) UHD Graphics']),
                   gpu.judge(self._g(6.1, 11264))):
-            self.assertIn('分钟', v['why'], '没给具体时间，等于没说：%s' % v['why'])
+            why = v['why']
+            # 得说清楚后果（失败 / 报错 / 用不了），不能只说「不满足要求」
+            self.assertTrue(
+                any(k in why for k in ('失败', '报错', '用不了', '太老')),
+                '没说清楚后果，等于没说：%s' % why)
+            # 得给出路（换机器 / 关掉别的程序 / 少转几份）
+            self.assertTrue(
+                any(k in why for k in ('换一台', '换台', '关掉', '少转', '更新')),
+                '没给出路，用户只能干瞪眼：%s' % why)
 
     def test_理由必须是人话(self):
         r"""这句会直接显示给老师看，不能是 compute_capability < 7.5 这种。"""
@@ -126,6 +142,56 @@ class Test真机检测(unittest.TestCase):
         self.assertIn('ok', r)
         self.assertIn('why', r)
         self.assertIsInstance(r['why'], str)
+
+
+class Test只用GPU的规矩(unittest.TestCase):
+    r"""小蔡 2026-09-02 定：这个软件只用 GPU，不用 CPU。显卡不达标要报警，
+    但**不阻拦**用户去点 —— 点了当场报错（实测是
+    `RuntimeError: No CUDA GPUs are available`），不会白等半小时。
+
+    这里钉两件事：环境变量真的写死成 cuda；话术里不许再出现
+    「会退回 CPU」这类**已经不存在**的退路。承诺一条不存在的退路，
+    比什么都不说更坏 —— 用户会照着那个预期做决定。
+    """
+
+    def test_子进程环境强制走显卡(self):
+        env = paths.child_env()
+        self.assertEqual(env.get('MINERU_DEVICE_MODE'), 'cuda',
+                         'MinerU 的 get_device() 会自己探测，探不到就默默用 CPU')
+
+    def test_选源带的变量不许覆盖掉设备模式(self):
+        env = paths.child_env({'MINERU_MODEL_SOURCE': 'modelscope'})
+        self.assertEqual(env.get('MINERU_DEVICE_MODE'), 'cuda')
+
+    def test_话术里不许再承诺退回CPU(self):
+        cases = [
+            # 架构太老
+            gpu.judge({'name': 'GTX 960', 'compute_cap': 5.2,
+                       'vram_mb': 4096}),
+            # 显存不足
+            gpu.judge({'name': 'GTX 1660', 'compute_cap': 7.5,
+                       'vram_mb': 4096}),
+            # 完全没有 N 卡
+            gpu.judge(None, wmi_names=['Intel(R) UHD Graphics']),
+        ]
+        import re
+        # 只抓**肯定式**的承诺。「不会退回 CPU」是在澄清，不是承诺 ——
+        # 断言写成 assertNotIn('退回 CPU') 会把澄清也判成违规。
+        bad = re.compile(r'(?<!不)会退回\s*CPU|会用\s*CPU\s*转换|能用，就是得等')
+        for r in cases:
+            why = r['why']
+            hit = bad.search(why)
+            self.assertIsNone(hit,
+                              '又承诺了不存在的退路（%s）：%s'
+                              % (hit.group(0) if hit else '', why))
+
+    def test_没有N卡时要说清楚这台机器用不了(self):
+        r"""不阻拦不等于不说清楚 —— 让人反复试才是最坏的。"""
+        r = gpu.judge(None, wmi_names=['Intel(R) UHD Graphics 630'])
+        self.assertFalse(r['ok'])
+        self.assertIn('显卡', r['why'])
+        self.assertTrue('失败' in r['why'] or '用不了' in r['why'],
+                        '没说清楚这台机器转不了：%s' % r['why'])
 
 
 if __name__ == '__main__':

@@ -52,11 +52,11 @@ def find_exe(name, subdirs=()):
       4. `<安装目录>/.venv/Scripts/<name>.exe`      开发环境
       5. 系统 PATH                                  最后的退路
 
-    🔴 第 3 条是发行版实测才发现要加的。`mineru.exe` 是 pip 装 mineru 时
-       生成的入口点，落在 Python 的 `Scripts/` 下 —— 发行版的 Python 在
-       `runtime/python/`，所以它在 `runtime/python/Scripts/mineru.exe`。
-       开发环境有 `.venv/Scripts` 兜着，这个漏洞永远暴露不出来，
-       只有真跑一次打好的包才会看到「转换引擎缺失」。
+    第 3 条是发行版实测才发现要加的（`mineru.exe` 落在 Python 的
+    `Scripts/` 下，而发行版的 Python 在 `runtime/python/`）。
+    ⚠️ 但那次「找到了」其实是**假绿**：文件是在，可它根本跑不起来 ——
+       见下面那条警告。这两条候选如今只对 node 之类的真 exe 有意义，
+       留着是因为它们无害，删掉反而少一层退路。
 
     为什么要有这个函数：`_find_mineru()`、`download_exe()`、
     `tomath._NODE` 三处各写各的路径，全都写死在 `.venv\\Scripts\\` ——
@@ -64,6 +64,13 @@ def find_exe(name, subdirs=()):
     site-packages，没有 stdlib，`os.__file__` 指向开发机上的 Python
     安装目录，换台机器第一句 import 就死）。散着写的话，发行版要改三处，
     改漏一处就是「在我这儿好好的」。
+
+    ⚠️ **不要拿它找 pip 生成的 `Scripts/*.exe`**（mineru、
+       mineru-models-download 这类 console_scripts）。那种 exe 里
+       硬编码了打包机器上的 python.exe 路径，换台机器就废，
+       而这个函数只查文件在不在，查不出来。跑 MinerU 走
+       `mineru_cmd()` / `models_download_cmd()`。
+       这里现在只用于 node、pandoc 这类真正的独立可执行文件。
 
     返回绝对路径，找不到返回空串。
     """
@@ -80,6 +87,73 @@ def find_exe(name, subdirs=()):
                 return p
     hit = shutil.which(name)
     return hit or ''
+
+
+# ── 跑 MinerU ───────────────────────────────────────────────────────────
+# 🔴 绝不调 `runtime/python/Scripts/mineru*.exe`。
+#
+#    那些 exe 是 pip 装包时给 console_scripts 生成的 launcher，
+#    **尾部硬编码了生成它那一刻的 python.exe 绝对路径**。
+#    v0.0.1 的字节实测：
+#
+#        #!D:\claude_code_workspace\pdf_to_word\dist\PDF2Word\runtime\python\python.exe
+#
+#    那是打包机器上的路径。用户解压到 D:\PDF2Word，它就找不到解释器 ——
+#    模型下载和 PDF 转换全废，而开发机上永远是好的（包就是在那儿打的）。
+#
+#    2026-09-02 网吧实测的现象是「测速正常、下载一直失败」：测速走的是
+#    我们自己的 Python 代码，不经过 launcher，所以只有那一半是好的。
+#
+#    改法：解释器 + `-m 模块`，路径全部运行时算。两个入口点是从
+#    launcher 内嵌的 __main__.py 里读出来的，跟它调的完全一样。
+
+MINERU_CLI = 'mineru.cli.client'                   # 转换
+MINERU_DOWNLOAD_CLI = 'mineru.cli.models_download'  # 下模型
+
+
+def python_exe():
+    r"""跑 MinerU 用哪个解释器。
+
+    **就用正在跑我们自己的这个** —— 它一定装着 mineru：后端服务能起来，
+    说明 fastapi 在，而 fastapi 和 mineru 装在同一个环境里。
+    再去别处找解释器，等于又给「找错那个」留了空间。
+
+    兜底才按发行版 / 开发环境的固定位置找（比如有人直接 import 这个
+    模块来做脚本，sys.executable 指向别处）。
+    """
+    import sys
+    if sys.executable and os.path.isfile(sys.executable):
+        return sys.executable
+    for p in (os.path.join(RUNTIME, 'python', 'python.exe'),
+              os.path.join(ROOT, '.venv', 'Scripts', 'python.exe')):
+        if os.path.isfile(p):
+            return p
+    return 'python'
+
+
+def mineru_cmd():
+    """转换用的命令前缀。后面接 -p / -o 等参数。"""
+    return [python_exe(), '-m', MINERU_CLI]
+
+
+def models_download_cmd():
+    """下模型用的命令前缀。后面接 -s / -m 等参数。"""
+    return [python_exe(), '-m', MINERU_DOWNLOAD_CLI]
+
+
+def mineru_available():
+    r"""MinerU 能不能跑。
+
+    判据是**这个解释器找不找得到 mineru 这个包**，不是「哪个文件在不在」。
+    原来的自检写成 `bool(find_exe('mineru'))`：文件确实在，于是一路绿灯，
+    而它根本起不来。用 find_spec 只查不加载 —— 真 import 会把 torch
+    一起拖进来，那要好几秒。
+    """
+    try:
+        import importlib.util
+        return importlib.util.find_spec('mineru') is not None
+    except Exception:
+        return False
 
 
 def ensure(path):
@@ -150,6 +224,18 @@ def child_env(source_env=None):
       HF_HOME                   换 HuggingFace 源时同理
       MINERU_TOOLS_CONFIG_JSON  配置写我们自己那份，不碰 ~/mineru.json
 
+    还有第四个，管的是另一件事：
+
+      MINERU_DEVICE_MODE=cuda   **强制走显卡，不许悄悄用 CPU**
+
+    小蔡 2026-09-02 定的规矩：这个软件只用 GPU。不设这个变量的话，
+    MinerU 的 get_device() 会自己探测（cuda → mps → npu → gcu → musa → cpu），
+    显卡用不了就**默默换成 CPU 跑** —— 慢两倍，而用户完全不知道
+    自己在等一件本可以快一倍的事，只觉得「这软件真慢」。
+    宁可当场报错说清楚，也不要静默降级。
+    （变量名是从 mineru/utils/config_reader.py:106 读出来的，
+      它的优先级最高：设了就直接返回，根本不走自动探测。）
+
     source_env 是选源屏选中的那个源带的变量（MINERU_MODEL_SOURCE 等），
     合并进来。
     """
@@ -158,6 +244,7 @@ def child_env(source_env=None):
     env['MODELSCOPE_CACHE'] = MODELS
     env['HF_HOME'] = MODELS
     env['MINERU_TOOLS_CONFIG_JSON'] = CONFIG
+    env['MINERU_DEVICE_MODE'] = 'cuda'
     if source_env:
         env.update(source_env)
     return env

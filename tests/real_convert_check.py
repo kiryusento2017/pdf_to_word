@@ -18,6 +18,9 @@ sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 import todocx  # noqa: E402
 import tomath  # noqa: E402
 
+# 拿终末诗篇工作台那边现成的 MinerU 产物当**输入数据**（不是借它的环境）——
+# 省掉每次跑都要先花几分钟 GPU 提取一遍。工作台目录改名或搬走的话，
+# 这行要跟着改；跑不起来会直接打印提示，不会静默跳过。
 EXTRACT = r'D:\claude_code_workspace\edu_book_generator\data\extract'
 OUTDIR = os.path.join(ROOT, '_tmp', 'real_convert')
 

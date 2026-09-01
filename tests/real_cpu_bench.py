@@ -11,6 +11,12 @@ MinerU 自动退回 CPU。不用重装 CPU 版 torch（那会把 CUDA 版覆盖�
 
 跑法：
     .venv\Scripts\python.exe tests\real_cpu_bench.py [超时秒数]
+
+
+⚠️ 2026-09-02 起产品**只用 GPU**（小蔡定的规矩，见 docs/DESIGN.md）。
+   这个脚本留着是为了保住那组对照数据（GPU 262 秒 / CPU 460 秒），
+   它不代表软件支持 CPU —— 正常流程里 MINERU_DEVICE_MODE 写死成 cuda，
+   跑不到 CPU 那条路上去。要删的话先问一句，那组数是当初改产品判断的依据。
 """
 import os
 import sys

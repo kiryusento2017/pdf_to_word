@@ -17,12 +17,23 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 
 import convert  # noqa: E402
+import paths   # noqa: E402
 import gpu      # noqa: E402
 
 DEFAULT_PDF = (r'D:\工作\高1数学秋季课~腾飞版\高1秋季课~腾飞版'
                r'\4【腾飞】解不等式(学生版).pdf')
-MINERU = os.path.join(r'D:\claude_code_workspace\edu_book_generator',
-                      '.venv', 'Scripts', 'mineru.exe')
+# 🔴 用**我们自己的** MinerU，不借终末诗篇工作台的。
+#
+#    这里原来指着 `edu_book_generator\.venv\Scripts\mineru.exe` ——
+#    而 paths.py 里明明写着 2026-08-31 已经撤掉「找不到就用工作台那份」
+#    的退路，理由正是「别人机器上装漏了会静默失败，而在我这台机器上
+#    永远测不出来」。唯一的端到端验证却还借着隔壁的环境跑，
+#    等于这条退路从没真正撤掉。
+#
+#    2026-09-02 的 launcher 事故（发行版里的 mineru.exe 硬编码了打包
+#    机器的解释器路径，换台机器全废）之所以一路躲到用户手上，
+#    这是原因之一：端到端脚本跑的根本不是我们自己那套。
+MINERU = paths.mineru_cmd()
 
 pdf = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PDF
 work = os.path.join(ROOT, '_tmp', 'e2e')

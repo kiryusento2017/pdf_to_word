@@ -281,6 +281,38 @@
 
     closeUpdate: function () { st.upd = null; render(); },
 
+    // 装 GPU 运行库（CUDA 版 PyTorch，约 2.5 GB）。
+    // 发行版里不带它 —— 解压后 4.2 GB，打进安装包会让包涨到 1.5~2 GB，
+    // 逼近 GitHub 单文件 2 GiB 上限，而且没显卡的人也得跟着下。
+    installGpuLib: function () {
+      st.gpuLibBusy = true;
+      st.gpuLibError = '';
+      render();
+      var poll = setInterval(function () {
+        HTTP.get('/api/gpulib/install').then(function (d) {
+          st.gpuLibLine = d.line || '';
+          if (d.state === 'done' || d.ready) {
+            clearInterval(poll);
+            st.gpuLibBusy = false;
+            // 装好了整页重载 —— 会重新体检，cuda_torch 变绿，
+            // 拦截屏自己就散了。这是 reload 那个 action 用的同一招。
+            window.location.reload();
+          } else if (d.state === 'error') {
+            clearInterval(poll);
+            st.gpuLibBusy = false;
+            st.gpuLibError = d.error || '装失败了';
+          }
+          render();
+        }).catch(function () { /* 轮询失败下次再说 */ });
+      }, 1000);
+      HTTP.post('/api/gpulib/install', {}).catch(function (e) {
+        clearInterval(poll);
+        st.gpuLibBusy = false;
+        st.gpuLibError = String(e && e.message || e);
+        render();
+      });
+    },
+
     // 更新装好之后重启。**必须重启才生效** —— 覆盖的是 .py 和 .js，
     // 当前进程跑的还是加载时那份旧代码。
     restartApp: function () { window.api.restart(); },

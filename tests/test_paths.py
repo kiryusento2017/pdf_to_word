@@ -114,6 +114,13 @@ class Test找可执行文件(unittest.TestCase):
         runtime/python/Scripts/mineru.exe。第一版 find_exe 没有这个候选，
         发行版跑起来报「转换引擎缺失」，而开发环境有 .venv/Scripts 兜着，
         这个漏洞永远暴露不出来。
+        
+
+        ⚠️ 2026-09-02 起**转换和下模型都不再走这条路**了：那种 exe 是
+           pip 生成的 launcher，硬编码着打包机器上的解释器路径，
+           换台机器就废（见 Test绝不调pip生成的launcher）。
+           这条测试留着只是钉住 find_exe 本身的查找顺序 ——
+           它现在服务的是 node、pandoc 这类真正的独立可执行文件。
         """
         want = self._touch(paths.RUNTIME, 'python', 'Scripts', 'mineru.exe')
         self.assertEqual(paths.find_exe('mineru'), want)
@@ -167,6 +174,75 @@ class Test模型就绪判断(unittest.TestCase):
         finally:
             paths.MODELS = old
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class Test绝不调pip生成的launcher(unittest.TestCase):
+    r"""🔴 2026-09-02 网吧实测暴露、字节层面确认的致命缺陷。
+
+    pip 装包时给 console_scripts 生成的 `Scripts/xxx.exe` 是个小 launcher，
+    **尾部硬编码了生成它那一刻的 python.exe 绝对路径**。实测 v0.0.1 的
+    `mineru-models-download.exe` 尾部字节：
+
+        #!D:\claude_code_workspace\pdf_to_word\dist\PDF2Word\runtime\python\python.exe
+
+    那是**打包机器上的路径**。用户把包解压到 D:\PDF2Word，这个路径不存在，
+    launcher 找不到解释器 —— 模型下载和 PDF 转换全废。
+
+    而它在开发机上永远是好的（包就是在那儿打的，路径真实存在），
+    启动自检也是绿的（自检只查了文件在不在）。这是「在我这儿好好的」
+    最标准的一个形态：**测速正常、下载一直失败**，因为测速走的是我们
+    自己的 Python 代码，不经过那些 exe。
+
+    修法：一律用「解释器 + `-m` 模块」的方式跑，路径全部运行时算。
+    """
+
+    def test_跑MinerU用解释器加模块而不是exe(self):
+        cmd = paths.mineru_cmd()
+        self.assertGreaterEqual(len(cmd), 3)
+        self.assertEqual(cmd[1], '-m', '没走 -m，可能又调回 launcher 了')
+        self.assertEqual(cmd[2], 'mineru.cli.client')
+        # argv[0] 是解释器；后面不许再出现任何 .exe
+        for a in cmd[1:]:
+            self.assertNotIn('.exe', a.lower(), '命令里混进了 exe：%s' % a)
+
+    def test_下模型也用解释器加模块(self):
+        cmd = paths.models_download_cmd()
+        self.assertEqual(cmd[1], '-m')
+        self.assertEqual(cmd[2], 'mineru.cli.models_download')
+        for a in cmd[1:]:
+            self.assertNotIn('.exe', a.lower())
+
+    def test_解释器就是正在跑自己的这个(self):
+        r"""它一定装着 mineru —— server 能起来就证明这个环境是齐的。
+        再去别处找解释器，就又给「找错那个」留了空间。"""
+        self.assertEqual(paths.python_exe(), sys.executable)
+
+    def test_判MinerU在不在不能只看文件在不在(self):
+        r"""原来的自检是 `bool(find_exe('mineru'))` —— 文件确实在，
+        所以一路绿灯，而它根本跑不起来。判据必须是「这个解释器能不能
+        找到 mineru 这个包」。"""
+        self.assertTrue(paths.mineru_available(),
+                        '开发环境装着 mineru 却判成没有')
+
+    @unittest.skipUnless(
+        os.path.isfile(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'dist', 'PDF2Word', 'runtime', 'python', 'Scripts',
+            'mineru.exe')),
+        '本机没有打好的发行版')
+    def test_发行版里的launcher确实带着别人的绝对路径(self):
+        r"""把这个事实钉在测试里，免得哪天有人觉得「用 exe 更直接」又改回去。"""
+        p = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'dist', 'PDF2Word', 'runtime', 'python', 'Scripts', 'mineru.exe')
+        with io.open(p, 'rb') as f:
+            b = f.read()
+        i = b.rfind(b'#!')
+        self.assertGreater(i, 0, 'launcher 里没找到 shebang')
+        line = b[i:b.find(b'\n', i)].decode('utf-8', 'replace')
+        self.assertIn(':', line, 'shebang 里不是绝对路径？那就是换实现了')
+        # 它指向的是打包机器上的路径，跟「运行时算出来的解释器」不是一回事
+        self.assertTrue(line.lower().endswith('python.exe'), line)
 
 
 if __name__ == '__main__':

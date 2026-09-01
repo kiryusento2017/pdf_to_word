@@ -201,6 +201,40 @@ class Test两条路的优先级(unittest.TestCase):
         self.assertTrue(r['ok'], '明确要求跳过 XSL 却失败了')
         self.assertEqual(r['math_engine'], 'pandoc')
 
+    def test_失败时不留下半成品Word_没有XSL(self):
+        r"""判失败却把 pandoc 已经写出的 docx 留在原地 = 骗人。
+
+        老师看见界面说「失败」，去输出目录一看躺着一份能双击打开、
+        里面有内容的 Word，多半就当成功了 —— 而那正是我们判失败要
+        拦下的次等品（公式是 Pandoc 转的，∅ 会变成 ⌀）。
+        """
+        orig_x, orig_r = tomath.XSL_CANDIDATES, tomath.registry_candidates
+        tomath.XSL_CANDIDATES = ['/根本没有/MML2OMML.XSL']
+        tomath.registry_candidates = lambda: []
+        try:
+            r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+            self.assertFalse(r['ok'])
+            self.assertFalse(os.path.exists(self.out),
+                             '判失败了却留下一份 Word，用户会当成功')
+        finally:
+            tomath.XSL_CANDIDATES = orig_x
+            tomath.registry_candidates = orig_r
+
+    @unittest.skipUnless(tomath.xsl_available() and tomath.node_available(),
+                         '本机没有 Office 的 XSL 或没有 node')
+    def test_失败时不留下半成品Word_数量对不上(self):
+        r"""这条是实际最常撞上的路径：KaTeX 不认某个命令，产物里的
+        公式数对不上，整批不换判失败 —— 此时 docx 早就写出来了。"""
+        orig = todocx._extract_tex_in_order
+        todocx._extract_tex_in_order = lambda text, cwd=None: ['只有一个']
+        try:
+            r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+            self.assertFalse(r['ok'])
+            self.assertFalse(os.path.exists(self.out),
+                             '判失败了却留下一份 Word，用户会当成功')
+        finally:
+            todocx._extract_tex_in_order = orig
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -3,7 +3,7 @@
 把 PDF 讲义转成 Word，**文字、公式、表格、图片都是原生对象**，不是截图。
 公式转出来是 Word 原生公式，可以直接编辑、可以被搜索。
 
-金石工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
+终末诗篇工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
 这边只做「PDF → Word」这一段。
 
 **最新发行版**：[v0.0.1](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.0.1)
@@ -129,16 +129,33 @@ XSL 探测：先查注册表（Click-to-Run 和传统 MSI 两种键位都读）�
 
 ## 没有显卡能用吗
 
-能。实测（同一份 10 页数学讲义）：
+**不能。这个软件只用 GPU。**（2026-09-02 定的规矩）
 
-| | 用时 |
+技术上 CPU 是跑得动的——2026-08-31 实测同一份 10 页讲义：GPU 262 秒、
+纯 CPU 460 秒，慢 2.0 倍而已。改成只用 GPU 不是因为 CPU 跑不动，而是因为
+**静默降级最坑人**：MinerU 的 `get_device()` 探不到显卡就自己换 CPU，
+用户完全不知道自己在等一件本可以快一倍的事，只觉得「这软件真慢」。
+
+所以 `MINERU_DEVICE_MODE` 写死成 `cuda`，探测这一步直接跳过。
+
+没有 N 卡的机器上会怎样：**当场报错，不是白等**。实测两种情况——
+
+| | 报错 |
 |---|---|
-| 有显卡（RTX 4060） | 262 秒 |
-| 纯 CPU | **460 秒，慢 2.0 倍** |
+| 装的是 CPU 版 PyTorch | `AssertionError: Torch not compiled with CUDA enabled` |
+| 装了 CUDA 版但没有 N 卡 | `RuntimeError: No CUDA GPUs are available` |
 
-不是十几倍。10 页的讲义约 8 分钟、30 页的教师版约 23 分钟——晚上挂着转一批
-完全可行。所以首启检测到显卡不满足时，界面给的是**具体分钟数**让你自己判断，
-而不是「会慢很多」这种废话。
+界面在启动时就会警告显卡不达标，但**不拦着你点**——点了立刻失败，
+不会浪费半小时。
+
+### GPU 运行库要单独下
+
+安装包里**不带** CUDA 版 PyTorch。它解压后 4.2 GB，打进安装包会让包从
+356 MB 涨到 1.5~2 GB，逼近 GitHub 单文件 2 GiB 的上限，而且没有显卡的人
+也得跟着下这 4 GB。
+
+改成首次启动时按需下（约 2.5 GB），跟那 4.6 GB 模型走同一个流程，
+用户只等一次。软件会自己检查并在界面上给一个「现在就装」的按钮。
 
 ---
 
@@ -168,15 +185,15 @@ server/     FastAPI，只绑 127.0.0.1，端口系统分配
 app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源屏）
 runtime/    pandoc.exe + 许可证
 tools/      setup_env(装开发环境) build_release(组装发行版)
-tests/      173 条 Python + 61 条前端检查 + 四个真实数据验证脚本
+tests/      208 条 Python + 67 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 173 条，8 秒
-node tests\front_check.js                                   # 61 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 208 条，8 秒
+node tests\front_check.js                                   # 67 条，真渲染
 ```
 
 这两个都是离线的、秒级的。另有四个**依赖本机真实文件**的验证脚本，
@@ -187,6 +204,8 @@ tests\real_probe_check.py     真实 PDF 的体检（扫资料库里的 544 份�
 tests\real_convert_check.py   拿现成的 MinerU 产物转 Word（11 份，不用 GPU）
 tests\real_pdf_to_word.py     端到端：一份 PDF 直接出 Word（要 GPU，约 4 分半）
 tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 8 分钟）
+                              ⚠️ 2026-09-02 起产品只用 GPU，这个脚本
+                              留着是为了保留那组对照数据，不代表支持 CPU
 ```
 
 它们存在的理由：单元测试用的是脚本造的假数据，只能证明逻辑自洽，

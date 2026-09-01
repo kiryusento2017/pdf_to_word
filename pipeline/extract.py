@@ -15,6 +15,8 @@ r"""调 MinerU 把 PDF 提取成 Markdown + 图片。
 依据见 docs/DESIGN.md 第二节。
 """
 import os
+
+import paths
 import re
 import subprocess
 
@@ -79,7 +81,11 @@ def build_argv(mineru, pdf, out_dir, backend=None, method=None,
     四个参数一个都不能漏 —— 漏了不会报错，MinerU 会用它自己的默认值
     悄悄降级（比如 effort 默认 medium 会关掉图片分析），事后极难发现。
     """
-    return [mineru, '-p', pdf, '-o', out_dir,
+    # mineru 可以是一个字符串（老写法，一个可执行文件），也可以是
+    # 命令前缀列表 —— 现在走的是后者：[python.exe, '-m', 'mineru.cli.client']。
+    # 见 paths.py：pip 生成的 mineru.exe 里硬编码了打包机器的解释器路径。
+    head = list(mineru) if isinstance(mineru, (list, tuple)) else [mineru]
+    return head + ['-p', pdf, '-o', out_dir,
             '-b', backend or BACKEND,
             '-m', method or METHOD,
             '--effort', effort or EFFORT,
@@ -168,9 +174,14 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
     """
     rep = {'ok': False, 'error': '', 'auto_dir': '', 'md': '',
            'pages': 0, 'tail': '', 'stage': ''}
-    mineru = mineru or 'mineru'
-    if os.path.sep in mineru and not os.path.isfile(mineru):
-        rep['error'] = '找不到 mineru：%s' % mineru
+    mineru = mineru or paths.mineru_cmd()
+    if isinstance(mineru, str):
+        # 老写法：给的是一个可执行文件路径
+        if os.path.sep in mineru and not os.path.isfile(mineru):
+            rep['error'] = '找不到 mineru：%s' % mineru
+            return rep
+    elif not mineru:
+        rep['error'] = '没给 MinerU 的运行命令'
         return rep
     if not os.path.isfile(pdf):
         rep['error'] = '找不到 PDF：%s' % pdf
@@ -209,6 +220,21 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
         rep['error'] = ('提取跑完了但没找到产物（退出码 %s）。'
                         '最后几行输出：' + chr(10) + '%s') % (rc, rep['tail'][-400:])
         return rep
+    # 🔴 **有产物不等于成功。**
+    #
+    #    原来的判据只有「找不找得到 .md」，rc 只在没产物时露个脸。
+    #    可 MinerU 是边处理边写的：十页处理到第七页崩掉（OOM / CUDA 错），
+    #    前六页已经落进 .md —— 找得到产物、判成功、老师拿到一份
+    #    **只有前六页**的 Word，而软件说「转好了」。
+    #
+    #    转换这件事，「少了几页」比「失败」严重得多：失败会重来，
+    #    残缺会被当成成品直接发给学生。
+    if rc != 0:
+        rep['error'] = ('提取没有正常结束（退出码 %s），产物可能是残缺的，'
+                        '不能当成功用。最后几行输出：' + chr(10) + '%s'
+                        ) % (rc, rep['tail'][-400:])
+        return rep
+
     mds = [f for f in os.listdir(auto) if f.endswith('.md')]
     rep['auto_dir'] = auto
     rep['md'] = os.path.join(auto, mds[0])

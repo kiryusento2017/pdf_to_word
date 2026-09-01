@@ -90,6 +90,10 @@ function goodEnv() {
     formula: { ok: true, why: '公式会转成 Word 原生公式对象，可编辑可搜索。' },
     models: { ok: true, dir: 'D:\\app\\models', bytes: 4.6e9 },
     writable: { ok: true, dir: 'D:\\app' },
+    // GPU 运行库（CUDA 版 PyTorch）。跟「有没有显卡」是两件事：
+    // 这一项管的是装的 torch 能不能调用显卡，gpu 那项管的是机器上有没有卡。
+    cuda_torch: { ok: true, why: 'GPU 运行库就绪（PyTorch 2.11.0+cu128，CUDA 12.8）。',
+                  version: '2.11.0+cu128' },
   };
 }
 
@@ -332,7 +336,55 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     const h = fn(st);
     if (h.includes('data-act="ackGate"')) throw new Error('引擎都没有还能继续？');
     if (!h.includes('转换引擎还没装好')) throw new Error('没说清楚缺什么');
-    if (!h.includes('setup_env')) throw new Error('没告诉人怎么装');
+  });
+
+  ck('缺 GPU 运行库时拦住，并给一键安装', () => {
+    // 小蔡 2026-09-02 定「只用 GPU」。发行版里不带 CUDA 版 torch
+    //（解压后 4.2 GB，打进安装包会顶到 GitHub 单文件 2 GiB 上限），
+    // 所以首启要下。这一屏是那条路的入口。
+    const st = ready(sb);
+    st.env.cuda_torch = { ok: false,
+      why: '装的是 CPU 版 PyTorch（2.13.0+cpu），用不了显卡。' };
+    const h = fn(st);
+    if (!h.includes('GPU 运行库')) throw new Error('没说缺什么');
+    if (!h.includes('CPU 版 PyTorch')) throw new Error('没把后端给的原因显示出来');
+    if (!h.includes('data-act="installGpuLib"')) throw new Error('没有安装按钮');
+    if (!h.includes('2.5 GB')) throw new Error('没说要下多大，用户没法决定现在装还是等会儿');
+  });
+
+  ck('装 GPU 运行库时显示进度而不是干等', () => {
+    const st = ready(sb);
+    st.env.cuda_torch = { ok: false, why: '还没装 GPU 运行库（PyTorch）。' };
+    st.gpuLibBusy = true;
+    st.gpuLibLine = 'Downloading torch-2.11.0+cu128-cp312-win_amd64.whl (2.4 GB)';
+    const h = fn(st);
+    if (!h.includes('正在装')) throw new Error('没说在装');
+    if (!h.includes('Downloading torch')) throw new Error('没显示 pip 的输出，看着像卡死了');
+    if (h.includes('data-act="installGpuLib"')) throw new Error('装着还能再点一次');
+  });
+
+  ck('缺 GPU 运行库排在显卡不达标前面', () => {
+    // 两个都不满足时先说运行库 —— 那是用户自己能解决的，
+    // 显卡不行是没办法的事。先让人做能做的那件。
+    const st = ready(sb);
+    st.env.cuda_torch = { ok: false, why: '还没装 GPU 运行库（PyTorch）。' };
+    st.env.gpu = { ok: false, why: '这台电脑没有 NVIDIA 独立显卡。' };
+    const h = fn(st);
+    if (!h.includes('GPU 运行库')) throw new Error('先弹的是显卡那屏');
+  });
+
+  ck('引擎缺失屏不许指向发行版里不存在的文件', () => {
+    // 🔴 这条测试原来反着写：它**要求**出现 setup_env，而发行版根目录里
+    //    既没有 README.md 也没有 tools/（build_release.py 的 CODE 清单里
+    //    就没打包它们）。老师撞上这屏 —— 还是新用户最容易撞的一屏 ——
+    //    看到的是一句指向不存在文件的说明，彻底卡死。
+    //    测试绿着，因为它断言的是开发者眼里的项目，不是用户拿到的包。
+    const st = ready(sb);
+    st.env.mineru = { ok: false };
+    const h = fn(st);
+    if (/setup_env/.test(h)) throw new Error('指向了发行版里没有的 tools\setup_env.py');
+    if (/README/.test(h)) throw new Error('指向了发行版里没有的 README');
+    if (!h.includes('重新解压')) throw new Error('没告诉人具体该干什么');
   });
 }
 
@@ -671,6 +723,29 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
                error: '仓库里还没有发布任何版本' };
     const h = fn(st);
     if (!h.includes('仓库里还没有发布任何版本')) throw new Error('没照实说');
+    if (h.includes('暂时没法检查更新')) throw new Error('查成功了却说成检查失败');
+  });
+
+  ck('本地比远端新时不许说成「没法检查更新」', () => {
+    // check() 有三种 ok=true 却带 error 的**正常**结果（本地更新、
+    // 仓库没发过版本、version.json 缺失）。原来的分支写成
+    // `if (!u.ok || u.error)`，这三种全被塞进错误分支 ——
+    // 标题「暂时没法检查更新」和正文「本地版本比仓库里的还新」自相矛盾。
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: false, local: 'v0.0.3', latest: 'v0.0.1',
+               error: '本地版本（v0.0.3）比仓库里的（v0.0.1）还新，不用更新' };
+    const h = fn(st);
+    if (h.includes('暂时没法检查更新')) throw new Error('查成功了却说成检查失败');
+    if (!h.includes('比仓库里的')) throw new Error('没把原因照实说出来');
+  });
+
+  ck('真连不上时才说「没法检查更新」，并给重试', () => {
+    const st = ready(sb);
+    st.upd = { ok: false, has_update: false, local: 'v1', latest: '',
+               error: '连不上 GitHub：timed out' };
+    const h = fn(st);
+    if (!h.includes('暂时没法检查更新')) throw new Error('真失败了却没说');
+    if (!h.includes('data-act="checkUpdate"')) throw new Error('没法重试');
   });
 
   ck('装好之后只剩重启，不让用户自己去覆盖文件', () => {

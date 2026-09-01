@@ -1,6 +1,6 @@
 // PDF 转 Word · 渲染层
 //
-// 无框架，纯 JS 拼字符串 + 事件委托 —— 跟金石工作台同一套路子。
+// 无框架，纯 JS 拼字符串 + 事件委托 —— 跟终末诗篇工作台同一套路子。
 // 理由不是复古：这软件只有两屏，装个框架的收益抵不过多一层构建的代价，
 // 而且拼字符串这套已经被一套「假 window 里真渲染」的测试盯住了。
 //
@@ -84,6 +84,9 @@ function isBlocked(st) {
   if (!(e.writable || {}).ok) return true;
   if (!(e.formula || {}).ok) return true;
   if (!(e.mineru || {}).ok) return true;
+  // GPU 运行库（CUDA 版 PyTorch）没装或装成了 CPU 版 —— 硬拦。
+  // 这台机器有没有显卡是另一回事（下面那条），两个都得过。
+  if (!(e.cuda_torch || {}).ok) return true;
   if (!(e.gpu || {}).ok && !st.gateAck) return true;
   return false;
 }

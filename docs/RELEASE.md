@@ -12,8 +12,8 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q
-node tests\front_check.js
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 208 条
+node tests\front_check.js                                   # 67 条
 ```
 
 **红一条都不许发。** 不存在「这条测试早就坏了不用管」——
@@ -147,7 +147,7 @@ const ROOT = path.basename(path.dirname(__dirname)) === 'resources'
 
 ## 四、Release 上传
 
-一个 Release 挂**两个**附件，缺一不可：
+一个 Release 挂**两个**附件 —— **首版（v0.0.1）例外，只挂安装包**：
 
 ```
 PDF2Word-Setup-v0.0.1.exe       357 MB   新用户下这个
@@ -160,6 +160,15 @@ gh release create v0.0.1 ^
   "dist\pdf_to_word-v0.0.1-update.zip" ^
   --title "v0.0.1" --notes-file 发布说明.md
 ```
+
+### 首版为什么不用挂更新包
+
+v0.0.1 之前没有版本，不存在「从旧版更新上来」的人。代码上也走不到那条路：
+`check()` 一看本地 tag 和远端一样就直接 return「已是最新」，根本不读附件列表。
+
+**但从 v0.0.2 开始必须挂。** `_pick_asset` 只认名字带 `update` 的 `.zip`，
+找不到就返回 None，那时 v0.0.1 的用户点「检查更新」会看到
+「有新版本，但那个 Release 没有附更新包」—— 修复到不了他手上。
 
 ### 🔴 只传更新包会怎样
 
@@ -180,7 +189,9 @@ gh release create v0.0.1 ^
 
 1. **怎么装**——下哪个文件、双击之后干什么
 2. **用之前要知道的**——必须装 Office（且**只装 WPS 不行**）、
-   别装 `C:\Program Files`、首次要下 4.6 GB 模型
+   **必须有 NVIDIA 独立显卡**（只用 GPU，没有 N 卡装了也转不了）、
+   别装 `C:\Program Files`、首次要下约 7 GB
+   （4.6 GB 模型 + 2.5 GB GPU 运行库）
 3. **不想用了怎么办**——删文件夹即可，干净
 4. **以后怎么更新**——软件里点「检查更新」，不用再来 GitHub
 
@@ -225,6 +236,32 @@ MinerU 的东西。我们通过 `MINERU_TOOLS_CONFIG_JSON` 指向自己那份。
 ⚠️ Pandoc **不能从包里去掉**：整个 docx 是它生成的（md→html→docx），
 XSL 只是把生成物里的公式替换掉。
 
+### 只用 GPU，不用 CPU
+
+2026-09-02 小蔡定的。理由不是 CPU 跑不动（实测只慢 2 倍），是
+**静默降级最坑人**：MinerU 的 `get_device()` 探不到显卡就自己换 CPU，
+用户完全不知道自己在等一件本可以快一倍的事。
+
+落实在三处：
+
+| | 靠什么 |
+|---|---|
+| 不许悄悄用 CPU | `paths.child_env()` 写死 `MINERU_DEVICE_MODE=cuda` |
+| 显卡不达标 | 报警但**不阻拦**（点了当场报错，不是白等） |
+| 话术 | 不许出现「会退回 CPU」，`tests/test_gpu.py` 钉着 |
+
+### CUDA 版 torch 不打进安装包
+
+它解压后 4.2 GB，打进去包会从 356 MB 涨到 1.5~2 GB，逼近 GitHub 单文件
+2 GiB 上限，而且没显卡的人也得跟着下。
+
+`install_deps()` 装完依赖会**把 torch 卸掉**（pip 装 mineru 时会自己拉一份
+CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.5 GB），
+跟那 4.6 GB 模型走同一个下载流程。
+
+⚠️ `--cuda` 构建是例外：那种包直接把 GPU 版打进去，装完即用不用联网，
+   只在确实需要离线分发时才这么打。
+
 ### 不打包微软的 XSL
 
 `MML2OMML.XSL` 是随 Office 分发的版权文件，提取出来再分发是侵权。
@@ -253,4 +290,6 @@ XSL 只是把生成物里的公式替换掉。
 | 中文安装路径 | **没测过**。默认给英文路径，SFX 提示里也写了「路径最好别有中文和空格」 |
 | 首次启动要装依赖 | `--slim` 打的包里没有 Layer 1，用户首次打开要跑 `安装依赖.cmd`（联网几分钟）。默认构建已经装好，不走这条路 |
 | GitHub 单文件 2 GiB | 安装包 357 MB 没超。哪天依赖膨胀到超了，7-Zip 支持分卷 SFX |
-| SmartScreen | exe 没有代码签名，Windows 会弹「未知发布者」。老师需要点「更多信息 → 仍要运行」。签名要买证书（一年几百到几千） |
+| SmartScreen | exe 没有代码签名，Windows 会弹「未知发布者」。老师需要点「更多信息 → 仍要运行」。签名要买证书（一年几百到几千）。**7z 自解压格式触发率更高**，Edge 可能直接「已阻止此不安全下载」——真发给老师时考虑改发 zip，或者直接微信/U盘传 |
+| 模型完整性 | `models.ready()` 的判据是「配置指的目录里有 >1 MB 的文件」，**下到一半也算就绪**。改严的话（比如按总大小卡）会误判已经下好的用户、逼他重下 4.6 GB，代价比漏判大，所以维持现状。真下坏了转换会失败并报错，重下一次即可 |
+| pip launcher | `runtime/python/Scripts/*.exe` 里硬编码着打包机器的解释器路径，**换台机器全废**。跑 MinerU 一律走 `paths.mineru_cmd()`（解释器 + `-m` 模块），别再用 `find_exe('mineru')`。v0.0.1 就是栽在这上面 |

@@ -366,7 +366,7 @@ def _resize_images(docx_path, targets):
     return sum(1 for t in targets[:cnt] if t is not None)
 
 
-def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
+def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     r"""把一份 Markdown 转成 Word。返回报告 dict，**不抛异常**。
 
     报告字段：
@@ -498,4 +498,31 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     except Exception:
         pass
     rep['ok'] = True
+    return rep
+
+
+def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
+    r"""把一份 Markdown 转成 Word。见 `_build_docx` 的完整说明。
+
+    这层只多做一件事：**判失败就把产物删掉**。
+
+    2026-09-02 查出来的：`_build_docx` 有四条失败路径发生在 pandoc
+    已经把 docx 写出来之后（没 XSL、没 node、部分公式转不了、数量对不上），
+    以前直接 return，那份文件就留在输出目录里了。界面说「失败」，
+    老师去目录一看躺着一份能双击打开、里面有内容的 Word —— 多半就当
+    成功了，而那正是我们判失败要拦下的次等品（Pandoc 把空集 ∅ 转成 ⌀）。
+
+    其中「部分公式转不了」那条注释自己写着「比数量对不上常见得多」，
+    也就是说这不是罕见分支，是**日常都会走到**的那条。
+    """
+    rep = _build_docx(md_path, out_path, prefer_xsl=prefer_xsl,
+                      resource_path=resource_path)
+    if not rep.get('ok'):
+        try:
+            if os.path.isfile(out_path):
+                os.remove(out_path)
+        except OSError:
+            # 删不掉（被 Word 打开着之类）不该把失败原因换成删除失败 ——
+            # 用户真正需要看到的是「为什么没转成」。
+            pass
     return rep

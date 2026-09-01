@@ -62,6 +62,7 @@ CODE = [
     ('pipeline', 'pipeline'),
     ('server', 'server'),
     ('app/main.js', 'resources/app/main.js'),
+    ('app/icon.ico', 'resources/app/icon.ico'),
     ('app/preload.js', 'resources/app/preload.js'),
     ('app/package.json', 'resources/app/package.json'),
     ('app/renderer', 'resources/app/renderer'),
@@ -74,6 +75,9 @@ APP_EXE = 'PDF转Word.exe'
 
 # Layer 1 的依赖。跟 setup_env.py 保持一致。
 DEPS = ['pymupdf', 'lxml', 'fastapi', 'uvicorn', 'python-docx', 'mineru[core]']
+# ⚠️ 2026-09-02 起不再往包里装 CPU 版 torch（规矩改成只用 GPU）。
+#    这行留着是因为 --slim 构建生成的「首次安装.cmd」还在用同一个源地址，
+#    真要删的话两处得一起改。别以为它是死代码就顺手删掉。
 TORCH_CPU = ['torch', 'torchvision', '--index-url',
              'https://download.pytorch.org/whl/cpu']
 TORCH_CUDA = ['torch', 'torchvision', '--index-url',
@@ -213,17 +217,37 @@ def put_launcher(out, version, slim=False):
         'echo.\r\n'
         'runtime\\python\\python.exe -m pip install --no-warn-script-location '
         '__DEPS__ -i https://pypi.tuna.tsinghua.edu.cn/simple\r\n'
+        'if errorlevel 1 goto failed\r\n'
         'runtime\\python\\python.exe -m pip install --no-warn-script-location '
         'torch torchvision --index-url https://download.pytorch.org/whl/cpu\r\n'
+        'if errorlevel 1 goto failed\r\n'
         'echo.\r\n'
         'echo 装好了，可以关掉这个窗口，双击「PDF转Word.exe」开始用。\r\n'
         'pause\r\n'
+        'exit /b 0\r\n'
+        ':failed\r\n'
+        'echo.\r\n'
+        'echo 装失败了 —— 上面几行红字是原因，多半是网络不通。\r\n'
+        'echo 连上网之后再双击这个文件跑一次就行，已经装好的部分不会重下。\r\n'
+        'pause\r\n'
+        'exit /b 1\r\n'
     ).replace('__DEPS__', ' '.join(DEPS))
-    io.open(os.path.join(out, '首次安装.cmd'), 'w', encoding='utf-8').write(dep)
+    io.open(os.path.join(out, '首次安装.cmd'), 'w', encoding='utf-8', newline='').write(dep)
     say('slim 构建：放了「首次安装.cmd」')
 
 
 def put_version(out, version, sha=''):
+    r"""写 version.json。软件靠它知道自己是哪个版本。
+
+    ⚠️ `published_at` 永远是空串，**这是对的不是漏填** —— 打包这一刻
+       Release 还没创建，真实发布时间根本拿不到。
+
+       所以 `update.check()` 的防降级判断**不能**拿它当主判据：
+       那样写的话保护恒不生效（2026-09-02 实测：本地 v0.0.3、远端
+       v0.0.1，界面照样提示「有新版本」，点更新就是降级）。
+       现在主判据是版本号本身，published_at 只在版本号看不懂时兜底。
+       字段保留是为了兼容已经发出去的旧包。
+    """
     io.open(os.path.join(out, 'version.json'), 'w', encoding='utf-8').write(
         json.dumps({'tag': version, 'published_at': '', 'sha': sha},
                    ensure_ascii=False, indent=2))
@@ -254,20 +278,62 @@ def put_readme(out, version):
 
 # ── Layer 1 ─────────────────────────────────────────────────────────────
 def install_deps(py_exe, cuda=False):
+    r"""装 Layer 1 依赖。
+
+    🔴 装完**把 torch 卸掉**（除非 --cuda）。
+
+       小蔡 2026-09-02 定「只用 GPU」，而 CUDA 版 torch 解压后 4.2 GB：
+       打进安装包会让它从 356 MB 涨到 1.5~2 GB，逼近 GitHub 单文件
+       2 GiB 的上限，而且没有显卡的人也得跟着下这 4 GB。
+       所以改成首次启动时按需装 —— 反正首启本来就要下 4.6 GB 模型，
+       两件事合成一个流程，用户只等一次。
+
+       为什么是「先装再卸」而不是干脆别装：mineru 的依赖树里 torch 是
+       必需项，pip 装 mineru 的时候会自己把它拉下来。让它装、再干净卸掉，
+       比想办法拦住它可靠 —— 卸载走的是 pip 自己的元数据，不会留下
+       半截的 dist-info 让首启那次安装误判成「已经装过了」。
+
+       结果：CPU 版 torch 那 486 MB 不进包，安装包小掉一半。
+    """
     say('装依赖（这一步最久）…')
     mirror = ['-i', 'https://pypi.tuna.tsinghua.edu.cn/simple']
     subprocess.run([py_exe, '-m', 'pip', 'install', '-q',
                     '--no-warn-script-location'] + DEPS + mirror, check=True)
-    torch = TORCH_CUDA if cuda else TORCH_CPU
-    subprocess.run([py_exe, '-m', 'pip', 'install', '-q',
-                    '--no-warn-script-location'] + torch, check=True)
-    say('依赖装完')
+    if cuda:
+        # --cuda：直接把 GPU 版打进包，装完即用不用再联网。
+        # 代价是包 1.5~2 GB，只在确实需要离线分发时才这么打。
+        subprocess.run([py_exe, '-m', 'pip', 'install', '-q',
+                        '--no-warn-script-location'] + TORCH_CUDA, check=True)
+        say('依赖装完（含 CUDA 版 torch）')
+        return
+
+    subprocess.run([py_exe, '-m', 'pip', 'uninstall', '-y', '-q',
+                    'torch', 'torchvision'], check=False)
+    say('依赖装完（torch 已卸掉，首启时按需装 CUDA 版）')
 
 
 # 更新包里放什么。**只有会改的那些** —— Electron 367 MB、pandoc 223 MB、
 # python 运行时、torch、模型都不动，推它们等于让老师重下 10 GB 换 0.9 MB。
-UPDATE_PARTS = ['pipeline', 'server', 'app/main.js', 'app/preload.js',
-                'app/package.json', 'app/renderer', 'version.json']
+#
+# 🔴 写成 (源码里的路径, 发行版里的路径)，**两边不一样**。
+#    前端代码在源码里是 app/，在发行版里是 resources/app/（Electron 标准
+#    形态，exe 改个名就能双击直接开）。照源码路径打包的话，解压出来落在
+#    <安装目录>/app/，而软件读的是 <安装目录>/resources/app/ ——
+#    **前端更新完全无效**。
+#
+#    这个 bug 最坏的地方是它不报错：pipeline/ 和 server/ 在根目录，
+#    两边路径一致，所以 Python 那半更新得好好的，用户看到「更新完成」，
+#    只有前端悄悄停在旧版本。跟 CODE 清单对着看，两处必须一致。
+UPDATE_PARTS = [
+    ('pipeline', 'pipeline'),
+    ('server', 'server'),
+    ('app/main.js', 'resources/app/main.js'),
+    ('app/preload.js', 'resources/app/preload.js'),
+    ('app/package.json', 'resources/app/package.json'),
+    ('app/icon.ico', 'resources/app/icon.ico'),
+    ('app/renderer', 'resources/app/renderer'),
+    ('version.json', 'version.json'),
+]
 
 
 def make_update_zip(version, sha=''):
@@ -282,6 +348,7 @@ def make_update_zip(version, sha=''):
 
     # version.json 要跟着更新包一起走，否则装完还是旧版本号，
     # 下次检查更新会一直提示同一个版本。
+    # published_at 留空的理由见 put_version 的说明（打包时还没发布）
     vj = os.path.join(DIST, '_version_tmp.json')
     io.open(vj, 'w', encoding='utf-8').write(
         json.dumps({'tag': version, 'published_at': '', 'sha': sha},
@@ -289,16 +356,17 @@ def make_update_zip(version, sha=''):
 
     n = 0
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-        for rel in UPDATE_PARTS:
+        for rel, arc_base in UPDATE_PARTS:
             if rel == 'version.json':
                 z.write(vj, 'version.json')
                 n += 1
                 continue
             src = os.path.join(ROOT, rel.replace('/', os.sep))
             if not os.path.exists(src):
+                say('⚠️ 更新包里少了 %s（源文件不存在）' % rel)
                 continue
             if os.path.isfile(src):
-                z.write(src, rel)
+                z.write(src, arc_base)
                 n += 1
                 continue
             for dp, dn, fns in os.walk(src):
@@ -307,7 +375,9 @@ def make_update_zip(version, sha=''):
                     if fn.endswith('.pyc'):
                         continue
                     full = os.path.join(dp, fn)
-                    arc = os.path.relpath(full, ROOT).replace(os.sep, '/')
+                    # 包内路径 = 发行版里的位置 + 它在源目录里的相对位置
+                    sub = os.path.relpath(full, src).replace(os.sep, '/')
+                    arc = arc_base + '/' + sub
                     z.write(full, arc)
                     n += 1
     os.remove(vj)
@@ -427,6 +497,22 @@ def main():
         # 十几分钟，改个 SFX 配置不该重来一遍。
         if not os.path.isdir(OUT):
             raise SystemExit('还没组装过，先跑一次不带 --sfx 的构建')
+        # 🔴 但要确认「打的这堆东西」确实就是 --version 说的那个版本。
+        #    不查的话，`--version v0.0.2 --sfx` 会把上次 v0.0.1 的产物
+        #    打成 PDF2Word-Setup-v0.0.2.exe —— 文件名和内容对不上，
+        #    而这种包发出去之后，用户装完点「检查更新」还会告诉他
+        #    「已是最新」，因为里面的 version.json 写的是老版本。
+        try:
+            with io.open(os.path.join(OUT, 'version.json'),
+                         encoding='utf-8') as f:
+                have = json.load(f).get('tag', '')
+        except Exception:
+            have = ''
+        if have != a.version:
+            raise SystemExit(
+                '产物里的版本是 %s，跟 --version %s 对不上。\n'
+                '先跑一次不带 --sfx 的完整构建，或者把 --version 改成 %s。'
+                % (have or '(读不出来)', a.version, have or a.version))
         make_sfx(a.version)
         make_update_zip(a.version, sha)
         return
