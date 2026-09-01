@@ -182,6 +182,90 @@ def probe_mirrors(asset_url, seconds=2.0):
     return sources.probe_all(cand, seconds=seconds)
 
 
+def apply_update(zip_path):
+    r"""把下好的更新包解压覆盖到安装目录。返回 (ok, error, 覆盖了几个文件)。
+
+    小蔡定的体验（2026-09-01）：点「更新」→ 自动下载 → 自动装好 →
+    提示重启。**不能让老师自己去解压覆盖** —— 那等于把活推给用户，
+    而且"没有人会去开 github"。
+
+    ## 安全：必须防路径穿越
+
+    zip 里的成员名是打包方给的。恶意（或手滑）的包里可以有
+    `../../Windows/System32/xxx`，直接解压就写到安装目录外面去了。
+    这叫 zip slip，是个有名的洞。所以每个成员都要算出最终绝对路径，
+    确认它确实落在安装目录内才写。
+
+    ## 为什么覆盖运行中的文件没问题
+
+    更新包里只有 .py 和 .js。Python 读完就释放文件句柄，Electron 加载
+    完也一样，Windows 上覆盖它们不会被拒。但**当前进程跑的还是旧代码**，
+    所以覆盖完必须重启才生效 —— 界面上要说清楚这一点。
+
+    ## 先解压到临时目录再搬
+
+    直接往安装目录解压的话，中途失败会留下一半新一半旧的代码，
+    那种状态比不更新糟得多。先全部解到临时目录，都成功了再逐个搬过去。
+    """
+    import tempfile
+    import zipfile
+
+    if not os.path.isfile(zip_path):
+        return False, '更新包不见了', 0
+
+    root = os.path.abspath(paths.ROOT)
+    tmp = tempfile.mkdtemp(prefix='p2w_upd_')
+    try:
+        try:
+            zf = zipfile.ZipFile(zip_path)
+        except Exception as e:
+            return False, '更新包打不开，可能没下完整：%s' % str(e)[:80], 0
+
+        with zf:
+            members = []
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                # 🔴 zip slip 防护：算出最终落点，必须在安装目录内
+                target = os.path.abspath(os.path.join(root, info.filename))
+                if not (target == root or target.startswith(root + os.sep)):
+                    return (False,
+                            '更新包里有指向安装目录外面的文件（%s），'
+                            '出于安全没有安装' % info.filename[:60], 0)
+                members.append((info, target))
+
+            if not members:
+                return False, '更新包是空的', 0
+
+            # 先全解到临时目录
+            staged = []
+            for info, target in members:
+                out = os.path.join(tmp, info.filename.replace('/', os.sep))
+                os.makedirs(os.path.dirname(out) or tmp, exist_ok=True)
+                with zf.open(info) as src, io.open(out, 'wb') as dst:
+                    dst.write(src.read())
+                staged.append((out, target))
+
+        # 都解出来了再搬。这一步失败得少，但仍逐个 try，
+        # 让部分失败也能报出是哪个文件。
+        import shutil
+        done = 0
+        for out, target in staged:
+            os.makedirs(os.path.dirname(target) or root, exist_ok=True)
+            try:
+                shutil.copyfile(out, target)
+                done += 1
+            except Exception as e:
+                return (False,
+                        '写入 %s 失败：%s。可能是软件正在用这个文件，'
+                        '关掉软件再试一次。'
+                        % (os.path.relpath(target, root), str(e)[:60]), done)
+        return True, '', done
+    finally:
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 def download(asset_url, dest, on_progress=None, seconds=2.0):
     r"""下更新包。返回 (ok, error, 用了哪个源)。
 

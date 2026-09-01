@@ -126,7 +126,7 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'probeSources', 'pickSource', 'startDownload', 'pickLocal',
                      'openFile', 'openPath', 'openOffice', 'openNode',
                      'cancelDownload', 'checkUpdate', 'closeUpdate',
-                     'downloadUpdate']) {
+                     'downloadUpdate', 'restartApp']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });
@@ -673,17 +673,53 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('仓库里还没有发布任何版本')) throw new Error('没照实说');
   });
 
-  ck('下载完给出路径和怎么装', () => {
+  ck('装好之后只剩重启，不让用户自己去覆盖文件', () => {
+    // 小蔡定的体验：点「更新」→ 自动下载 → 自动装好 → 提示重启。
+    // 「没有人会去开 github」，也没有人愿意自己解压覆盖。
     const st = ready(sb);
     st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2', error: '',
-               saved: 'D:\\app\\更新包\\u.zip', via: 'ghfast.top',
+               installed: true, files: 45, via: 'ghfast.top',
                asset: { name: 'u.zip', url: 'https://x/u.zip', size: 1 } };
     const h = fn(st);
-    if (!h.includes('更新包下好了')) throw new Error('没说下好了');
-    if (!h.includes('u.zip')) throw new Error('没给路径');
-    if (!h.includes('ghfast.top')) throw new Error('没说从哪下的');
-    if (!h.includes('先关掉软件')) throw new Error('没说怎么装');
-    if (!h.includes('data-act="openPath"')) throw new Error('不能打开文件夹');
+    if (!h.includes('更新完成')) throw new Error('没说装好了');
+    if (!h.includes('45 个文件')) throw new Error('没说更新了多少');
+    if (!h.includes('data-act="restartApp"')) throw new Error('没有重启按钮');
+    if (h.includes('解压')) throw new Error('还在让用户自己解压');
+    if (h.includes('覆盖到')) throw new Error('还在让用户自己覆盖');
+    if (!h.includes('不受影响')) throw new Error('没说模型和已转文件安全');
+  });
+
+  ck('下载中说明下完会自动装，不用再动手', () => {
+    const st = ready(sb);
+    st.updBusy = true;
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2', error: '',
+               dlGot: 200000, dlTotal: 400000, phase: 'running',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 400000 } };
+    const h = fn(st);
+    if (!h.includes('正在下载')) throw new Error('没说在下');
+    if (!h.includes('50%')) throw new Error('没显示进度');
+    if (!h.includes('自动装好')) throw new Error('没说下完会自动装');
+  });
+
+  ck('安装阶段有单独的提示', () => {
+    const st = ready(sb);
+    st.updBusy = true;
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2', error: '',
+               phase: 'installing',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 1 } };
+    const h = fn(st);
+    if (!h.includes('正在安装')) throw new Error('安装阶段没提示，用户以为卡住了');
+  });
+
+  ck('按钮是「更新」和「暂不更新」', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2',
+               published: '2026-09-05', notes: 'x', error: '',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 400000 } };
+    const h = fn(st);
+    if (!h.includes('>更新<')) throw new Error('没有「更新」按钮');
+    if (!h.includes('暂不更新')) throw new Error('没有「暂不更新」');
+    if (h.includes('下载更新包')) throw new Error('还是旧文案');
   });
 
   ck('环境有硬伤时，更新面板不能盖住拦截屏', () => {

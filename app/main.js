@@ -182,6 +182,14 @@ const URL_WHITELIST = [
   'https://nodejs.org/',
 ];
 
+// 更新装好之后重启。relaunch 排一个新实例，quit 关掉当前这个 ——
+// window-all-closed 里会顺手 kill 掉 Python 后端，新实例会重新起一个。
+ipcMain.handle('restart-app', () => {
+  app.relaunch();
+  app.quit();
+  return true;
+});
+
 ipcMain.handle('open-url', async (_e, u) => {
   if (typeof u !== 'string') return false;
   if (!URL_WHITELIST.some((prefix) => u.startsWith(prefix))) return false;

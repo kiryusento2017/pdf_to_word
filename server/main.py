@@ -132,7 +132,7 @@ def list_sources():
 # ── 检查更新 ────────────────────────────────────────────────────────────
 # 单例，跟模型下载同理：一台机器同时只可能下一个更新包。
 _UPD = {'state': 'idle', 'got': 0, 'total': 0, 'error': '',
-        'file': '', 'via': ''}
+        'file': '', 'via': '', 'files': 0}
 
 
 @app.get('/api/update/check')
@@ -154,6 +154,11 @@ class UpdateDlReq(BaseModel):
 
 
 def _upd_work(url, name):
+    r"""下载 → 解压覆盖 → 报「装好了，重启生效」。
+
+    **一口气做完**，不让用户在中间再点一次。小蔡的原话：
+    「点了更新按钮，自动下载文件，然后就完成更新」「没有人会去开 github」。
+    """
     def on_prog(got, total):
         with _LOCK:
             _UPD['got'], _UPD['total'] = got, total
@@ -161,11 +166,28 @@ def _upd_work(url, name):
     dest = os.path.join(paths.ensure(os.path.join(paths.ROOT, '更新包')),
                         name or 'update.zip')
     ok, err, via = update.download(url, dest, on_progress=on_prog)
+    if not ok:
+        with _LOCK:
+            _UPD.update({'state': 'error', 'error': err, 'via': via})
+        return
+
     with _LOCK:
-        _UPD['state'] = 'done' if ok else 'error'
-        _UPD['error'] = err
-        _UPD['file'] = dest if ok else ''
-        _UPD['via'] = via
+        _UPD.update({'state': 'installing', 'via': via, 'file': dest})
+
+    ok2, err2, n = update.apply_update(dest)
+    with _LOCK:
+        if ok2:
+            _UPD.update({'state': 'done', 'error': '', 'files': n})
+            # 装好了就把下载的包删掉，别在安装目录里留垃圾
+            try:
+                os.remove(dest)
+                os.rmdir(os.path.dirname(dest))
+            except Exception:
+                pass
+        else:
+            _UPD.update({'state': 'error',
+                         'error': '下载好了但安装失败：%s' % err2,
+                         'files': n})
 
 
 @app.post('/api/update/download')

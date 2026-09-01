@@ -16,6 +16,10 @@ contextBridge.exposeInMainWorld('api', {
   openPath: (p) => ipcRenderer.invoke('open-path', p),
   openFile: (p) => ipcRenderer.invoke('open-file', p),
 
+  // 更新装好之后重启软件。**必须重启才生效** —— 覆盖的是 .py 和 .js，
+  // 当前进程跑的还是加载时的那份旧代码。
+  restart: () => ipcRenderer.invoke('restart-app'),
+
   // 引导用户去装 Office 时要能打开官网。主进程那边卡了白名单 ——
   // 页面是字符串拼出来的 HTML，万一哪天有个转义漏洞，
   // 能被诱导打开任意 URL 就是钓鱼入口。

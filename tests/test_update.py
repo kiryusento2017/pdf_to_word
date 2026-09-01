@@ -141,6 +141,80 @@ class Test版本比较看方向(unittest.TestCase):
         self.assertIn('连不上 GitHub', r['error'])
 
 
+class Test安装更新包(unittest.TestCase):
+    r"""解压覆盖。小蔡定的体验：点更新 → 自动下载 → 自动装好 → 重启。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_root = update.paths.ROOT
+        update.paths.ROOT = self.tmp
+
+    def tearDown(self):
+        update.paths.ROOT = self._orig_root
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _zip(self, entries):
+        import zipfile
+        p = os.path.join(self.tmp, '_pkg.zip')
+        with zipfile.ZipFile(p, 'w') as z:
+            for name, data in entries:
+                z.writestr(name, data)
+        return p
+
+    def test_正常覆盖(self):
+        old = os.path.join(self.tmp, 'pipeline')
+        os.makedirs(old)
+        io.open(os.path.join(old, 'a.py'), 'w', encoding='utf-8').write('旧内容')
+        z = self._zip([('pipeline/a.py', '新内容'),
+                       ('server/b.py', 'x'),
+                       ('version.json', '{"tag":"v9"}')])
+        ok, err, n = update.apply_update(z)
+        self.assertTrue(ok, err)
+        self.assertEqual(n, 3)
+        self.assertEqual(io.open(os.path.join(old, 'a.py'), encoding='utf-8').read(), '新内容')
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, 'server', 'b.py')))
+
+    def test_挡住路径穿越(self):
+        r"""🔴 zip slip：包里的 `../../xxx` 会写到安装目录外面去。
+
+        更新包是从网上下的，名字由打包方给定 —— 只要那一环被人动过手脚，
+        或者哪天打包脚本手滑，就能往用户的系统目录里写文件。
+        必须逐个成员算出最终落点，确认在安装目录内才写。
+        """
+        z = self._zip([('../../evil.txt', '坏东西'),
+                       ('pipeline/ok.py', '好的')])
+        ok, err, n = update.apply_update(z)
+        self.assertFalse(ok, '路径穿越没被挡住')
+        self.assertIn('安装目录外面', err)
+        # 一个都不该写 —— 先全解到临时目录再搬，中途发现问题就整批不动
+        self.assertFalse(os.path.isfile(os.path.join(self.tmp, 'pipeline', 'ok.py')),
+                         '发现坏成员后还是写了别的文件')
+
+    def test_绝对路径也要挡(self):
+        z = self._zip([('C:/Windows/evil.txt', '坏东西')])
+        ok, err, _n = update.apply_update(z)
+        self.assertFalse(ok)
+
+    def test_空包不算成功(self):
+        z = self._zip([])
+        ok, err, _n = update.apply_update(z)
+        self.assertFalse(ok)
+        self.assertIn('空', err)
+
+    def test_坏zip报人话(self):
+        p = os.path.join(self.tmp, 'bad.zip')
+        io.open(p, 'wb').write('这不是 zip'.encode('utf-8'))
+        ok, err, _n = update.apply_update(p)
+        self.assertFalse(ok)
+        self.assertIn('没下完整', err)
+
+    def test_文件不存在(self):
+        ok, err, _n = update.apply_update(os.path.join(self.tmp, '没有.zip'))
+        self.assertFalse(ok)
+        self.assertIn('不见了', err)
+
+
 class Test镜像(unittest.TestCase):
 
     def test_候选里必须留一条直连(self):

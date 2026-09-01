@@ -145,28 +145,33 @@ function updateView(st) {
     return '<div class="fill"><div class="f-dim">正在查看有没有新版本…</div></div>';
   }
 
-  // 正在下更新包
-  if (st.updBusy && u.asset) {
-    var pct = u.dlTotal ? Math.min(100, Math.round(100 * (u.dlGot || 0) / u.dlTotal)) : 0;
+  // 装好了，等重启
+  if (u.installed) {
     return '<div class="fill">'
-      + '<div style="font-size:13px;font-weight:600">正在下载更新包… ' + pct + '%</div>'
-      + '<div style="width:70%">' + bar(u.dlGot || 0, u.dlTotal || 1) + '</div>'
-      + '<div class="f-dim">' + F.gb(u.dlGot || 0)
-      + (u.dlTotal ? ' / ' + F.gb(u.dlTotal) : '') + '</div></div>';
+      + '<div style="font-size:14px;font-weight:600">更新完成</div>'
+      + '<div class="f-dim">已更新 ' + (u.files || 0) + ' 个文件'
+      + (u.via ? '　·　来自 ' + esc(u.via) : '') + '</div>'
+      + '<div class="f-dim" style="max-width:440px;line-height:1.6">'
+      + '重启一下就生效。你的模型和转好的文件都不受影响。</div>'
+      + '<div style="display:flex;gap:8px;margin-top:2px">'
+      + btn('restartApp', '立即重启', { cls: 'primary' })
+      + btn('closeUpdate', '稍后重启') + '</div></div>';
   }
 
-  // 下完了
-  if (u.saved) {
+  // 正在下载 / 正在安装
+  if (st.updBusy && u.asset) {
+    if (u.phase === 'installing') {
+      return '<div class="fill">'
+        + '<div style="font-size:13px;font-weight:600">正在安装…</div>'
+        + '<div class="f-dim">马上就好</div></div>';
+    }
+    var pct = u.dlTotal ? Math.min(100, Math.round(100 * (u.dlGot || 0) / u.dlTotal)) : 0;
     return '<div class="fill">'
-      + '<div style="font-size:14px;font-weight:600">更新包下好了</div>'
-      + '<div class="f-dim mono ell" style="max-width:86%">' + esc(u.saved) + '</div>'
-      + (u.via ? '<div class="f-dim">来源：' + esc(u.via) + '</div>' : '')
-      + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
-      + '解压后覆盖到本软件的文件夹里即可（覆盖前先关掉软件）。'
-      + '模型和已转好的文件都不受影响。</div>'
-      + '<div style="display:flex;gap:8px">'
-      + btn('openPath', '打开所在文件夹', { cls: 'primary', arg: u.saved })
-      + close + '</div></div>';
+      + '<div style="font-size:13px;font-weight:600">正在下载… ' + pct + '%</div>'
+      + '<div style="width:70%">' + bar(u.dlGot || 0, u.dlTotal || 1) + '</div>'
+      + '<div class="f-dim">' + F.gb(u.dlGot || 0)
+      + (u.dlTotal ? ' / ' + F.gb(u.dlTotal) : '') + '</div>'
+      + '<div class="f-dim">下完会自动装好，不用你动手</div></div>';
   }
 
   // 出错 / 说不清楚
@@ -199,8 +204,8 @@ function updateView(st) {
     + (notes ? '<div class="f-dim" style="max-width:90%;text-align:left;'
         + 'line-height:1.6;max-height:150px;overflow:auto">' + notes + '</div>' : '')
     + '<div style="display:flex;gap:8px;margin-top:4px">'
-    + btn('downloadUpdate', '下载更新包', { cls: 'primary' })
-    + close + '</div></div>';
+    + btn('downloadUpdate', '更新', { cls: 'primary' })
+    + btn('closeUpdate', '暂不更新') + '</div></div>';
 }
 
 

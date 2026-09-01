@@ -53,15 +53,18 @@
       if (!st.upd) return;
       st.upd.dlGot = d.got || 0;
       st.upd.dlTotal = d.total || 0;
+      st.upd.phase = d.state;          // running / installing / done / error
       if (d.state === 'done') {
         stopUpdPolling();
         st.updBusy = false;
-        st.upd.saved = d.file;
+        // 后端已经解压覆盖好了，剩下的只有重启。
+        st.upd.installed = true;
+        st.upd.files = d.files || 0;
         st.upd.via = d.via;
       } else if (d.state === 'error') {
         stopUpdPolling();
         st.updBusy = false;
-        st.upd.error = d.error || '下载失败';
+        st.upd.error = d.error || '更新失败';
       }
       render();
     }).catch(function () {});
@@ -277,6 +280,10 @@
     },
 
     closeUpdate: function () { st.upd = null; render(); },
+
+    // 更新装好之后重启。**必须重启才生效** —— 覆盖的是 .py 和 .js，
+    // 当前进程跑的还是加载时那份旧代码。
+    restartApp: function () { window.api.restart(); },
 
     // 下更新包。只下不装 —— 自动替换运行中的文件在 Windows 上很麻烦
     // （文件被占用），而且这软件是发给身边几个老师的，下完打开文件夹

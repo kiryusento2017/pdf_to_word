@@ -301,6 +301,85 @@ def make_update_zip(version, sha=''):
     return out
 
 
+# 7-Zip 的位置。做自解压 exe 要用它的 SFX 模块。
+_7Z_CANDS = [
+    r'C:\Program Files\7-Zip\7z.exe',
+    r'C:\Program Files (x86)\7-Zip\7z.exe',
+]
+
+
+def find_7z():
+    import shutil as sh
+    for p in _7Z_CANDS:
+        if os.path.isfile(p):
+            return p
+    return sh.which('7z') or ''
+
+
+def make_sfx(version):
+    r"""把发行版做成自解压 exe：双击 → 弹框问放哪 → 解压完成。
+
+    用 7z.sfx（带界面那个），不是 7zCon.sfx（控制台版，双击会弹黑框）。
+    拼法是：sfx 模块 + 配置 + .7z 数据，三个文件按顺序拼成一个 exe。
+
+    压缩用 -mx=5：-mx=9 对这堆东西（大量已压缩的 dll 和 wheel）只多省
+    几十 MB，却要多花好几倍时间。
+    """
+    sz = find_7z()
+    if not sz:
+        raise SystemExit('找不到 7z.exe。装一个：winget install 7zip.7zip')
+    sfx = os.path.join(os.path.dirname(sz), '7z.sfx')
+    if not os.path.isfile(sfx):
+        raise SystemExit('找不到 7z.sfx（7-Zip 的自解压模块）')
+
+    archive = os.path.join(DIST, '_payload.7z')
+    if os.path.isfile(archive):
+        os.remove(archive)
+
+    say('压缩中（1.97 GB，要几分钟）…')
+    r = subprocess.run([sz, 'a', '-t7z', '-mx=5', '-mmt=on', archive,
+                        os.path.join(OUT, '*')],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if r.returncode != 0:
+        raise SystemExit('压缩失败：%s' % r.stdout.decode('utf-8', 'replace')[-400:])
+    say('压缩完 %.2f GB' % (os.path.getsize(archive) / 1024 ** 3))
+
+    # SFX 配置。GUIMode=2 是「问用户解压到哪」，正是普通安装包的体验。
+    # 解压完自动打开那个文件夹，省得老师找不到。
+    cfg = (
+        ';!@Install@!UTF-8!\n'
+        'Title="PDF 转 Word __VER__"\n'
+        'BeginPrompt="要把「PDF 转 Word」安装到哪里？\\n\\n'
+        '请不要选 C:\\\\Program Files —— 那个位置写不了文件。\\n'
+        '建议放 D 盘，比如 D:\\\\PDF转Word\\n\\n'
+        '所有文件都会留在这个文件夹里，不想用了直接删掉即可。"\n'
+        'ExtractDialogText="正在解压，大约 1-3 分钟…"\n'
+        'ExtractTitle="正在安装 PDF 转 Word"\n'
+        'GUIMode="2"\n'
+        'OverwriteMode="2"\n'
+        'ExtractPathText="安装到："\n'
+        'InstallPath="D:\\\\PDF转Word"\n'
+        'RunProgram="explorer.exe ."\n'
+        ';!@InstallEnd@!\n'
+    ).replace('__VER__', version)
+    cfg_path = os.path.join(DIST, '_sfx_config.txt')
+    io.open(cfg_path, 'w', encoding='utf-8').write(cfg)
+
+    exe = os.path.join(DIST, 'PDF转Word-%s.exe' % version)
+    if os.path.isfile(exe):
+        os.remove(exe)
+    say('拼装 exe…')
+    with io.open(exe, 'wb') as out:
+        for part in (sfx, cfg_path, archive):
+            with io.open(part, 'rb') as f:
+                shutil.copyfileobj(f, out, 1024 * 1024)
+    os.remove(archive)
+    os.remove(cfg_path)
+    say('安装包：%s（%.2f GB）'
+        % (os.path.basename(exe), os.path.getsize(exe) / 1024 ** 3))
+    return exe
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--version', required=True, help='比如 v0.0.1')
@@ -309,7 +388,9 @@ def main():
     ap.add_argument('--cuda', action='store_true',
                     help='装 CUDA 版 torch（+4 GB，转换快一倍）')
     ap.add_argument('--update-only', action='store_true',
-                    help='只打业务代码更新包（0.9 MB），不组装完整发行版')
+                    help='只打业务代码更新包（0.4 MB），不组装完整发行版')
+    ap.add_argument('--sfx', action='store_true',
+                    help='把已组装好的发行版做成自解压 exe（不重新组装）')
     a = ap.parse_args()
 
     sha = ''
@@ -321,6 +402,15 @@ def main():
         pass
 
     if a.update_only:
+        make_update_zip(a.version, sha)
+        return
+
+    if a.sfx:
+        # 只打包已有的产物，不重新组装 —— 组装一次要下 Electron、装依赖，
+        # 十几分钟，改个 SFX 配置不该重来一遍。
+        if not os.path.isdir(OUT):
+            raise SystemExit('还没组装过，先跑一次不带 --sfx 的构建')
+        make_sfx(a.version)
         make_update_zip(a.version, sha)
         return
 
