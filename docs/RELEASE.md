@@ -13,7 +13,7 @@
 
 ```
 .venv\Scripts\python.exe -m unittest discover -s tests -q   # 242 条
-node tests\front_check.js                                   # 78 条
+node tests\front_check.js                                   # 80 条
 ```
 
 **红一条都不许发。** 不存在「这条测试早就坏了不用管」——
@@ -266,6 +266,18 @@ gh api -X PATCH repos/<owner>/<repo>/git/refs/tags/v0.0.3 \
 2026-09-02 干过一次：v0.0.3 的产物覆盖掉了 v0.0.2 的附件，v0.0.3 连 tag
 一起删掉。小蔡的理由是「版本更新太快了」—— 一天之内发到 v0.0.3，
 而中间那两版都是坏的，没必要在版本历史里各占一格。
+
+2026-09-02 又踩了一次，这次代价更直接：v0.0.4 发出去之后小蔡点了更新
+装上了，随后同一个版本号被覆盖成新内容。**他本地是 v0.0.4、远端 tag
+也是 v0.0.4，检查更新只会说「已是最新」** —— 已经更新过的人永远收不到
+新内容，除非重下 287 MB 的完整包。
+
+所以覆盖同一个 Release 的前提是**所有附件的 downloadCount 都还是 0**。
+只要有人下过，就发新的修订号，别覆盖。发之前查一眼：
+
+```
+gh release view v0.0.4 --json assets --jq '.assets[] | "\(.downloadCount) \(.name)"'
+```
 
 **代价是「v0.0.2」这个版本号对应了两种不同的内容。** 将来谁说
 「我用的 v0.0.2」，没法确定是哪一份 —— version.json 里的 sha 是唯一

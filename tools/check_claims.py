@@ -92,8 +92,35 @@ claim('装完会真 import 一次（README：「装完还会真的 import 一次
       'can_load()' in read('pipeline/torchdep.py'))
 claim('验不过会把 torch 卸掉（DESIGN 第七节坑三）',
       'uninstall()' in read('pipeline/torchdep.py'))
-claim('会查 vcruntime（README：「自己查 vcruntime140.dll 在不在」）',
-      'vcruntime_missing' in read('pipeline/torchdep.py'))
+# ── C++ 运行库：2026-09-02 换了方案 ─────────────────────────────────
+#
+# 原来这里钉的是「会查 vcruntime140.dll 在不在」。那个做法当天被真机
+# 推翻了：Python embeddable 自带 vcruntime140*，哪台机器上都在，于是
+# 一台从没装过 VC++ 的电脑照样打勾（小蔡在网吧那台抓到）。
+#
+# 现在钉的是新方案：不判断系统装没装，直接装一次，记个自己的标记。
+tv = read('pipeline/vcredist.py')
+claim('有独立的 vcredist 模块负责装 C++ 运行库',
+      'def install(' in tv and 'vc_redist.x64.exe' in tv)
+claim('判据是「我们装过没有」，不是数系统里的 DLL（小蔡 2026-09-02 抓到的 bug）',
+      'def already_done' in tv and 'vc_done.json' in tv)
+claim('认 0x666 / 1638 为成功 —— 那是「已有更新版本」不是失败',
+      '0x666' in tv and '1638' in tv)
+claim('启动安装程序之后不等它（小蔡：「一旦开始装你就退出」）',
+      'subprocess.Popen' in tv and 'subprocess.run' not in tv)
+claim('启动失败时给手动装的出路，不卡死',
+      '打不开安装程序' in tv and '双击' in tv)
+claim('装 C++ 运行库排在装 GPU 运行库之前（小蔡：「不要排在 gpu 库后面」）',
+      read('pipeline/torchdep.py').index('vcredist.already_done()',
+          read('pipeline/torchdep.py').index('def install('))
+      < read('pipeline/torchdep.py').index('subprocess.Popen',
+          read('pipeline/torchdep.py').index('def install(')))
+claim('前端的拦截顺序也是 C++ 运行库在前',
+      read('app/renderer/pages.js').index("return 'vcredist'")
+      < read('app/renderer/pages.js').index("return 'cudalib'"))
+claim('vc_done.json 不许打进安装包（打进去等于给每个新用户假标记）',
+      "'-x!vc_done.json'" in read('tools/build_release.py')
+      and 'vc_done.json' in read('tools/check_package.py'))
 
 # ── 公式 ─────────────────────────────────────────────────────────────
 print()

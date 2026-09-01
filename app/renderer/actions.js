@@ -141,25 +141,47 @@
     // GPU 运行库加载不了时最常见的解法：装 Visual C++ 运行库。
     // 直接给下载地址，不让人自己去搜 —— 搜「vc运行库」出来的
     // 前几条常常是第三方打包站。
-    // 第一步：装 C++ 运行库。跟装 GPU 运行库同一套轮询。
+    // 第一步：装 C++ 运行库。照着 installGpuLib 的写法 ——
+    //
+    // 🔴 第一版这里编了两个不存在的名字（window.P2W_RELOAD_ENV、
+    //    裸的 post/get），点下去 JS 直接抛异常，轮询压根没启动，
+    //    界面永远停在「正在装」。小蔡 2026-09-02：「c++ 已经装完了
+    //    都退出去了，你还在那里显示 c++ 的空进度条」。
     installVcRedist: function () {
-      var st = window.P2W_STATE;
       st.vcBusy = true;
       st.vcError = '';
-      st.vcDl = { got: 0, total: 0, cmd: '', lines: [] };
-      window.P2W_RENDER();
-      post('/api/vcredist/install').then(function () {
-        var tick = function () {
-          get('/api/vcredist/install').then(function (d) {
-            st.vcDl = d;
-            if (d.state === 'running') { setTimeout(tick, 500); return; }
+      st.vcDl = { got: 0, total: 0, lines: [], cmd: '', installing: false };
+      render();
+      var poll = setInterval(function () {
+        HTTP.get('/api/vcredist/install').then(function (d) {
+          st.vcDl = {
+            got: d.got || 0, total: d.total || 0,
+            lines: d.lines || [], cmd: d.cmd || '',
+            installing: !!d.running_installer,
+          };
+          if (d.state === 'done') {
+            clearInterval(poll);
             st.vcBusy = false;
-            if (d.state === 'error') { st.vcError = d.error || '装失败了'; }
-            window.P2W_RELOAD_ENV();
-            window.P2W_RENDER();
-          });
-        };
-        setTimeout(tick, 400);
+            // 🔴 **不重载，退出**。小蔡 2026-09-02：「一旦开始装你就退出，
+            //    然后用户装完了再把你点开来不好吗」。微软的安装程序这时
+            //    已经在前台跑了，我们杵在这儿只会挡路，而且它有时要求
+            //    重启电脑。留一屏话说清楚下一步，两秒后自己关掉。
+            st.vcHandoff = true;
+            render();
+            setTimeout(function () { window.close(); }, 2200);
+          } else if (d.state === 'error') {
+            clearInterval(poll);
+            st.vcBusy = false;
+            st.vcError = d.error || '装失败了';
+          }
+          render();
+        }).catch(function () { /* 轮询失败下次再说 */ });
+      }, 1000);
+      HTTP.post('/api/vcredist/install', {}).catch(function (e) {
+        clearInterval(poll);
+        st.vcBusy = false;
+        st.vcError = String(e && e.message || e);
+        render();
       });
     },
 

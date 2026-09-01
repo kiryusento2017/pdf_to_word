@@ -196,13 +196,40 @@ function gateView(st, kind) {
       + btn('quit', '退出') + '</div></div>';
   }
   if (kind === 'vcredist') {
+    // 交给微软的安装程序之后，说清楚下一步就关掉自己。
+    if (st.vcHandoff) {
+      return '<div class="fill">'
+        + '<div style="font-size:14px;font-weight:600">'
+        + '安装程序已经打开了</div>'
+        + '<div class="f-dim" style="max-width:430px;line-height:1.8">'
+        + '接下来在微软那个窗口里装完（弹出权限确认框就点「是」），'
+        + '<br><b>装好之后重新打开本软件</b>，会自己接着往下走。'
+        + '<br><br>这个窗口马上自己关掉，不用管。'
+        + '</div></div>';
+    }
     if (st.vcBusy) {
       var vd = st.vcDl || {};
+      // 🔴 装的时候**不摆进度条**。vc_redist 自己有进度界面，我们这边
+      //    看不见它的进度，一个不动的条只会让人以为卡死了 ——
+      //    小蔡 2026-09-02：「他有自己的进度条，而且不是一秒装完吗？
+      //    现在的情况是 c++ 已经装完了都退出去了，你还在那里显示空进度条」。
+      if (vd.installing) {
+        return '<div class="fill">'
+          + '<div style="font-size:14px;font-weight:600">正在装 C++ 运行库</div>'
+          + '<div class="f-dim" style="max-width:440px;line-height:1.7">'
+          + '微软的安装程序已经打开了，它有自己的进度界面。'
+          + '<br><b>如果弹出权限确认框，点「是」。</b>'
+          + '<br><br>装完这里会自动继续，不用管。'
+          + '</div>'
+          + (vd.cmd ? '<div class="log" style="max-width:470px">'
+                      + esc(vd.cmd) + '</div>' : '')
+          + '</div>';
+      }
+      // 下载那 25 MB 的时候才有真实进度可显示
       return dlPanel({
-        title: '正在装 C++ 运行库',
+        title: '正在下载 C++ 运行库',
         got: vd.got, total: vd.total, cmd: vd.cmd, lines: vd.lines,
-        note: '会弹出系统的权限确认框，点「是」才能装。这一步很快，'
-            + '装完才轮到那 2.8 GB 的 GPU 运行库。',
+        note: '约 25 MB，下完会自动打开微软的安装程序。',
       });
     }
     return '<div class="fill">'

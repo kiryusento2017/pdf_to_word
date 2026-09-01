@@ -450,13 +450,19 @@ def _vcredist_work():
 
     def on_prog(got, total):
         with _LOCK:
-            _DL['got'], _DL['total'] = got, total
+            if got < 0:
+                # -1 = 下载完了，开始跑安装程序。进度条到此为止 ——
+                # vc_redist 自己有进度界面，我们看不见它的进度。
+                _DL['running_installer'] = True
+            else:
+                _DL['got'], _DL['total'] = got, total
 
     def stopped():
         with _LOCK:
             return _DL['cancel']
 
     with _LOCK:
+        _DL['running_installer'] = False
         _DL['cmd'] = vcredist.cmd_text()
         _DL['log'] = ''
         _DL['got'], _DL['total'] = 0, vcredist.SIZE_HINT

@@ -341,6 +341,56 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     if (!h.includes('转换引擎还没装好')) throw new Error('没说清楚缺什么');
   });
 
+  ck('actions 里没有编造的名字（不存在的全局函数）', () => {
+    // 🔴 2026-09-02 栽过：installVcRedist 里写了 window.P2W_RELOAD_ENV()
+    //    和裸的 post()/get()，三个都不存在。点下去 JS 直接抛异常，
+    //    轮询没启动，界面永远停在「正在装」。
+    //
+    //    前端检查只看 mainArea() 吐的 HTML，从不执行 action 里的代码，
+    // actions.js 里读到的每个 window.P2W_xxx，app.js 都得真的定义过。
+    //
+    // 🔴 这条为什么存在：2026-09-02 我在 installVcRedist 里写了
+    //    window.P2W_RELOAD_ENV()，那个东西根本不存在。点下去 JS 抛异常，
+    //    轮询没启动，界面永远停在「正在装」—— 小蔡看到的空进度条就是它。
+    //    前端检查只看 mainArea() 吐的 HTML，从不执行 action 里的代码。
+    //
+    //    第一版这条检查自己写崩了两次（正则回溯、转义写出个退格符），
+    //    比被测的代码还容易错。现在改成最笨的写法：按 'window.P2W_'
+    //    切开，每段取开头那串大写字母，不玩花的。
+    const rd = (f) => require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'app', 'renderer', f), 'utf8');
+    const pick = (txt) => txt.split('window.P2W_').slice(1)
+      .map(part => 'P2W_' + (part.match(/^[A-Z_]+/) || [''])[0]);
+    // 注释行先剔掉 —— 上面那段说明里就写着 window.P2W_RELOAD_ENV
+    // 当反面教材，扫到它是误报。
+    const nocomment = (t) => t.split('\n').filter(
+      (l) => !l.trim().startsWith('//')).join('\n');
+    const src = nocomment(rd('actions.js'));
+    const known = pick(nocomment(rd('app.js')));
+    for (const nm of pick(src)) {
+      // actions.js 末尾有 window.P2W_ACTS = ...，那是它自己往外给的
+      if (src.includes('window.' + nm + ' =')) continue;
+      if (!known.includes(nm)) throw new Error('用了不存在的全局 ' + nm);
+    }
+    // 裸的 post( / get( —— 这个文件里正确的是 HTTP.post / HTTP.get
+    if (/[^.\w]post\(/.test(src.replace(/HTTP\.post\(/g, 'X(')))
+      throw new Error('有裸的 post()，应该是 HTTP.post()');
+    if (/[^.\w]get\(/.test(src.replace(/HTTP\.get\(/g, 'X(')))
+      throw new Error('有裸的 get()，应该是 HTTP.get()');
+  });
+
+  ck('装 C++ 运行库时不摆没意义的进度条', () => {
+    // vc_redist 有自己的进度界面，我们这边看不见它的进度。
+    const st = ready(sb);
+    st.env.vcredist = { ok: false };
+    st.vcBusy = true;
+    st.vcDl = { installing: true, cmd: 'vc_redist.x64.exe /install' };
+    const h = fn(st);
+    if (/class="bar"|width:\s*\d+%/.test(h))
+      throw new Error('安装阶段还摆着进度条');
+    if (!h.includes('点「是」')) throw new Error('没告诉用户要点权限确认');
+  });
+
   ck('缺 C++ 运行库时拦住，而且排在 GPU 运行库前面', () => {
     // 小蔡 2026-09-02 真机上踩的：自检显示「显卡 ✓ Office ✓」看着一切
     // 正常，点「现在就装」下完 2.8 GB 才发现装不上，卸掉、退回同一屏。

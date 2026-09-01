@@ -151,41 +151,28 @@ def install(on_log=None, on_progress=None, stop_flag=None):
         return False, '下下来的文件不完整，重试一次'
     log('下好了，%.1f MB' % (os.path.getsize(exe) / 1048576.0))
 
-    # ── 运行 ────────────────────────────────────────────────────────
+    # ── 启动安装程序，然后**不等它** ────────────────────────────────
+    #
+    # 小蔡 2026-09-02：「一旦开始装你就退出，然后用户装完了再把你
+    # 点开来不好吗」。他是对的：
+    #
+    #   · vc_redist 自己有进度界面，我们再摆一个条是纯装饰，而且
+    #     装完退出之后我们那个条还空着挂在那儿（他真见到了）
+    #   · 不等 = 不用轮询 = 没有「轮询挂了界面卡死」这类 bug
+    #     （第一版正是这么坏的：编了两个不存在的全局函数名）
+    #   · 它有时要求重启电脑，我们本来就该让开
     log('')
     log(cmd_text())
-    log('这一步会弹出系统的权限确认框，点「是」才能装。')
+    log('安装程序这就打开。如果弹出权限确认框，点「是」。')
     try:
-        p = subprocess.run([exe, '/install', '/passive', '/norestart'],
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        code = p.returncode
+        subprocess.Popen([exe, '/install', '/passive', '/norestart'],
+                         close_fds=True)
     except Exception as e:
-        return False, ('运行安装程序失败：%s。'
-                       '可以手动双击 %s 装一下。' % (str(e)[:100], exe))
+        return False, ('打不开安装程序：%s。'
+                       '可以自己双击 %s 装一下。' % (str(e)[:100], exe))
 
-    log('安装程序退出码：%d' % code)
-    if code in OK_CODES:
-        note = ''
-        if code == 3010:
-            note = '（装好了，重启电脑后完全生效）'
-        elif code in (1638, 0x666):
-            note = '（这台机器上本来就有更新的版本，没做改动）'
-        log('搞定 %s' % note)
-        _write_marker(code)
-        try:
-            os.remove(exe)      # 25 MB 的安装包留着没用，删掉
-        except Exception:
-            pass
-        return True, ''
-
-    # 1602 = 用户取消（UAC 点了否），5 = 拒绝访问（没有管理员权限）
-    if code in (1602, 1223):
-        return False, ('安装被取消了。这一步需要点系统弹出的权限确认框里的'
-                       '「是」—— 装 C++ 运行库要改系统目录，绕不过去。'
-                       '再点一次试试。')
-    if code == 5 or code == 0x80070005:
-        return False, ('权限不够，装不了。这台电脑可能限制了管理员权限'
-                       '（网吧、公司电脑常见）。找能用管理员账号的人，'
-                       '或者让他从 %s 下一个装上。' % URL)
-    return False, ('安装程序返回 %d，没装成。可以自己去 %s 下一个手动装。'
-                   % (code, URL))
+    # 乐观写标记。万一用户中途取消，后面装 GPU 运行库那步会失败，
+    # 那一屏有「再装一次 C++ 运行库」的出路，不会卡死。
+    _write_marker(0)
+    log('已经交给微软的安装程序了。装完请重新打开本软件。')
+    return True, 

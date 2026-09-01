@@ -60,6 +60,10 @@ NOT_PROJECT_FILES = {
     'mineru.json', 'MML2OMML.XSL', 'COPYRIGHT.txt', 'LICENSE',
     'python312.zip',                      # Python embeddable 包内部的 stdlib
     'requires.json', 'requires-vX.json',  # 打包时生成的依赖清单（Release 附件）
+    # 运行时才生成的记号：装过一次 vc_redist 之后写在安装目录里。
+    # 跟 logs/*.log 一样，源码库里本来就不该有 —— 有反而说明打包会
+    # 把开发机的假记号带给用户（build_release 已把它排除）。
+    'vc_done.json',
 }
 
 PATH_RE = re.compile(
