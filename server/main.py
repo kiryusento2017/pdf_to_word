@@ -25,6 +25,7 @@ from pydantic import BaseModel                        # noqa: E402
 
 import convert                                        # noqa: E402
 import gpu                                            # noqa: E402
+import models                                         # noqa: E402
 import paths                                          # noqa: E402
 import probe                                          # noqa: E402
 import sources                                      # noqa: E402
@@ -59,7 +60,7 @@ async def env():
         'pandoc': {'ok': todocx.pandoc_available(), 'path': todocx.PANDOC},
         'mineru': {'ok': bool(_find_mineru()), 'path': _find_mineru() or ''},
         # 模型和可写性 —— 首启要据此决定是拦住、还是先去下模型
-        'models': {'ok': paths.models_ready(), 'dir': paths.MODELS,
+        'models': {'ok': models.ready(), 'dir': models.where() or paths.MODELS,
                    'bytes': paths.models_size()},
         'writable': {'ok': paths.writable(), 'dir': paths.ROOT},
     }
@@ -112,6 +113,33 @@ async def list_sources():
         'best': best['id'] if best else '',
         'total_gb': round(MODEL_BYTES / 1024 / 1024 / 1024, 1),
     }
+
+
+class UseLocalReq(BaseModel):
+    dir: str = ''
+
+
+@app.post('/api/models/use-local')
+async def use_local_models(req: UseLocalReq):
+    r"""指向一个已经下好的模型目录。
+
+    给两种人用：一是本来就跑过 MinerU 的（模型已经在硬盘上，没必要
+    再下 4.6 GB），二是从别的机器拷了一份过来的。
+
+    写的是**我们自己**那份 mineru.json，不碰用户主目录里的全局配置。
+    """
+    d = (req.dir or '').strip()
+    if not d or not os.path.isdir(d):
+        return JSONResponse({'detail': '这个文件夹不存在'}, status_code=400)
+    got = models.detect(d)
+    if not got['pipeline'] and not got['vlm']:
+        return JSONResponse(
+            {'detail': '这个文件夹里没找到 MinerU 的模型。'
+                       '应该选包含 OpenDataLab--PDF-Extract-Kit 那一层的目录。'},
+            status_code=400)
+    models.write_config(got['pipeline'], got['vlm'])
+    return {'ok': True, 'pipeline': got['pipeline'], 'vlm': got['vlm'],
+            'ready': models.ready()}
 
 
 # ── 选书 ────────────────────────────────────────────────────────────────

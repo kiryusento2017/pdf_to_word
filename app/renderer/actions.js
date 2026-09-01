@@ -178,9 +178,30 @@
       render();
     },
 
+    // 「我已经有模型了」。以前这里只是跳页，什么也没做 —— 用户选完
+    // 目录，界面装作接受了，转换时 MinerU 照样从头下 4.6 GB。
+    // 现在真的把目录写进我们自己那份 mineru.json。
     pickLocal: function () {
       window.api.pickDir().then(function (d) {
-        if (d && d.length) { st.page = 'main'; render(); }
+        var dir = Array.isArray(d) ? d[0] : d;
+        if (!dir) return;
+        st.srcError = '';
+        st.srcLoading = true;
+        render();
+        HTTP.post('/api/models/use-local', { dir: dir }).then(function (r) {
+          st.srcLoading = false;
+          if (r && r.ready) {
+            if (st.env) st.env.models = { ok: true, dir: r.pipeline || dir };
+            st.page = 'main';
+          } else {
+            st.srcError = '这个文件夹里没找到可用的模型。';
+          }
+          render();
+        }).catch(function (e) {
+          st.srcLoading = false;
+          st.srcError = String(e && e.message || e);
+          render();
+        });
       });
     },
 
