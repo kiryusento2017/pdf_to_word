@@ -93,12 +93,28 @@ def _api(url):
 
 
 def _pick_asset(rel):
-    """从 Release 的附件里挑更新包。约定是那个 .zip。"""
-    for a in (rel.get('assets') or []):
-        if (a.get('name') or '').lower().endswith('.zip'):
-            return {'name': a['name'], 'url': a.get('browser_download_url', ''),
-                    'size': a.get('size', 0)}
-    return None
+    r"""从 Release 的附件里挑更新包。
+
+    一个 Release 会传两种：
+        pdf_to_word-v0.0.1-full.zip     完整发行版 0.69 GB，首次安装用
+        pdf_to_word-v0.0.1-update.zip   只有业务代码 0.4 MB，日常更新用
+
+    **必须挑 update 那个** —— 挑成 full 的话，老师为 0.4 MB 的改动
+    重下 0.69 GB。名字里带 update 的优先，没有再退回第一个 zip
+    （比如早期只传了一个包的 Release）。
+    """
+    zips = [a for a in (rel.get('assets') or [])
+            if (a.get('name') or '').lower().endswith('.zip')]
+    if not zips:
+        return None
+    pick = None
+    for a in zips:
+        if 'update' in (a.get('name') or '').lower():
+            pick = a
+            break
+    pick = pick or zips[0]
+    return {'name': pick['name'], 'url': pick.get('browser_download_url', ''),
+            'size': pick.get('size', 0)}
 
 
 def check():

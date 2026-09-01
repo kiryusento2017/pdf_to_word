@@ -13,8 +13,24 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
-const PYTHON = path.join(ROOT, '.venv', 'Scripts', 'python.exe');
 const SERVER = path.join(ROOT, 'server', 'main.py');
+
+// 🔴 Python 的位置：发行版和开发环境不一样，按顺序找。
+//    发行版用官方 embeddable 包（自带 stdlib，自包含）放在 runtime/python/；
+//    .venv **不能打包分发** —— 它的 Lib 下只有 site-packages，没有 stdlib，
+//    os.__file__ 指向开发机的 Python 安装目录，换台机器第一句 import 就死。
+//    跟 Python 那边的 paths.find_exe 是同一套思路，别再各写各的。
+const PYTHON = (() => {
+  const cands = [
+    path.join(ROOT, 'runtime', 'python', 'python.exe'),   // 发行版
+    path.join(ROOT, '.venv', 'Scripts', 'python.exe'),    // 开发环境
+  ];
+  const fs = require('fs');
+  for (const p of cands) {
+    if (fs.existsSync(p)) return p;
+  }
+  return cands[cands.length - 1];   // 都没有：让它报错，错误信息里能看见路径
+})();
 
 let win = null;
 let py = null;
