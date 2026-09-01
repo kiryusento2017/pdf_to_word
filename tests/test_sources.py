@@ -220,6 +220,80 @@ class Test源清单(unittest.TestCase):
         而实测证明没有哪个源普遍最优。"""
         self.assertGreaterEqual(len(sources.MODEL_SOURCES), 3)
 
+    def test_探测的是真实文件而不是API接口(self):
+        r"""🔴 曾经指向 `/api/v1/models/...` 这种 JSON 元数据接口，只有几 KB，
+        read 到空就 break，算出来的是「几 KB ÷ 建连时间」= 变相 ping。
+        界面于是显示「约 44 小时」「约 109 小时」，排序每轮都不一样。
+
+        判据：URL 里必须有 resolve/（指向仓库里的具体文件），
+        且不能是 /api/ 开头的接口路径。
+        """
+        for src in sources.MODEL_SOURCES:
+            u = src['probe']
+            self.assertIn('resolve/', u,
+                          '%s 的探测 URL 不是指向具体文件：%s' % (src['id'], u))
+            self.assertNotIn('/api/', u,
+                             '%s 又指回 API 接口了，那测的是延迟不是带宽：%s'
+                             % (src['id'], u))
+
+    def test_计时不含建连时间(self):
+        r"""建连、DNS、TLS 握手属于延迟，算进带宽里就成了变相 ping。
+
+        造一个「先卡 0.3 秒才吐数据」的假响应：如果计时从建连开始算，
+        测出来的速度会被那 0.3 秒稀释掉一半以上。
+        """
+        import time as _t
+
+        class _Slow:
+            def __init__(self):
+                self.n = 0
+            def read(self, _n):
+                self.n += 1
+                if self.n == 1:
+                    _t.sleep(0.3)          # 服务端首字节延迟
+                    return b'x' * 65536
+                if self.n > 40:
+                    return b''
+                return b'x' * 65536
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        orig = sources.urllib.request.urlopen
+        sources.urllib.request.urlopen = lambda *a, **k: _Slow()
+        try:
+            out = {}
+            sources._probe_one(sources.MODEL_SOURCES[0], out, seconds=0.2)
+            bps = out[sources.MODEL_SOURCES[0]['id']]['bps']
+        finally:
+            sources.urllib.request.urlopen = orig
+        # 每次 64 KB、几乎无耗时，真实速率应当很高。若把 0.3 秒算进去，
+        # 结果会掉到几百 KB/s 这个量级。
+        self.assertGreater(bps, 5 * 1024 * 1024,
+                           '把建连/首字节延迟算进带宽了，测出来只有 %.2f MB/s'
+                           % (bps / 1024 / 1024))
+
+    def test_连上了但没数据要算失败(self):
+        class _Empty:
+            def read(self, _n):
+                return b''
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        orig = sources.urllib.request.urlopen
+        sources.urllib.request.urlopen = lambda *a, **k: _Empty()
+        try:
+            out = {}
+            sources._probe_one(sources.MODEL_SOURCES[0], out, seconds=0.2)
+            r = out[sources.MODEL_SOURCES[0]['id']]
+        finally:
+            sources.urllib.request.urlopen = orig
+        self.assertEqual(r['bps'], 0)
+        self.assertTrue(r['error'], '没数据却不算失败，会被当成可用源')
+
     def test_国内外都有(self):
         ids = [s['id'] for s in sources.MODEL_SOURCES]
         self.assertIn('modelscope', ids)

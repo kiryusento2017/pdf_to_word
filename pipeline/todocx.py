@@ -374,7 +374,11 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
       formulas_src        源文里有几个公式
       formulas_replaced   有几个被换成了 XSL 的结果
       math_engine         'xsl' 或 'pandoc' —— 这次实际用的哪条路
-      math_note           路的选择原因 / 降级原因，**必须报给用户**
+      math_note           走了哪条路的说明。**只是说明，不是错误** ——
+                          2026-09-01 起所有降级都写进 rep['error'] 并判失败，
+                          math_note 只在成功时记「公式走 XSL（N/N 成功）」。
+                          （它原来的注释写着「必须报给用户」，而 summary_line
+                           不读它、前端 0 处引用 —— 说明写进了没人看的字段。）
       tables / images     产物里的表格数、图片数
     """
     rep = {'ok': False, 'error': '', 'formulas_src': 0, 'formulas_replaced': 0,
@@ -439,8 +443,8 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
                             '公式转不成 Word 原生公式。装上 Office 再试。')
             return rep
         elif not tomath.node_available():
-            rep['error'] = ('缺少 Node.js，公式的第一步转换要用到它。'
-                            '这是安装包不完整，不是你的问题。')
+            rep['error'] = ('缺少 Node.js —— 公式的第一步转换要用到它，'
+                            '而这台电脑上没有。到 nodejs.org 装一个 LTS 版本即可。')
             return rep
         else:
             omml = tomath.batch_to_omml(texs)
@@ -451,8 +455,17 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
                 rep['formulas_replaced'] = n
                 rep['math_note'] = '公式走 Office 的 MML2OMML.XSL（%d/%d 成功）' % (n_ok, len(texs))
                 if n_ok < len(texs):
-                    rep['math_note'] += '；%d 个 XSL 转不了，保留 Pandoc 的结果：%s' % (
-                        len(texs) - n_ok, tomath.last_error()[:160])
+                    # 🔴 这是第四条降级路径，也是最常触发的一条 ——
+                    #    KaTeX 不认某个 LaTeX 命令是家常便饭，比「数量对不上」
+                    #    常见得多。那几个公式落的是 Pandoc 的结果（可能含 ⌀），
+                    #    以前 ok 仍是 True，用户拿到一份混着两种引擎产物的
+                    #    Word 却毫不知情。
+                    #    上一轮堵了另外三条，独独漏了这条，立论还是只贯彻一半。
+                    rep['error'] = (
+                        '有 %d 个公式没能转成 Word 原生公式（共 %d 个）。'
+                        '通常是公式里用了 KaTeX 不认识的写法。原因：%s'
+                        % (len(texs) - n_ok, len(texs), tomath.last_error()[:160]))
+                    return rep
             else:
                 # 数量对不上：源文数出 N 个，产物里却不是 N 个 m:oMath。
                 # 对应关系已不可信，整批不换 —— 强行按序替换会让其后所有

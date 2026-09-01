@@ -24,34 +24,68 @@ PROBE_SECONDS = 2.5
 PROBE_TIMEOUT = 6
 CHUNK = 64 * 1024
 
-# 模型源。每个源给一个**小而真实**的探测文件 URL —— 不能拿首页测，
-# 首页是 HTML 且常被 CDN 缓存在边缘节点，测出来的速度跟真实下载无关。
+# 模型源。探测文件必须是**真实的大文件**，而且就是待会儿要下的那个仓库
+# 里的东西 —— 这样测出来的才是真带宽、真路由。
+#
+# 🔴 曾经指向 API 的 JSON 元数据接口（`/api/v1/models/...`），只有几 KB。
+#    read 到空就 break，而计时从建连开始算（含 DNS + TLS 握手），
+#    于是算出来的是「几 KB ÷ 建连时间」= 变相 ping。
+#    后果：界面显示「约 44 小时」「约 109 小时」，而且每轮排序都不一样，
+#    「最快的默认选中」实际是掷骰子。老师看到 44 小时直接关软件。
+#    这个文件下面那三条硬约束第二条就写着「不用 ping 判优」——
+#    实现和自己写下的原则正好相反，而且写下之后没有人再核对过。
+#
+#    换成真实权重文件后实测：modelscope 3.60 MB/s、huggingface 0.21 MB/s、
+#    hf-mirror 连不上，跟「国内用 ModelScope」的常识对得上。
+_PROBE_FILE = 'models/Layout/YOLO/doclayout_yolo_ft.pt'      # 约 40 MB
+
 MODEL_SOURCES = [
     {'id': 'modelscope', 'name': 'ModelScope（阿里，国内快）',
      'env': {'MINERU_MODEL_SOURCE': 'modelscope'},
-     'probe': 'https://modelscope.cn/api/v1/models/OpenDataLab/PDF-Extract-Kit-1.0'},
+     'probe': 'https://modelscope.cn/models/OpenDataLab/PDF-Extract-Kit-1.0/'
+              'resolve/master/' + _PROBE_FILE},
     {'id': 'hf-mirror', 'name': 'HF-Mirror（国内镜像）',
      'env': {'MINERU_MODEL_SOURCE': 'huggingface', 'HF_ENDPOINT': 'https://hf-mirror.com'},
-     'probe': 'https://hf-mirror.com/api/models/opendatalab/PDF-Extract-Kit-1.0'},
+     'probe': 'https://hf-mirror.com/opendatalab/PDF-Extract-Kit-1.0/'
+              'resolve/main/' + _PROBE_FILE},
     {'id': 'huggingface', 'name': 'HuggingFace 官方（海外快）',
      'env': {'MINERU_MODEL_SOURCE': 'huggingface'},
-     'probe': 'https://huggingface.co/api/models/opendatalab/PDF-Extract-Kit-1.0'},
+     'probe': 'https://huggingface.co/opendatalab/PDF-Extract-Kit-1.0/'
+              'resolve/main/' + _PROBE_FILE},
 ]
 
 
 def _probe_one(src, out, seconds=PROBE_SECONDS):
-    """测一个源的实速（字节/秒）。测不通就是 0，不抛异常。"""
-    got, t0 = 0, time.time()
+    r"""测一个源的实速（字节/秒）。测不通就是 0，不抛异常。
+
+    计时**从第一个字节到手才开始**：建连、DNS、TLS 握手那段属于延迟，
+    算进带宽里就变成了变相 ping —— 曾经就是这么错的。
+
+    UA 用浏览器的：几个模型站对陌生 UA 会返回 403 或跳登录页，
+    那样测出来是「连不上」，而实际下载时 modelscope 库用的是正常 UA。
+    """
+    got = 0
+    t0 = None                        # 收到第一块数据才开始计时
     try:
-        req = urllib.request.Request(src['probe'], headers={'User-Agent': 'pdf2word/0.1'})
+        req = urllib.request.Request(
+            src['probe'],
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as r:
-            while time.time() - t0 < seconds:
+            while True:
                 b = r.read(CHUNK)
                 if not b:
-                    break
+                    break            # 文件读完了（探测文件够大，通常轮不到）
+                if t0 is None:
+                    t0 = time.time()
+                    continue         # 第一块不计入：它包含了服务端首字节延迟
                 got += len(b)
+                if time.time() - t0 >= seconds:
+                    break
     except Exception as e:
         out[src['id']] = {'bps': 0, 'error': str(e)[:80]}
+        return
+    if t0 is None or got == 0:
+        out[src['id']] = {'bps': 0, 'error': '连上了但没数据'}
         return
     dt = max(time.time() - t0, 0.001)
     out[src['id']] = {'bps': got / dt, 'error': ''}

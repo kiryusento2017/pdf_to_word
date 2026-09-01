@@ -6,6 +6,12 @@ r"""本地 HTTP 服务。Electron 起它，前端跟它说话。
 
 转换是长任务（一份 4 分钟），所以走「提交任务 + 轮询进度」，
 不用 WebSocket：本地单机、任务量小，轮询足够，少一套连接状态要维护。
+
+⚠️ **跑同步阻塞代码的路由必须写成 `def`，不能写 `async def`**。
+   FastAPI 里 async 处理函数直接在事件循环上跑，同步代码会卡住整个服务；
+   普通 def 才会被丢到线程池。/api/scan 扫 456 份 PDF 要 16 秒，
+   写成 async 的话这 16 秒里连转换进度的轮询都排队，界面卡住不动。
+   只有纯查内存字典的（ping / poll / cancel / download_status）才留 async。
 """
 import os
 import sys
@@ -44,7 +50,7 @@ _LOCK = threading.Lock()
 
 # ── 环境自检 ────────────────────────────────────────────────────────────
 @app.get('/api/env')
-async def env():
+def env():
     """首次启动那一屏要的全部信息，一次给齐 —— 分三个请求只会让首屏闪三次。"""
     g = gpu.detect()
     xsl = tomath.find_xsl() or ''
@@ -102,7 +108,7 @@ MODEL_BYTES = 4.6 * 1024 * 1024 * 1024
 
 
 @app.get('/api/sources')
-async def list_sources():
+def list_sources():
     r"""并发测所有源，按快慢排序返回。**每次现测** ——
     下载是低频动作，现测成本可忽略，而旧成绩会过时误导。
     """
@@ -183,7 +189,7 @@ class UseLocalReq(BaseModel):
 
 
 @app.post('/api/models/use-local')
-async def use_local_models(req: UseLocalReq):
+def use_local_models(req: UseLocalReq):
     r"""指向一个已经下好的模型目录。
 
     给两种人用：一是本来就跑过 MinerU 的（模型已经在硬盘上，没必要
@@ -211,7 +217,7 @@ class ScanReq(BaseModel):
 
 
 @app.post('/api/scan')
-async def scan(req: ScanReq):
+def scan(req: ScanReq):
     """把拖进来的东西（文件或文件夹）摊平成 PDF 清单，并逐份体检。
 
     **纯读**，不转换、不写任何东西。
@@ -319,7 +325,7 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
 
 
 @app.post('/api/convert')
-async def start_convert(req: ConvertReq):
+def start_convert(req: ConvertReq):
     if not req.paths:
         return JSONResponse({'detail': '没有要转换的文件'}, status_code=400)
     if not _find_mineru():

@@ -181,6 +181,24 @@ def download(source='modelscope', on_progress=None, on_log=None,
     if not exe:
         return False, '找不到 mineru-models-download，安装环境不完整'
 
+    # 🔴 起下载器之前先把配置文件建出来。
+    #
+    #    MinerU 下完模型要写配置，走的是 download_and_modify_json：
+    #        if os.path.exists(配置):  ...（版本不过期就不联网）
+    #        else:                     data = download_json(模板URL)  ← 必须联网
+    #    模板在 jsdelivr 上。新用户机器上配置不存在，于是**下完 4.6 GB
+    #    之后**才需要联网拉那个模板 —— 失败点落在最贵的位置：拉不到就
+    #    整个下载器非 0 退出，模型白下，用户被要求重来一遍。
+    #    实测那个 URL 6 次里失败过 1 次（SSL 错误）。
+    #
+    #    先写一份出来，MinerU 就走 exists 分支，全程不联网。
+    #    开发机上永远撞不见这个坑（配置早就有了），只能靠读它的源码发现。
+    if not os.path.isfile(paths.CONFIG):
+        try:
+            write_config(source=source or 'modelscope')
+        except Exception:
+            pass          # 写不出来也别拦着下载，让它自己去试
+
     import subprocess
     import threading
     import time
