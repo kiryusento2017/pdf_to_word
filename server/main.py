@@ -161,23 +161,65 @@ def check_update():
 
 
 class UpdateDlReq(BaseModel):
+    # url / name 保留只为兼容老前端 —— 后端**一个都不看**，自己去查
+    # （见 _upd_work 的说明）。
     url: str = ''
     name: str = ''
+    # 用户已经知道「拿不到官方校验值」并且选择继续。这是唯一会被读的字段。
+    allow_unverified: bool = False
 
 
-def _upd_work(url, name):
-    r"""下载 → 解压覆盖 → 报「装好了，重启生效」。
+def _upd_work(allow_unverified=False):
+    r"""下载 → 校验 → 解压覆盖 → 报「装好了，重启生效」。
 
     **一口气做完**，不让用户在中间再点一次。小蔡的原话：
     「点了更新按钮，自动下载文件，然后就完成更新」「没有人会去开 github」。
+
+    🔴 **下载地址和校验值都由这里自己去 GitHub 查，不接受前端传**
+       （2026-09-02 改）。原来是前端把 `asset.url` POST 过来就照单下载：
+       服务只绑 127.0.0.1，但本机任意进程都能 POST 一个自己的 URL，
+       让它下载并解压覆盖安装目录 —— zip slip 只挡住了目录外，
+       目录内的 .py 照样能被换掉，而那些 .py 下次启动就执行。
+
+       让前端传校验值也没用：能伪造 URL 的进程同样能伪造校验值。
+       只有校验值和文件来自两条独立的路（值走 api.github.com 直连、
+       文件走镜像），验证才有意义。
+
+       代价是多一次 API 请求（实测 1.14 秒）。顺带还解决了一个真问题：
+       用户开着更新面板放了半天再点更新时，拿到的是当下的 Release，
+       不是半天前那份。
     """
     def on_prog(got, total):
         with _LOCK:
             _UPD['got'], _UPD['total'] = got, total
 
-    dest = os.path.join(paths.ensure(os.path.join(paths.ROOT, '更新包')),
-                        name or 'update.zip')
-    ok, err, via = update.download(url, dest, on_progress=on_prog)
+    info = update.check()
+    asset = info.get('asset') or {}
+    if not info.get('ok') or not asset.get('url'):
+        with _LOCK:
+            _UPD.update({'state': 'error',
+                         'error': info.get('error') or '没查到可下载的更新包'})
+        return
+
+    # 落点用 _tmp/update：安装目录内、英文路径。
+    # （原来建的是中文目录「更新包」—— 而产物目录刚从「PDF转Word」
+    #   改成 PDF2Word 就是为了避开中文路径，两处不能各走各的。）
+    dest = os.path.join(paths.ensure(os.path.join(paths.TMP, 'update')),
+                        asset.get('name') or 'update.zip')
+    ok, err, via = update.download(asset['url'], dest, on_progress=on_prog,
+                                   digest=asset.get('digest', ''),
+                                   size=asset.get('size', 0),
+                                   allow_unverified=allow_unverified)
+    if not ok and err.startswith('NEED_CONFIRM:'):
+        # 拿不到校验值 —— **报警但不阻拦**，把情况透给界面让用户自己决定。
+        # 跟显卡那条规矩一样（小蔡：「要报警，但是并不要阻拦用户使用」）。
+        with _LOCK:
+            _UPD.update({'state': 'need_confirm',
+                         'error': ('拿不到 GitHub 给的校验值，没法确认下回来的'
+                                   '是不是原件。更新包会覆盖软件里的程序文件，'
+                                   '所以这一步有风险。'),
+                         'via': via})
+        return
     if not ok:
         with _LOCK:
             _UPD.update({'state': 'error', 'error': err, 'via': via})
@@ -203,16 +245,19 @@ def _upd_work(url, name):
 
 
 @app.post('/api/update/download')
-async def start_update_download(req: UpdateDlReq):
-    if not req.url:
-        return JSONResponse({'detail': '没有可下载的更新包'}, status_code=400)
+async def start_update_download(req: UpdateDlReq = UpdateDlReq()):
+    r"""开始更新。**不看 req 里的任何东西** —— 见 _upd_work 的说明。
+
+    请求体保留是为了兼容老前端（更新包只覆盖 .py 和 .js，
+    用户手上那份 index.html 是旧的还是新的，取决于他更新过几次）。
+    """
     with _LOCK:
         if _UPD['state'] == 'running':
             return {'ok': True, 'already': True}
         _UPD.update({'state': 'running', 'got': 0, 'total': 0,
                      'error': '', 'file': '', 'via': ''})
-    threading.Thread(target=_upd_work, args=(req.url, req.name),
-                     daemon=True).start()
+    threading.Thread(target=_upd_work, daemon=True,
+                     args=(bool(req.allow_unverified),)).start()
     return {'ok': True}
 
 

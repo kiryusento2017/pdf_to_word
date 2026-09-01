@@ -446,7 +446,7 @@ ASSET_PREFIX = 'https://github.com/%s/%s/releases/download/' % (OWNER, REPO)
 
 
 def download(asset_url, dest, on_progress=None, seconds=2.0,
-             digest='', size=0):
+             digest='', size=0, allow_unverified=False):
     r"""下更新包。返回 (ok, error, 用了哪个源)。
 
     先并发测速挑最快的再下 —— 候选里当场坏掉的不在少数（实测六个坏三个），
@@ -483,10 +483,18 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
     if not asset_url.startswith(ASSET_PREFIX):
         return (False,
                 '这个下载地址不是本仓库的 Release 附件，出于安全没有下载', '')
-    if not digest:
-        return (False,
-                'GitHub 没给这个更新包的校验值，没法确认下回来的是不是原件，'
-                '出于安全没有下载。可以到项目的 Release 页面手动下载。', '')
+    if not digest and not allow_unverified:
+        # 🔴 **报警，但不阻拦** —— 这里返回一个可识别的标记，让上层去问用户，
+        #    而不是在这儿把路堵死。
+        #
+        #    原来这条是硬拒绝。小蔡 2026-09-02 真机上点更新，看到
+        #    「出于安全没有下载」就走不下去了 —— 更新按钮的全部意义
+        #    （点一下自动搞定）就此作废。安全规则挡住正常更新、而不是
+        #    挡住攻击的时候，该改的是规则。
+        #
+        #    用户点了「仍然安装」之后走 allow_unverified=True 这条路：
+        #    校验值没有，但长度和 zip 完整性还是会查（见下面）。
+        return (False, 'NEED_CONFIRM:拿不到 GitHub 给的校验值', '')
     rows = probe_mirrors(asset_url, seconds=seconds, size=size)
     best = sources.pick_best(rows) or (rows[0] if rows else None)
     if not best:
@@ -528,6 +536,26 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
         _drop()
         return (False, '没下完（只到了 %d / %d 字节），网络中断了，可以重试'
                 % (got, total), best['name'])
+
+    if not digest:
+        # 没有官方校验值时能做的：确认它至少是个**完整的、能打开的 zip**。
+        # 这挡不住蓄意篡改（那要靠 digest），但挡得住截断、挡得住镜像
+        # 返回一个 HTML 错误页 —— 后者在实测里出现过。
+        import zipfile
+        try:
+            with zipfile.ZipFile(dest) as z:
+                bad = z.testzip()
+            if bad:
+                _drop()
+                return (False, '下回来的包内部损坏（%s），换个时间再试' % bad,
+                        best['name'])
+        except Exception as e:
+            _drop()
+            return (False,
+                    '下回来的不是一个完整的更新包（%s）—— 多半是这个下载源'
+                    '返回了别的东西。换个时间再试。' % str(e)[:60],
+                    best['name'])
+        return True, '', best['name']
 
     if h.hexdigest().lower() != digest.lower():
         # 换源重试没有意义 —— 内容对不上说明这个源给的就不是原件。

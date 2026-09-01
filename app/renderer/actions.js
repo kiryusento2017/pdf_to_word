@@ -53,7 +53,17 @@
       if (!st.upd) return;
       st.upd.dlGot = d.got || 0;
       st.upd.dlTotal = d.total || 0;
-      st.upd.phase = d.state;          // running / installing / done / error
+      st.upd.phase = d.state;   // running / installing / done / error / need_confirm
+      if (d.state === 'need_confirm') {
+        // 后端拿不到校验值，等用户拿主意 —— 这不是失败，别当错误报
+        stopUpdPolling();
+        st.updBusy = false;
+        st.upd.ok = true;
+        st.upd.needConfirm = true;
+        st.upd.confirmWhy = d.error || '';
+        render();
+        return;
+      }
       if (d.state === 'done') {
         stopUpdPolling();
         st.updBusy = false;
@@ -313,7 +323,18 @@
       });
     },
 
-    closeUpdate: function () { st.upd = null; render(); },
+    closeUpdate: function () {
+      st.upd = null;
+      st.updAllowUnverified = false;
+      render();
+    },
+
+    // 拿不到官方校验值，用户看过风险说明之后仍然要装。
+    // 跟显卡那条规矩一样：报警，但不替他做主。
+    installAnyway: function () {
+      st.updAllowUnverified = true;
+      actions.downloadUpdate();
+    },
 
     // 装 GPU 运行库（CUDA 版 PyTorch，约 2.8 GB）。
     // 发行版里不带它 —— 解压后 4.2 GB，打进安装包会让包涨到 1.5~2 GB，
@@ -359,15 +380,20 @@
     // 当前进程跑的还是加载时那份旧代码。
     restartApp: function () { window.api.restart(); },
 
-    // 下更新包。只下不装 —— 自动替换运行中的文件在 Windows 上很麻烦
-    // （文件被占用），而且这软件是发给身边几个老师的，下完打开文件夹
-    // 让人自己覆盖，比一套半可靠的自动安装靠谱。
+    // 下更新包并装好。**一口气做完**，不让人自己去覆盖文件 ——
+    // 小蔡的原话：「点了更新按钮，自动下载文件，然后就完成更新」
+    // 「没有人会去开 github」。装完提示重启，重启才生效。
+    //
+    // 不传下载地址：后端自己去 GitHub 查。前端传什么后端都不看 ——
+    // 服务虽然只绑 127.0.0.1，本机任意进程照样能 POST 一个自己的 URL，
+    // 让它下载并覆盖安装目录里会被执行的 .py。
     downloadUpdate: function () {
       var a = (st.upd || {}).asset;
       if (!a || !a.url) return;
       st.updBusy = true;
       render();
-      HTTP.post('/api/update/download', { url: a.url, name: a.name })
+      HTTP.post('/api/update/download',
+                st.updAllowUnverified ? { allow_unverified: true } : {})
         .then(function () {
           stopUpdPolling();
           updPoller = setInterval(pollUpd, 800);

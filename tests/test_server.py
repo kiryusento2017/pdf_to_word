@@ -306,5 +306,61 @@ class Test转换任务(unittest.TestCase):
         self.assertLess(len(d['results']), 2, '取消了却还是全转完了')
 
 
+class Test更新的接缝(unittest.TestCase):
+    r"""🔴 后端必须把 digest 传给 download。
+
+    2026-09-02：更新功能从发出去那天起就是坏的 —— 任何人点更新都会看到
+    「GitHub 没给这个更新包的校验值」。原因是 server 调 download 时
+    **压根没传 digest 参数**：
+
+        ok, err, via = update.download(url, dest, on_progress=on_prog)
+                                                          ↑ 少了 digest
+
+    而 220 条测试全绿。因为 update.py 那边测得很细（有 digest 就校验、
+    没有就拒绝），server 那边也测过路由，**唯独没人测「server 到底有没有
+    把 digest 传进去」** —— 两个模块各自正确，接缝处断掉。
+
+    这类 bug 只能靠「跨模块的那一手」来钉。
+    """
+
+    def test_后端把digest传给了download(self):
+        import server.main as sm
+
+        seen = {}
+
+        def fake_download(url, dest, **kw):
+            seen.update(kw)
+            seen['url'] = url
+            return False, '假装失败', 'x'
+
+        orig_dl = sm.update.download
+        orig_check = sm.update.check
+        sm.update.download = fake_download
+        sm.update.check = lambda: {
+            'ok': True, 'has_update': True, 'latest': 'v9.9.9',
+            'asset': {'name': 'u.zip', 'url': 'https://x/u.zip',
+                      'size': 123, 'digest': 'a' * 64},
+            'error': '',
+        }
+        self.addCleanup(setattr, sm.update, 'download', orig_dl)
+        self.addCleanup(setattr, sm.update, 'check', orig_check)
+
+        sm._upd_work()
+
+        self.assertIn('digest', seen, 'server 没把 digest 传给 download')
+        self.assertEqual(seen['digest'], 'a' * 64)
+        self.assertEqual(seen.get('size'), 123, 'size 也该传（长度校验要用）')
+
+    def test_后端不看前端传的url(self):
+        r"""服务只绑 127.0.0.1，但本机任意进程都能 POST 一个自己的地址，
+        让它下载并解压覆盖安装目录里会被执行的 .py。"""
+        import inspect
+        import server.main as sm
+        src = inspect.getsource(sm._upd_work)
+        self.assertIn('update.check()', src,
+                      '后端没有自己去查 Release')
+        self.assertNotIn('req.url', src, '还在用前端传的地址')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -259,6 +259,23 @@ function updateView(st) {
       + btn('closeUpdate', '稍后重启') + '</div></div>';
   }
 
+  // 拿不到官方校验值 —— **报警，但不阻拦**（跟显卡那条一个道理）。
+  // 原来这里是硬拒绝，结果更新按钮直接作废：小蔡 2026-09-02 点更新看到
+  // 「出于安全没有下载」就走不下去了，而那句话挡住的是正常更新、
+  // 不是攻击。安全规则挡住正常路径的时候，该改的是规则。
+  if (u.needConfirm) {
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">没法验证这个更新包</div>'
+      + '<div class="f-dim" style="max-width:460px;line-height:1.65;text-align:left">'
+      + esc(u.confirmWhy || '拿不到 GitHub 给的校验值。')
+      + '<br><br>更新包会覆盖软件里的程序文件，所以装一个**没法验证来源**的包'
+      + '是有风险的。你可以选择仍然安装，或者关掉这里、到项目的 Release '
+      + '页面手动下载。</div>'
+      + '<div style="display:flex;gap:8px;margin-top:2px">'
+      + btn('installAnyway', '仍然安装', { cls: 'primary' })
+      + close + '</div></div>';
+  }
+
   // 正在下载 / 正在安装
   if (st.updBusy && u.asset) {
     if (u.phase === 'installing') {

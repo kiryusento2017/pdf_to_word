@@ -828,6 +828,25 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('data-act="checkUpdate"')) throw new Error('没法重试');
   });
 
+  ck('拿不到校验值时问用户，不是把路堵死', () => {
+    // 🔴 原来这里是硬拒绝：「出于安全没有下载」，然后就没有然后了。
+    //    小蔡 2026-09-02：「不能这样吧，那更新按钮是干嘛的」——
+    //    更新按钮的全部意义就是点一下自动搞定，而那条安全规则挡住的
+    //    是正常更新、不是攻击。
+    //    改成跟显卡那条一个道理：报警，但不替用户做主。
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2',
+               needConfirm: true,
+               confirmWhy: '拿不到 GitHub 给的校验值，没法确认下回来的是不是原件。',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 1 } };
+    const h = fn(st);
+    if (!h.includes('没法验证')) throw new Error('没说清楚是什么情况');
+    if (!h.includes('拿不到 GitHub 给的校验值')) throw new Error('没显示后端给的原因');
+    if (!h.includes('data-act="installAnyway"')) throw new Error('把路堵死了，没有「仍然安装」');
+    if (!h.includes('风险')) throw new Error('没提示风险就让人装');
+    if (!h.includes('data-act="closeUpdate"')) throw new Error('退不出去');
+  });
+
   ck('装好之后只剩重启，不让用户自己去覆盖文件', () => {
     // 小蔡定的体验：点「更新」→ 自动下载 → 自动装好 → 提示重启。
     // 「没有人会去开 github」，也没有人愿意自己解压覆盖。
