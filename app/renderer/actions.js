@@ -42,6 +42,31 @@
     if (dlPoller) { clearInterval(dlPoller); dlPoller = null; }
   }
 
+  var updPoller = null;
+
+  function stopUpdPolling() {
+    if (updPoller) { clearInterval(updPoller); updPoller = null; }
+  }
+
+  function pollUpd() {
+    HTTP.get('/api/update/download').then(function (d) {
+      if (!st.upd) return;
+      st.upd.dlGot = d.got || 0;
+      st.upd.dlTotal = d.total || 0;
+      if (d.state === 'done') {
+        stopUpdPolling();
+        st.updBusy = false;
+        st.upd.saved = d.file;
+        st.upd.via = d.via;
+      } else if (d.state === 'error') {
+        stopUpdPolling();
+        st.updBusy = false;
+        st.upd.error = d.error || '下载失败';
+      }
+      render();
+    }).catch(function () {});
+  }
+
   function pollDl() {
     HTTP.get('/api/models/download').then(function (d) {
       st.dl = {
@@ -232,6 +257,45 @@
         st.srcError = String(e && e.message || e);
         render();
       });
+    },
+
+    // 检查更新。请求由后端发 —— 页面的 CSP 只放行 127.0.0.1，
+    // 让前端直连 GitHub 得放宽 CSP，那是拿安全性换一个小功能。
+    checkUpdate: function () {
+      st.updBusy = true;
+      st.upd = null;
+      render();
+      HTTP.get('/api/update/check').then(function (d) {
+        st.updBusy = false;
+        st.upd = d;
+        render();
+      }).catch(function (e) {
+        st.updBusy = false;
+        st.upd = { ok: false, error: String(e && e.message || e) };
+        render();
+      });
+    },
+
+    closeUpdate: function () { st.upd = null; render(); },
+
+    // 下更新包。只下不装 —— 自动替换运行中的文件在 Windows 上很麻烦
+    // （文件被占用），而且这软件是发给身边几个老师的，下完打开文件夹
+    // 让人自己覆盖，比一套半可靠的自动安装靠谱。
+    downloadUpdate: function () {
+      var a = (st.upd || {}).asset;
+      if (!a || !a.url) return;
+      st.updBusy = true;
+      render();
+      HTTP.post('/api/update/download', { url: a.url, name: a.name })
+        .then(function () {
+          stopUpdPolling();
+          updPoller = setInterval(pollUpd, 800);
+          pollUpd();
+        }).catch(function (e) {
+          st.updBusy = false;
+          if (st.upd) st.upd.error = String(e && e.message || e);
+          render();
+        });
     },
 
     cancelDownload: function () {

@@ -30,6 +30,8 @@ var state = {
   err: '',
   port: 0,
   // 首次使用那一屏：源清单、选中的源、下载进度
+  upd: null,            // 检查更新的结果：null=没查过
+  updBusy: false,       // 正在查 / 正在下
   sources: null,
   srcLoading: false,
   srcError: '',

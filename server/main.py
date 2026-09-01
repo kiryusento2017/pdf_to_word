@@ -37,6 +37,7 @@ import probe                                          # noqa: E402
 import sources                                      # noqa: E402
 import todocx                                         # noqa: E402
 import tomath                                         # noqa: E402
+import update                                         # noqa: E402
 
 app = FastAPI(title='PDF 转 Word')
 app.add_middleware(CORSMiddleware, allow_origins=['*'],
@@ -126,6 +127,65 @@ def list_sources():
         'best': best['id'] if best else '',
         'total_gb': round(MODEL_BYTES / 1024 / 1024 / 1024, 1),
     }
+
+
+# ── 检查更新 ────────────────────────────────────────────────────────────
+# 单例，跟模型下载同理：一台机器同时只可能下一个更新包。
+_UPD = {'state': 'idle', 'got': 0, 'total': 0, 'error': '',
+        'file': '', 'via': ''}
+
+
+@app.get('/api/update/check')
+def check_update():
+    r"""查有没有新版本。**由后端发请求，不是前端**。
+
+    前端页面的 CSP 只放行 connect-src http://127.0.0.1:*；让前端直连
+    GitHub 就得放宽 CSP —— 拿安全性换一个小功能不划算。走后端还能
+    顺带做超时和错误兜底，以后加镜像轮换也在这一层。
+
+    写成 def 不是 async def：这里面是同步的网络请求，会卡住事件循环。
+    """
+    return update.check()
+
+
+class UpdateDlReq(BaseModel):
+    url: str = ''
+    name: str = ''
+
+
+def _upd_work(url, name):
+    def on_prog(got, total):
+        with _LOCK:
+            _UPD['got'], _UPD['total'] = got, total
+
+    dest = os.path.join(paths.ensure(os.path.join(paths.ROOT, '更新包')),
+                        name or 'update.zip')
+    ok, err, via = update.download(url, dest, on_progress=on_prog)
+    with _LOCK:
+        _UPD['state'] = 'done' if ok else 'error'
+        _UPD['error'] = err
+        _UPD['file'] = dest if ok else ''
+        _UPD['via'] = via
+
+
+@app.post('/api/update/download')
+async def start_update_download(req: UpdateDlReq):
+    if not req.url:
+        return JSONResponse({'detail': '没有可下载的更新包'}, status_code=400)
+    with _LOCK:
+        if _UPD['state'] == 'running':
+            return {'ok': True, 'already': True}
+        _UPD.update({'state': 'running', 'got': 0, 'total': 0,
+                     'error': '', 'file': '', 'via': ''})
+    threading.Thread(target=_upd_work, args=(req.url, req.name),
+                     daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/update/download')
+async def update_download_status():
+    with _LOCK:
+        return dict(_UPD)
 
 
 # ── 下载模型 ────────────────────────────────────────────────────────────

@@ -125,7 +125,8 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'selAll', 'selNone', 'clear', 'start', 'cancel',
                      'probeSources', 'pickSource', 'startDownload', 'pickLocal',
                      'openFile', 'openPath', 'openOffice', 'openNode',
-                     'cancelDownload']) {
+                     'cancelDownload', 'checkUpdate', 'closeUpdate',
+                     'downloadUpdate']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });
@@ -606,6 +607,93 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
     if (real.taskId !== '') throw new Error('taskId 没清掉');
     if (real.picked['C:\\a\\好.pdf'] !== false) throw new Error('成功的没取消勾选');
     if (real.picked['C:\\a\\坏.pdf'] !== true) throw new Error('失败的没勾上');
+  });
+}
+
+console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+
+  ck('状态栏有检查更新的入口，空态和有文件时都有', () => {
+    const empty = fn(ready(sb));
+    if (!empty.includes('data-act="checkUpdate"')) throw new Error('空态没有入口');
+    const st = ready(sb);
+    st.items = [{ path: 'C:\\a\\x.pdf', ok: true, pages: 5, scan_pages: [] }];
+    if (!fn(st).includes('data-act="checkUpdate"')) throw new Error('有文件时没有入口');
+  });
+
+  ck('已是最新时说清楚，别让人以为没查', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '' };
+    const h = fn(st);
+    if (!h.includes('已经是最新版本')) throw new Error('没说结果');
+    if (!h.includes('v1.0.0')) throw new Error('没显示当前版本');
+    if (!h.includes('data-act="closeUpdate"')) throw new Error('关不掉');
+  });
+
+  ck('有新版本时显示版本号、发布日期和更新说明', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: true, local: 'v1.0.0', latest: 'v1.1.0',
+               published: '2026-09-05', error: '',
+               notes: '修了剩余时间倒涨\n公式改走 XSL',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 900000 } };
+    const h = fn(st);
+    if (!h.includes('有新版本 v1.1.0')) throw new Error('没显示新版本号');
+    if (!h.includes('v1.0.0')) throw new Error('没显示当前版本');
+    if (!h.includes('2026-09-05')) throw new Error('没显示发布日期');
+    if (!h.includes('修了剩余时间倒涨')) throw new Error('没显示更新说明');
+    if (!h.includes('data-act="downloadUpdate"')) throw new Error('没有下载按钮');
+  });
+
+  ck('更新说明里的尖括号要转义', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2',
+               notes: '<img src=x onerror=alert(1)>', error: '',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 1 } };
+    const h = fn(st);
+    if (h.includes('<img src=x')) throw new Error('release notes 没转义，能注入');
+  });
+
+  ck('检查失败时给原因和重试，不是干瞪眼', () => {
+    const st = ready(sb);
+    st.upd = { ok: false, has_update: false, local: '', latest: '',
+               error: '连不上 GitHub：timeout' };
+    const h = fn(st);
+    if (!h.includes('连不上 GitHub')) throw new Error('没显示原因');
+    if (!h.includes('data-act="checkUpdate"')) throw new Error('没法重试');
+  });
+
+  ck('仓库还没发布过版本时说人话', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: false, local: '(未知)', latest: '',
+               error: '仓库里还没有发布任何版本' };
+    const h = fn(st);
+    if (!h.includes('仓库里还没有发布任何版本')) throw new Error('没照实说');
+  });
+
+  ck('下载完给出路径和怎么装', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2', error: '',
+               saved: 'D:\\app\\更新包\\u.zip', via: 'ghfast.top',
+               asset: { name: 'u.zip', url: 'https://x/u.zip', size: 1 } };
+    const h = fn(st);
+    if (!h.includes('更新包下好了')) throw new Error('没说下好了');
+    if (!h.includes('u.zip')) throw new Error('没给路径');
+    if (!h.includes('ghfast.top')) throw new Error('没说从哪下的');
+    if (!h.includes('先关掉软件')) throw new Error('没说怎么装');
+    if (!h.includes('data-act="openPath"')) throw new Error('不能打开文件夹');
+  });
+
+  ck('环境有硬伤时，更新面板不能盖住拦截屏', () => {
+    // 连 Office 都没有的话，先解决那个 —— 更新了也用不了
+    const st = ready(sb);
+    st.env.formula = { ok: false, why: '没装 Office' };
+    st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2', error: '' };
+    const h = fn(st);
+    if (h.includes('有新版本 v2')) throw new Error('更新面板盖住了 Office 拦截屏');
+    if (!h.includes('需要先安装微软 Office')) throw new Error('该拦的没拦');
   });
 }
 

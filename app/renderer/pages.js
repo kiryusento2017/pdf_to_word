@@ -134,6 +134,76 @@ function gateView(st, kind) {
     + btn('quit', '退出') + '</div></div>';
 }
 
+// ── 更新面板 ───────────────────────────────────────────────────────────
+// 用户主动点「检查更新」才出现，盖住主区；关掉就回到原来的地方。
+// 放主区而不是弹窗：620x440 的窗口里，更新说明有好几行，弹窗放不下。
+function updateView(st) {
+  var u = st.upd || {};
+  var close = btn('closeUpdate', '关闭');
+
+  if (st.updBusy && !u.dlTotal && !u.latest) {
+    return '<div class="fill"><div class="f-dim">正在查看有没有新版本…</div></div>';
+  }
+
+  // 正在下更新包
+  if (st.updBusy && u.asset) {
+    var pct = u.dlTotal ? Math.min(100, Math.round(100 * (u.dlGot || 0) / u.dlTotal)) : 0;
+    return '<div class="fill">'
+      + '<div style="font-size:13px;font-weight:600">正在下载更新包… ' + pct + '%</div>'
+      + '<div style="width:70%">' + bar(u.dlGot || 0, u.dlTotal || 1) + '</div>'
+      + '<div class="f-dim">' + F.gb(u.dlGot || 0)
+      + (u.dlTotal ? ' / ' + F.gb(u.dlTotal) : '') + '</div></div>';
+  }
+
+  // 下完了
+  if (u.saved) {
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">更新包下好了</div>'
+      + '<div class="f-dim mono ell" style="max-width:86%">' + esc(u.saved) + '</div>'
+      + (u.via ? '<div class="f-dim">来源：' + esc(u.via) + '</div>' : '')
+      + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
+      + '解压后覆盖到本软件的文件夹里即可（覆盖前先关掉软件）。'
+      + '模型和已转好的文件都不受影响。</div>'
+      + '<div style="display:flex;gap:8px">'
+      + btn('openPath', '打开所在文件夹', { cls: 'primary', arg: u.saved })
+      + close + '</div></div>';
+  }
+
+  // 出错 / 说不清楚
+  if (!u.ok || u.error) {
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">'
+      + (u.has_update ? '有新版本，但拿不到更新包' : '暂时没法检查更新') + '</div>'
+      + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
+      + esc(u.error || '不知道为什么') + '</div>'
+      + '<div style="display:flex;gap:8px">'
+      + btn('checkUpdate', '再试一次') + close + '</div></div>';
+  }
+
+  // 已是最新
+  if (!u.has_update) {
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">已经是最新版本</div>'
+      + '<div class="f-dim">' + esc(u.local || '') + '</div>'
+      + '<div>' + close + '</div></div>';
+  }
+
+  // 有更新
+  var notes = (u.notes || '').split('\n').slice(0, 6)
+    .map(function (x) { return esc(x); }).join('<br>');
+  return '<div class="fill" style="justify-content:flex-start;padding-top:14px">'
+    + '<div style="font-size:14px;font-weight:600">有新版本 ' + esc(u.latest) + '</div>'
+    + '<div class="f-dim">当前 ' + esc(u.local)
+    + (u.published ? '　·　发布于 ' + esc(u.published) : '')
+    + (u.asset && u.asset.size ? '　·　' + F.gb(u.asset.size) : '') + '</div>'
+    + (notes ? '<div class="f-dim" style="max-width:90%;text-align:left;'
+        + 'line-height:1.6;max-height:150px;overflow:auto">' + notes + '</div>' : '')
+    + '<div style="display:flex;gap:8px;margin-top:4px">'
+    + btn('downloadUpdate', '下载更新包', { cls: 'primary' })
+    + close + '</div></div>';
+}
+
+
 // ── 主屏 ───────────────────────────────────────────────────────────────
 function pageMain(st) {
   // 后端没连上是致命的，占住主区说清楚，别让人对着空列表发呆。
@@ -152,6 +222,12 @@ function pageMain(st) {
   if (gate) {
     return shell('<span class="f-dim" style="padding:0 4px">PDF 转 Word</span>',
                  gateView(st, gate), envLine(st));
+  }
+
+  // 更新面板排在 gate 之后 —— 环境有问题的话，先解决环境。
+  if (st.upd || st.updBusy) {
+    return shell('<span class="f-dim" style="padding:0 4px">检查更新</span>',
+                 updateView(st), envLine(st));
   }
 
   return running(st) || st.task ? mainRun(st) : mainPick(st);
@@ -195,6 +271,7 @@ function mainPick(st) {
       + (st.err ? '<div class="f-bad" style="margin-top:6px">' + esc(st.err) + '</div>' : '')
       + '</div>';
     return shell(top, main, envLine(st)
+      + btn('checkUpdate', '检查更新', { cls: 'link' })
       + '<span class="grow"></span>'
       + '<span class="f-dim">还没有文件</span>');
   }
@@ -241,6 +318,7 @@ function mainPick(st) {
     + '<span style="width:52px;text-align:right">页数</span></div>';
 
   var bot = envLine(st)
+    + btn('checkUpdate', '检查更新', { cls: 'link' })
     + '<span class="grow"></span>'
     + '<span>' + (st.err ? '<span class="f-bad">' + esc(st.err) + '</span>'
         : ('选中 ' + n + ' 份 · ' + pages + ' 页')) + '</span>'
