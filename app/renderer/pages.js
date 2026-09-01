@@ -48,14 +48,13 @@ function envLine(st) {
   if (st.envError) return dot('#b91c1c') + ' <span class="f-bad">后台没连上</span>';
   var e = st.env || {};
   var g = e.gpu || {};
+  if (!(e.writable || {}).ok) return dot('#b91c1c') + ' <span class="f-bad">安装目录不可写</span>';
   if (!(e.mineru || {}).ok) return dot('#b91c1c') + ' <span class="f-bad">转换引擎缺失</span>';
-  if (!(e.pandoc || {}).ok && !(e.office || {}).ok) {
-    return dot('#b45309') + ' <span class="f-warn">没有可用的公式引擎</span>';
-  }
+  // Office 现在是硬性要求（2026-09-01 改定），不再是「有更好」。
+  if (!(e.formula || {}).ok) return dot('#b91c1c') + ' <span class="f-bad">缺少 Office</span>';
   var parts = [];
   parts.push(g.ok ? '显卡 ✓' : '显卡 ✗');
-  // Office 没有不是毛病 —— 写清楚「用内置」，别让人以为缺了东西要去装。
-  parts.push((e.office || {}).ok ? 'Office ✓' : 'Office 未装，公式用内置引擎');
+  parts.push('Office ✓');
   return dot(g.ok ? '#15803d' : '#b45309') + ' <span'
     + (g.ok ? '' : ' class="f-warn"') + '>' + parts.join('　·　') + '</span>';
 }
@@ -64,6 +63,9 @@ function envLine(st) {
 function gateKind(st) {
   if (st.envLoading || st.envError) return '';
   var e = st.env || {};
+  // 按严重程度排：写不了盘 > 没公式引擎 > 没转换引擎 > 显卡不够
+  if (!(e.writable || {}).ok) return 'writable';    // 什么都干不了
+  if (!(e.formula || {}).ok) return 'formula';      // 核心功能废，硬拦
   if (!(e.mineru || {}).ok) return 'engine';        // 硬拦，没得选
   if (!(e.gpu || {}).ok && !st.gateAck) return 'gpu';  // 软拦，用户自己选
   return '';
@@ -71,6 +73,46 @@ function gateKind(st) {
 
 function gateView(st, kind) {
   var e = st.env || {};
+
+  if (kind === 'writable') {
+    // 「所有文件留在安装文件夹」的代价：装到 Program Files 就没法用。
+    // 与其等用户拖完 PDF 点了转换才报权限错，不如开门就说清楚。
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">这个位置不能写文件</div>'
+      + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
+      + '本软件把模型和临时文件都放在自己的文件夹里（不往系统盘乱塞东西），'
+      + '所以不能装在「C:\\Program Files」这类需要管理员权限的地方。'
+      + '<br>把整个文件夹剪切到 D 盘之类的位置，再打开就好。</div>'
+      + '<div class="f-dim mono" style="font-size:11px">'
+      + esc((e.writable || {}).dir || '') + '</div>'
+      + '<div style="display:flex;gap:8px">'
+      + btn('reload', '我挪好了，重新检查', { cls: 'primary' })
+      + btn('quit', '退出') + '</div></div>';
+  }
+
+  if (kind === 'formula') {
+    // 小蔡 2026-09-01 定：必须有微软 Office，不再降级。
+    // 这一屏是被拦下来的老师唯一能看到的解释，必须说清楚三件事：
+    // 为什么需要、要装什么、装完怎么办。
+    var f = e.formula || {};
+    var noNode = (e.node || {}).ok === false && (e.office || {}).ok;
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">'
+      + (noNode ? '安装包不完整' : '需要先安装微软 Office') + '</div>'
+      + '<div class="f-dim" style="max-width:470px;line-height:1.65;text-align:left">'
+      + esc(f.why || '') + '</div>'
+      + (noNode ? '' :
+         '<div class="f-dim" style="max-width:470px;line-height:1.65;text-align:left">'
+         + '装 Microsoft 365、或者 Office 2021 / 2024 都可以，'
+         + '装好之后回来点「重新检查」。<br>'
+         + '<b>只装 WPS 不行</b> —— WPS 没有这个转换文件（我们查过它的安装目录）。'
+         + '</div>')
+      + '<div style="display:flex;gap:8px;margin-top:2px">'
+      + (noNode ? '' : btn('openOffice', '去微软官网看看', { cls: 'primary' }))
+      + btn('reload', '重新检查', { cls: noNode ? 'primary' : '' })
+      + btn('quit', '退出') + '</div></div>';
+  }
+
   if (kind === 'engine') {
     return '<div class="fill">'
       + '<div style="font-size:14px;font-weight:600">转换引擎还没装好</div>'

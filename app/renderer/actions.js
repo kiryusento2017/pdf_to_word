@@ -48,6 +48,12 @@
   window.P2W_ACTS = {
     reload: function () { window.location.reload(); },
 
+    // 引导去装 Office。主进程那边有域名白名单，这里传什么都只可能
+    // 打开微软自己的站。
+    openOffice: function () {
+      window.api.openUrl('https://www.microsoft.com/zh-cn/microsoft-365');
+    },
+
     quit: function () { window.close(); },
 
     // 显卡不满足时用户选了「仍然继续」。**只有用户能按这个** ——

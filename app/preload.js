@@ -16,6 +16,11 @@ contextBridge.exposeInMainWorld('api', {
   openPath: (p) => ipcRenderer.invoke('open-path', p),
   openFile: (p) => ipcRenderer.invoke('open-file', p),
 
+  // 引导用户去装 Office 时要能打开官网。主进程那边卡了白名单 ——
+  // 页面是字符串拼出来的 HTML，万一哪天有个转义漏洞，
+  // 能被诱导打开任意 URL 就是钓鱼入口。
+  openUrl: (u) => ipcRenderer.invoke('open-url', u),
+
   // 拖进来的文件要拿真实路径。Electron 32 之后 File.path 被移除了，
   // 得走 webUtils.getPathForFile —— 不处理这个，拖放功能会静默失灵。
   pathForFile: (file) => {

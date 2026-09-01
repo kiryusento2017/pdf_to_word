@@ -62,6 +62,16 @@ function isRunning(st) {
   return !!(st.task && st.task.state === 'running');
 }
 
+// 有没有「不解决就没法用」的问题。用来决定首启该不该去下模型 ——
+// 连 Office 都没有的话，先解决那个，下了模型也白搭。
+// 判据要和 pages.js 里 gateKind 的硬拦部分保持一致。
+function isBlocked(st) {
+  var e = st.env || {};
+  return !(e.writable || {}).ok
+      || !(e.formula || {}).ok
+      || !(e.mineru || {}).ok;
+}
+
 // ── 跟后端说话 ─────────────────────────────────────────────────────────
 function apiUrl(p) { return 'http://127.0.0.1:' + state.port + p; }
 
@@ -154,6 +164,15 @@ window.addEventListener('DOMContentLoaded', function () {
   }).then(function (d) {
     state.env = d;
     state.envLoading = false;
+    // 🔴 没有模型就先去选源下载。
+    //    这一句之前**根本不存在** —— 选源屏和整套并发测速写好了却没有
+    //    任何入口，用户第一次用只会看到主界面，然后在第一次转换时
+    //    等 MinerU 在后台默默下 4.6 GB，界面上什么都不显示。
+    //    只在环境本身没问题时才跳：连 Office 都没有的话，先解决那个，
+    //    下了模型也用不了。
+    if (!isBlocked(state) && !((d.models || {}).ok)) {
+      state.page = 'model';
+    }
     render();
   }).catch(function (e) {
     state.envLoading = false;
@@ -167,4 +186,5 @@ window.P2W_RENDER = render;
 window.P2W_ESC = esc;
 window.P2W_FMT = { sec: fmtSec, base: baseName };
 window.P2W_RUNNING = isRunning;
+window.P2W_BLOCKED = isBlocked;
 window.P2W_HTTP = { get: get, post: post };

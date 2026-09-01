@@ -78,11 +78,18 @@ function baseState(sb) {
   return JSON.parse(JSON.stringify(sb.window.P2W_STATE));
 }
 
-// 一切正常的环境，绝大多数用例从它出发
+// 一切正常的环境，绝大多数用例从它出发。
+// writable / formula / models 是 2026-09-01 加的：小蔡定下「文件全留
+// 安装目录」和「必须有微软 XSL」之后，这三个字段决定拦不拦人。
+// 故意不给默认值 —— 缺字段就该被判成不可用，那说明前后端版本对不上。
 function goodEnv() {
   return {
     gpu: { ok: true, why: '显卡「RTX 4060」，显存 8.0 GB，满足要求。' },
     mineru: { ok: true }, pandoc: { ok: true }, office: { ok: true },
+    node: { ok: true },
+    formula: { ok: true, why: '公式会转成 Word 原生公式对象，可编辑可搜索。' },
+    models: { ok: true, dir: 'D:\\app\\models', bytes: 4.6e9 },
+    writable: { ok: true, dir: 'D:\\app' },
   };
 }
 
@@ -245,12 +252,44 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     if (!h.includes('显卡 ✗')) throw new Error('状态栏没留记号，人会忘了自己在硬来');
   });
 
-  ck('没装 Office 说清楚不影响使用', () => {
+  ck('没装 Office 时拦住，并说清楚为什么要装', () => {
+    // 2026-09-01 小蔡改定：XSL 是硬性要求，不再降级到 Pandoc。
+    // 这一屏是被拦下来的老师唯一能看到的解释。
     const st = ready(sb);
     st.env.office = { ok: false };
+    st.env.formula = { ok: false,
+      why: '这台电脑没有装微软 Office。本软件把公式转成 Word 原生公式，'
+         + '要用到 Office 自带的一个转换文件（MML2OMML.XSL），'
+         + '那是微软的文件，不能随本软件分发，只能装了 Office 才有。' };
     const h = fn(st);
-    if (h.includes('data-act="ackGate"')) throw new Error('没装 Office 不该拦');
-    if (!h.includes('用内置引擎')) throw new Error('没说清楚不影响使用');
+    if (h.includes('把 PDF 拖进来')) throw new Error('没装 Office 却放行了');
+    if (!h.includes('需要先安装微软 Office')) throw new Error('没说要装什么');
+    if (!h.includes('MML2OMML')) throw new Error('没解释为什么需要它');
+    if (!h.includes('data-act="openOffice"')) throw new Error('没给去官网的入口');
+    if (!h.includes('data-act="reload"')) throw new Error('装完之后没法重新检查');
+    if (!h.includes('WPS')) throw new Error('没提醒「装 WPS 不管用」——这是最容易踩的坑');
+  });
+
+  ck('缺 node 时说是安装包的问题，别让用户去装 Office', () => {
+    // Office 有、node 没有 —— 这是我们打包漏了东西，不该让用户背锅
+    const st = ready(sb);
+    st.env.node = { ok: false };
+    st.env.formula = { ok: false, why: '缺少 Node.js 运行环境 —— 公式的第一步转换要用到它。' };
+    const h = fn(st);
+    if (!h.includes('安装包不完整')) throw new Error('把打包问题说成了用户的问题');
+    if (h.includes('data-act="openOffice"')) throw new Error('Office 明明有，还让人去装');
+  });
+
+  ck('安装目录不可写时拦住，并告诉用户挪到哪', () => {
+    // 「所有文件留在安装文件夹」的代价：装进 Program Files 就没法用。
+    // 必须开门就说，不能等用户拖完 PDF 点了转换才报权限错。
+    const st = ready(sb);
+    st.env.writable = { ok: false, dir: 'C:\\Program Files\\pdf2word' };
+    const h = fn(st);
+    if (h.includes('把 PDF 拖进来')) throw new Error('写不了盘却放行了');
+    if (!h.includes('不能写文件')) throw new Error('没说清楚问题');
+    if (!h.includes('Program Files')) throw new Error('没说清楚不能装在哪');
+    if (!h.includes('C:\\Program Files\\pdf2word')) throw new Error('没显示当前位置');
   });
 
   ck('转换引擎缺失时拦死，且没有「仍然继续」', () => {

@@ -135,3 +135,19 @@ ipcMain.handle('open-path', async (_e, p) => {
 ipcMain.handle('open-file', async (_e, p) => {
   if (p) await shell.openPath(p);
 });
+
+// 只放行这几个域名。页面的 HTML 是字符串拼出来的，万一哪天有个转义
+// 漏洞，「能打开任意 URL」就成了钓鱼入口 —— 用户看到是我们的软件
+// 弹出的浏览器，戒心是最低的。宁可写死几条也不开通用能力。
+const URL_WHITELIST = [
+  'https://www.microsoft.com/',
+  'https://www.microsoftstore.com.cn/',
+  'https://nodejs.org/',
+];
+
+ipcMain.handle('open-url', async (_e, u) => {
+  if (typeof u !== 'string') return false;
+  if (!URL_WHITELIST.some((prefix) => u.startsWith(prefix))) return false;
+  await shell.openExternal(u);
+  return true;
+});
