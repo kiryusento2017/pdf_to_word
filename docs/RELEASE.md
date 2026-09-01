@@ -228,8 +228,38 @@ gh release create v0.0.2 ^
   --title "v0.0.2" --notes-file 发布说明.md
 ```
 
+三个附件都要传：安装包、更新包、**依赖清单**（`requires-vX.json`）。
+清单漏了的话，客户端只能等下完 0.5 MB 更新包才知道装不装得了 ——
+它存在的意义就是「下载前就知道」。
+
 覆盖已发布的附件用 `gh release upload <tag> <文件> --clobber`；
 删掉某个附件用 `gh release delete-asset <tag> <文件名> --yes`。
+
+### 🔴 先 `git push`，再 `gh release create`
+
+**分支名是 `main`。** 2026-09-02 发 v0.0.3 时推成了 `master`，
+推送失败（`src refspec master does not match any`）。
+
+而 `gh release create` **不管你推没推**。它照发不误，tag 打在远端当时的
+最新 commit 上 —— 也就是上一版的代码。结果是 v0.0.3 的 tag 指着
+v0.0.2 的源码，附件里的 exe 却是新代码。
+
+发完必须验一次，两个数要一样：
+
+```
+gh api repos/<owner>/<repo>/git/ref/tags/v0.0.3 --jq '.object.sha'
+python -c "import json,io;print(json.load(io.open('dist/PDF2Word/version.json',encoding='utf-8'))['sha'])"
+```
+
+对不上就改 tag 指向（**只在还没人下载的时候**，`downloadCount` 都是 0）：
+
+```
+gh api -X PATCH repos/<owner>/<repo>/git/refs/tags/v0.0.3 \
+  -f sha=<正确的 commit> -F force=true
+```
+
+已经有人下过就别改了 —— 那时候「同一个 tag 对应过两份代码」比
+「tag 指错」更难查。发一个新的修订号，把旧的标成不要用。
 
 ### 🔴 覆盖已发布的 Release：只在没有真实用户时
 
