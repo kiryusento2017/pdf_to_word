@@ -30,10 +30,22 @@ function ck(name, fn) {
 
 function mkSandbox() {
   const listeners = {};
+  // 假的 #app。关键是模拟出真实 DOM 的一个语义：innerHTML 整体赋值之后，
+  // 里面的 .main 是**一个新元素**，scrollTop 从 0 开始 —— 滚动位置丢失
+  // 那个 bug 就出在这里，不模拟这一点就测不出来。
+  const appEl = (function () {
+    let mainEl = { scrollTop: 0 };
+    return {
+      set innerHTML(v) { this._html = v; mainEl = { scrollTop: 0 }; },
+      get innerHTML() { return this._html || ''; },
+      querySelector: (s) => (s === '.main' ? mainEl : null),
+      get _main() { return mainEl; },
+    };
+  }());
   const sb = {
     console,
     document: {
-      getElementById: () => ({ set innerHTML(v) { this._html = v; }, get innerHTML() { return this._html || ''; } }),
+      getElementById: () => appEl,
       addEventListener: (k, f) => { listeners[k] = f; },
     },
     fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
@@ -147,6 +159,31 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
     if (want.size < 10) throw new Error('只采到 ' + want.size + ' 个按钮，覆盖不够');
   });
 
+  ck('重绘时保住滚动位置，不弹回顶上', () => {
+    // 真实症状：列表拉到下面，点个勾就弹回最顶上；转换中每秒轮询一次，
+    // 就一秒弹一次。根因是 innerHTML 整体赋值把滚动容器换成了新元素。
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = sb2.window.P2W_STATE;
+    st.envLoading = false;
+    st.env = goodEnv();
+    st.items = Array.from({ length: 40 }, (_, i) => (
+      { path: 'C:\\a\\' + i + '.pdf', ok: true, pages: 10, scan_pages: [] }));
+    sb2.window.P2W_RENDER();
+    el._main.scrollTop = 500;          // 用户滚到中间
+    sb2.window.P2W_RENDER();           // 勾一下 / 轮询一次都会走到这
+    if (el._main.scrollTop !== 500) {
+      throw new Error('滚动位置丢了，弹回了 ' + el._main.scrollTop);
+    }
+  });
+
+  ck('在顶部时不做多余的滚动设置', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    sb2.window.P2W_RENDER();
+    if (el._main.scrollTop !== 0) throw new Error('本来在顶部，却被挪到了别处');
+  });
+
   ck('每种状态都吐完整三段，主区才能铺满', () => {
     const cases = {
       '正常空态': ready(sb),
@@ -236,6 +273,24 @@ console.log('\n\u9009\u4e66\uff08\u4e3b\u5c4f\u5f85\u8f6c\u6001\uff09\uff1a');
     if (!h.includes('把 PDF 拖进来')) throw new Error('没提示拖放');
     if (!h.includes('data-act="pickFiles"')) throw new Error('没有选文件');
     if (!h.includes('data-act="pickDir"')) throw new Error('没有选文件夹');
+  });
+
+  ck('正在读文件夹时必须说话', () => {
+    // 实测 456 份的讲义库要 16 秒。这期间界面一个字不变的话，
+    // 用户只会以为软件卡死了 ——「反应很慢」的抱怨多半来自这里。
+    const st = ready(sb);
+    st.scanning = true;
+    const h = fn(st);
+    if (!h.includes('正在读取')) throw new Error('扫描时一声不吭');
+    if (!segs(h)) throw new Error('结构不全');
+  });
+
+  ck('追加文件时说明已有的不受影响', () => {
+    const st = ready(sb);
+    st.items = [{ path: 'C:\\a\\x.pdf', ok: true, pages: 5, scan_pages: [] }];
+    st.scanning = true;
+    const h = fn(st);
+    if (!h.includes('1 份不受影响')) throw new Error('没说清楚已有文件的去向');
   });
 
   ck('空态也铺满窗口，不是居中的小方框', () => {

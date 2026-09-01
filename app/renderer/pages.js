@@ -127,6 +127,20 @@ function mainPick(st) {
     + btn('pickOut', '更改')
     + (out ? btn('outDefault', '默认') : '');
 
+  // 正在读文件夹时必须说话。实测 456 份的讲义库要 16 秒，这期间要是
+  // 界面一个字不变，用户只会以为软件卡死了 —— 「反应很慢」的抱怨多半
+  // 来自这里，而不是真的慢。
+  if (st.scanning) {
+    return shell(top,
+      '<div class="fill">'
+      + '<div style="font-size:13px;font-weight:600">正在读取…</div>'
+      + '<div class="f-dim">逐份检查页数和文字层，文件夹里书多的话要等几秒</div>'
+      + (st.items.length ? '<div class="f-dim">已经在列表里的 '
+          + st.items.length + ' 份不受影响</div>' : '')
+      + '</div>',
+      envLine(st) + '<span class="grow"></span><span class="f-dim">读取中…</span>');
+  }
+
   // 空列表也要铺满 —— 拖放区撑满整个主区，而不是一个居中的小方框。
   if (!st.items.length) {
     var main = '<div class="fill' + (st.dragging ? ' drop' : '') + '">'

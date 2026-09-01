@@ -88,8 +88,23 @@ function post(p, body) {
 function render() {
   var el = document.getElementById('app');
   if (!el) return;
+
+  // 🔴 重绘是把整个 DOM 推倒重来（innerHTML 整体赋值），滚动容器跟着被换掉，
+  //    scrollTop 归零 —— 表现就是：列表拉到下面，随便点个勾就弹回最顶上，
+  //    转换中每秒一次的轮询更是一秒弹一次。
+  //    所以画之前记下滚动位置，画完放回去。
+  //    querySelector 做了容错：测试用的假 window 没有它。
+  var prev = el.querySelector ? el.querySelector('.main') : null;
+  var top = prev ? prev.scrollTop : 0;
+
   var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.main;
   el.innerHTML = page(state);
+
+  if (top && el.querySelector) {
+    var now = el.querySelector('.main');
+    // 列表变短时浏览器自己会截断到最大值，不用管
+    if (now) now.scrollTop = top;
+  }
 }
 
 // 事件委托：所有按钮走 data-act，页面重绘也不用重新绑
