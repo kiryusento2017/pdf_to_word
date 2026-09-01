@@ -329,6 +329,12 @@
       render();
     },
 
+    // 跨大版本时去 Release 页面下完整安装包
+    openReleases: function () {
+      window.api.openUrl(
+        'https://github.com/kiryusento2017/pdf_to_word/releases/latest');
+    },
+
     // 拿不到官方校验值，用户看过风险说明之后仍然要装。
     // 跟显卡那条规矩一样：报警，但不替他做主。
     installAnyway: function () {

@@ -252,6 +252,9 @@ const URL_WHITELIST = [
   'https://aka.ms/',
   'https://www.nvidia.com/',        // 驱动太旧时引导去更新
   'https://www.nvidia.cn/',
+  // 跨大版本时要让用户去 Release 页面下完整安装包。
+  // 只放行本仓库那一条路径，不是整个 github.com。
+  'https://github.com/kiryusento2017/pdf_to_word/releases',
 ];
 
 // 更新装好之后重启。relaunch 排一个新实例，quit 关掉当前这个 ——

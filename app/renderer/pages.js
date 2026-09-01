@@ -303,6 +303,21 @@ function updateView(st) {
       + btn('checkUpdate', '再试一次') + close + '</div></div>';
   }
 
+  // 跨了大版本：更新包补不上依赖，得重下完整安装包。
+  // 这不是失败，是「这次得换个方式更新」，所以单独一屏、说清楚为什么。
+  if (u.need_full) {
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">这次要重新下载安装包</div>'
+      + '<div class="f-dim" style="max-width:460px;line-height:1.65;text-align:left">'
+      + esc(u.error || '') + '</div>'
+      + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
+      + '你已经下好的模型和 GPU 运行库不受影响 —— 装到同一个文件夹覆盖就行。'
+      + '</div>'
+      + '<div style="display:flex;gap:8px;margin-top:2px">'
+      + btn('openReleases', '去下载页', { cls: 'primary' })
+      + close + '</div></div>';
+  }
+
   // 🔴 查成功了，但有话要说。check() 有四种 ok=true 却带 error 的结果：
   //      · 本地版本比仓库里的还新
   //      · 仓库里还没有发布任何版本

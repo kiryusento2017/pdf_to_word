@@ -90,12 +90,55 @@ class Test版本比较看方向(unittest.TestCase):
         update._api = lambda url: rel
 
     def test_远端更新时报有更新(self):
+        # 用修订号更新（v1.0.0 → v1.0.1）—— 那是典型场景，
+        # 也是更新包唯一能安全覆盖的场景。跨次版本另有一条测试。
         self._local('v1.0.0', '2026-09-01T00:00:00Z')
-        self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z'))
+        self._remote(_rel('v1.0.1', '2026-09-05T00:00:00Z'))
         r = update.check()
         self.assertTrue(r['has_update'])
-        self.assertEqual(r['latest'], 'v1.1.0')
+        self.assertEqual(r['latest'], 'v1.0.1')
         self.assertTrue(r['asset'])
+
+    def test_跨了多少个修订号都一步到位(self):
+        r"""小蔡 2026-09-02：「一个人手里有一个旧版本，结果有一天检查更新，
+        github 上有一个版本比他快上 30 个版本，难道他要一个一个版本
+        更新上去吗？」
+
+        不用。更新包是**全量替换**（装的是当前版本的全部业务代码，
+        不是 diff），v0.0.1 直接下 v0.0.31 的包就变成 v0.0.31。
+        """
+        self._local('v1.0.1', '')
+        self._remote(_rel('v1.0.31', '2026-09-05T00:00:00Z'))
+        r = update.check()
+        self.assertTrue(r['has_update'], '跨 30 个修订号却不让自动更新')
+        self.assertFalse(r['need_full'])
+        self.assertTrue(r['asset'])
+
+    def test_跨次版本要重下完整包(self):
+        r"""更新包里只有 .py 和 .js，**装不了新的 pip 依赖**。
+
+        docs/RELEASE.md 定的规矩：「依赖变了必须进次版本」。所以
+        「次版本不同」等价于「依赖可能变了」，这时候还照常自动更新的话，
+        用户会拿到**新代码配旧依赖** —— 下次启动直接 ImportError，
+        而他刚「更新成功」过，根本想不到是更新害的。
+
+        这条规矩之前只写在文档里，代码里没人执行 —— 跟 sources.py 那次
+        一样（注释写着「不用 ping 判优」，实现算的就是延迟）。
+        """
+        self._local('v1.0.5', '')
+        self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z'))
+        r = update.check()
+        self.assertTrue(r['ok'])
+        self.assertTrue(r['need_full'], '跨次版本却让它走自动更新')
+        self.assertFalse(r['has_update'], '会去下一个补不上依赖的更新包')
+        self.assertIn('完整安装包', r['error'])
+
+    def test_跨主版本也要重下(self):
+        self._local('v1.9.9', '')
+        self._remote(_rel('v2.0.0', '2026-09-05T00:00:00Z'))
+        r = update.check()
+        self.assertTrue(r['need_full'])
+        self.assertFalse(r['has_update'])
 
     def test_一样的版本不报更新(self):
         self._local('v1.1.0', '2026-09-05T00:00:00Z')
@@ -200,7 +243,7 @@ class Test版本比较看方向(unittest.TestCase):
 
     def test_有更新但没附更新包时说清楚(self):
         self._local('v1.0.0', '2026-09-01T00:00:00Z')
-        self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z', assets=[]))
+        self._remote(_rel('v1.0.1', '2026-09-05T00:00:00Z', assets=[]))
         r = update.check()
         self.assertFalse(r['has_update'], '没包却让用户去下')
         self.assertIn('没有附更新包', r['error'])

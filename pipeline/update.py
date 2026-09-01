@@ -227,7 +227,9 @@ def check():
     {ok, has_update, local, latest, notes, published, asset, error}
     """
     out = {'ok': False, 'has_update': False, 'local': '', 'latest': '',
-           'notes': '', 'published': '', 'asset': None, 'error': ''}
+           'notes': '', 'published': '', 'asset': None, 'error': '',
+           # 跨了主/次版本：更新包补不上依赖，得重下完整安装包
+           'need_full': False}
     loc = local_version()
     out['local'] = loc['tag'] or '(未知)'
 
@@ -290,6 +292,25 @@ def check():
             return out
 
     out['has_update'] = True
+
+    # 🔴 跨了主版本或次版本 → 更新包补不上依赖，必须重下完整安装包。
+    #
+    #    更新包里只有 .py 和 .js。docs/RELEASE.md 定的规矩：依赖变了就
+    #    进次版本。所以「次版本不同」等价于「依赖可能变了」，这时候
+    #    自动更新会让用户拿到**新代码配旧依赖** —— 下次启动 ImportError，
+    #    而他刚「更新成功」过，根本想不到是更新害的。
+    #
+    #    跨多少个**修订号**都没事：更新包是全量替换不是增量补丁，
+    #    v0.0.1 直接下 v0.0.31 的包就变成 v0.0.31，不用一个一个来。
+    if lv and rv and rv[:2] != lv[:2]:
+        out['need_full'] = True
+        out['has_update'] = False
+        out['error'] = (
+            '有新版本 %s，但它跟你现在这个（%s）差了一个大版本 —— '
+            '这种更新会带新的依赖，小小的更新包补不上，'
+            '需要重新下载完整安装包。' % (out['latest'], loc['tag']))
+        return out
+
     if not out['asset']:
         out['error'] = '有新版本，但那个 Release 没有附更新包'
         out['has_update'] = False
