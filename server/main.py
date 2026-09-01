@@ -46,13 +46,36 @@ _LOCK = threading.Lock()
 async def env():
     """首次启动那一屏要的全部信息，一次给齐 —— 分三个请求只会让首屏闪三次。"""
     g = gpu.detect()
+    xsl = tomath.find_xsl() or ''
+    node_ok = tomath.node_available()
     return {
         'gpu': {'ok': g['ok'], 'why': g['why'], 'detail': g['gpu']},
-        'office': {'ok': tomath.xsl_available(), 'path': tomath.find_xsl() or ''},
-        'node': {'ok': tomath.node_available()},
+        # 公式引擎是硬性要求（小蔡 2026-09-01 定），两个条件缺一不可：
+        # XSL 来自用户的 Office，node 用来跑 KaTeX 把 LaTeX 转成 MathML。
+        'office': {'ok': bool(xsl), 'path': xsl},
+        'node': {'ok': node_ok},
+        'formula': {'ok': bool(xsl) and node_ok,
+                    'why': _formula_why(bool(xsl), node_ok)},
         'pandoc': {'ok': todocx.pandoc_available(), 'path': todocx.PANDOC},
         'mineru': {'ok': bool(_find_mineru()), 'path': _find_mineru() or ''},
+        # 模型和可写性 —— 首启要据此决定是拦住、还是先去下模型
+        'models': {'ok': paths.models_ready(), 'dir': paths.MODELS,
+                   'bytes': paths.models_size()},
+        'writable': {'ok': paths.writable(), 'dir': paths.ROOT},
     }
+
+
+def _formula_why(xsl_ok, node_ok):
+    r"""公式引擎为什么不可用。这句话直接显示给老师看，必须是人话，
+    而且要说清楚**该去做什么**，不能只报「缺少组件」。"""
+    if xsl_ok and node_ok:
+        return '公式会转成 Word 原生公式对象，可编辑可搜索。'
+    if not xsl_ok:
+        return ('这台电脑没有装微软 Office。本软件把公式转成 Word 原生公式，'
+                '要用到 Office 自带的一个转换文件（MML2OMML.XSL），'
+                '那是微软的文件，不能随本软件分发，只能装了 Office 才有。')
+    return ('缺少 Node.js 运行环境 —— 公式的第一步转换要用到它。'
+            '这属于安装包不完整，重新安装一次应该能解决。')
 
 
 def _find_mineru():

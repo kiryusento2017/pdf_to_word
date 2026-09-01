@@ -9,6 +9,7 @@ r"""公式转换：LaTeX → Word 原生公式对象（OMML）。
 Office 路径**不写死**。工作台那边写死了 `Office16` 一条路径，
 换台机器（Office 2013、32 位版、装在 D 盘）就直接失效且无从察觉。
 """
+import io
 import os
 import shutil
 import sys
@@ -30,9 +31,14 @@ class Test找Office的XSL(unittest.TestCase):
             shutil.rmtree(WORK, ignore_errors=True)
         os.makedirs(WORK)
         self._orig = tomath.XSL_CANDIDATES
+        # find_xsl 会先查注册表。装了 Office 的机器上那条真能查到，
+        # 只 mock XSL_CANDIDATES 的话「找不到」的用例根本不成立。
+        self._orig_reg = tomath.registry_candidates
+        tomath.registry_candidates = lambda: []
 
     def tearDown(self):
         tomath.XSL_CANDIDATES = self._orig
+        tomath.registry_candidates = self._orig_reg
         shutil.rmtree(WORK, ignore_errors=True)
 
     def test_候选路径不止一条(self):
@@ -75,12 +81,41 @@ class Test批量转换的硬契约(unittest.TestCase):
     也没法知道是第几个公式失败的。
     """
 
+    def test_注册表命中时优先于目录扫描(self):
+        r"""注册表存的是**实际**安装路径，比猜目录准 —— 能找到装在
+        E:\SomeFolder\ 这种地方的 Office。顺序调换了要有提示。"""
+        import tempfile
+        d = tempfile.mkdtemp()
+        try:
+            reg_hit = os.path.join(d, 'reg.XSL')
+            dir_hit = os.path.join(d, 'dir.XSL')
+            for p in (reg_hit, dir_hit):
+                with io.open(p, 'w', encoding='utf-8') as f:
+                    f.write('<xsl/>')
+            orig_reg, orig_cand = tomath.registry_candidates, tomath.XSL_CANDIDATES
+            try:
+                tomath.registry_candidates = lambda: [reg_hit]
+                tomath.XSL_CANDIDATES = [dir_hit]
+                self.assertEqual(tomath.find_xsl(), reg_hit, '目录扫描盖过了注册表')
+            finally:
+                tomath.registry_candidates = orig_reg
+                tomath.XSL_CANDIDATES = orig_cand
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_注册表读不到时不抛异常(self):
+        r"""注册表结构因 Office 版本而异，为了探测把启动自检搞崩不值得。"""
+        got = tomath.registry_candidates()
+        self.assertIsInstance(got, list)
+
     def test_空输入返回空列表(self):
         self.assertEqual(tomath.batch_to_omml([]), [])
 
     def test_XSL不在时全部返回None且长度不变(self):
         orig = tomath.XSL_CANDIDATES
+        orig_reg = tomath.registry_candidates
         tomath.XSL_CANDIDATES = ['/根本不存在/MML2OMML.XSL']
+        tomath.registry_candidates = lambda: []      # 注册表那条也得堵上
         try:
             got = tomath.batch_to_omml(['x', 'y', 'z'])
             self.assertEqual(len(got), 3, '长度契约被破坏了')
@@ -88,6 +123,7 @@ class Test批量转换的硬契约(unittest.TestCase):
             self.assertTrue(tomath.last_error(), '失败了却没留下原因')
         finally:
             tomath.XSL_CANDIDATES = orig
+            tomath.registry_candidates = orig_reg
 
 
 @unittest.skipUnless(tomath.xsl_available() and tomath.node_available(),
