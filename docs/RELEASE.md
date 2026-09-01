@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 232 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 240 条
 node tests\front_check.js                                   # 67 条
 ```
 
@@ -29,16 +29,22 @@ node tests\front_check.js                                   # 67 条
 先跑自动检查：
 
 ```
-.venv\Scripts\python.exe tools\check_docs.py     # 硬事实
-.venv\Scripts\python.exe tools\check_claims.py   # 行为断言
+.venv\Scripts\python.exe tools\check_docs.py      # 硬事实
+.venv\Scripts\python.exe tools\check_claims.py    # 行为断言
+.venv\Scripts\python.exe tools\check_package.py   # 打完包之后跑
 ```
 
-两个查的是不同的东西：
+三个查的是不同的东西：
 
 | | 查什么 | 抓得到的那类错 |
 |---|---|---|
-| `check_docs` | 数字对不对、提到的文件在不在 | 「README 写 208 条，实际 232 条」 |
+| `check_docs` | 数字对不对、提到的文件在不在 | 「README 写 208 条，实际 240 条」 |
 | `check_claims` | 文档说的行为跟代码一不一致 | 「注释写『不用 ping 判优』，实现算的就是延迟」 |
+| `check_package` | 安装包里有没有不该有的东西 | 「包里 80 个 `_tmp`/`appdata` 条目」「`使用说明.txt` 还是上一版」 |
+
+`check_package` 要在**打完包之后**跑，前两个随时能跑。它的存在是因为
+v0.0.2 就带着开发机的运行时垃圾发出去了 —— 而「在 dist 里真跑一次」
+是验证发行版的必要动作，垃圾一定会产生，只能靠打包时排除 + 打完再查一遍。
 
 真值都取自**代码和产物**，不是取自另一份文档 —— 那样只会让错误互相印证。
 

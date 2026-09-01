@@ -197,9 +197,21 @@ import 链里有 `import torch`，**连模型下载都一起废掉**，用户看
 「下载器崩了」，完全猜不到跟显卡驱动有关。
 
 装完还会**真的 import 一次**再说「装好了」：`torch/version.py` 是个文本
-文件，它在不代表 `c10.dll` 加载得起来。加载失败时软件会自己查
-`vcruntime140.dll` 之类在不在，缺了就直接说「缺 Visual C++ 运行库」
-并给下载按钮，而不是甩一句看不懂的 WinError。
+文件，它在不代表 `c10.dll` 加载得起来。
+
+**开下之前先查前置条件。** C++ 运行库在不在、磁盘空间够不够，都是一次
+本地检查，零成本，本该排在那 2.8 GB 前面 —— 原来的顺序是下完十几分钟
+才发现加载不了，卸掉，让用户去装运行库，再重新下一遍。
+
+缺 C++ 运行库的话软件**自己补上**，不用去微软官网下 vc_redist：numpy 的
+wheel 里本来就带着一份（`numpy.libs/msvcp140-<hash>.dll`，delvewheel 打包
+时塞进去并改了名），复制出来改回原名放到 `python.exe` 旁边就能用。
+这几个 DLL 允许随应用分发，PyPI 上千万次下载都在这么干。
+
+只在系统**真缺**的时候才补。包里那份是 14.40，而一台装过 VC++ 的机器
+系统里可能是 14.50；`python.exe` 旁边的 DLL 优先级高于 `System32`，
+无脑复制等于把这台机器降级。运行库的向后兼容是单向的 —— 新版能跑旧代码，
+旧版跑不了新代码。
 
 ---
 
@@ -231,14 +243,14 @@ app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源�
             icon.ico / icon_source.png（GitHub 头像做的图标）
 runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      232 条 Python + 75 条前端检查 + 四个真实数据验证脚本
+tests/      240 条 Python + 75 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 232 条，9 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 240 条，9 秒
 node tests\front_check.js                                   # 75 条，真渲染
 ```
 
@@ -272,12 +284,13 @@ tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 
 
 ### 落点：全部在安装文件夹内
 
-**删掉文件夹 = 卸载干净**，不留注册表、不留 AppData。靠三处保证：
+**删掉文件夹 = 卸载干净**，不留注册表、不留 AppData。靠这几处保证：
 
 | | 靠什么 |
 |---|---|
 | 模型 / 临时文件 / MinerU 配置 / 设备模式 | `paths.child_env()` 的四个环境变量 |
 | Electron 缓存 | `app.setPath`，**必须在 app ready 之前调** |
+| 补上的 C++ 运行库 | 放 `runtime/python/msvcp140.dll`，**不装系统级的** |
 | 转好的 Word | 用户自己选（唯一的例外） |
 
 那四个环境变量：`MODELSCOPE_CACHE`、`HF_HOME`、`MINERU_TOOLS_CONFIG_JSON`
