@@ -44,7 +44,10 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DIST = os.path.join(ROOT, 'dist')
-OUT = os.path.join(DIST, 'PDF转Word')
+# 产物目录用英文。中文路径要经过 Electron → Python 子进程 → MinerU →
+# pandoc 好几手，而我们全程在英文路径下开发测试，没验过中文路径。
+# 默认给中文路径等于让老师去踩一条没人走过的路。
+OUT = os.path.join(DIST, 'PDF2Word')
 
 PY_VER = '3.12.10'          # 跟开发环境一致
 EMBED_URL = ('https://www.python.org/ftp/python/%s/python-%s-embed-amd64.zip'
@@ -351,21 +354,23 @@ def make_sfx(version):
         'Title="PDF 转 Word __VER__"\n'
         'BeginPrompt="要把「PDF 转 Word」安装到哪里？\\n\\n'
         '请不要选 C:\\\\Program Files —— 那个位置写不了文件。\\n'
-        '建议放 D 盘，比如 D:\\\\PDF转Word\\n\\n'
+        '路径里最好不要有中文和空格。\\n\\n'
         '所有文件都会留在这个文件夹里，不想用了直接删掉即可。"\n'
         'ExtractDialogText="正在解压，大约 1-3 分钟…"\n'
         'ExtractTitle="正在安装 PDF 转 Word"\n'
         'GUIMode="2"\n'
         'OverwriteMode="2"\n'
         'ExtractPathText="安装到："\n'
-        'InstallPath="D:\\\\PDF转Word"\n'
+        'InstallPath="D:\\\\PDF2Word"\n'
         'RunProgram="explorer.exe ."\n'
         ';!@InstallEnd@!\n'
     ).replace('__VER__', version)
     cfg_path = os.path.join(DIST, '_sfx_config.txt')
     io.open(cfg_path, 'w', encoding='utf-8').write(cfg)
 
-    exe = os.path.join(DIST, 'PDF转Word-%s.exe' % version)
+    # 文件名用英文：GitHub 会把 Release 附件名里的中文吃掉
+    # （PDF转Word-v0.0.1.exe 上传后显示成 PDF.Word-v0.0.1.exe）
+    exe = os.path.join(DIST, 'PDF2Word-Setup-%s.exe' % version)
     if os.path.isfile(exe):
         os.remove(exe)
     say('拼装 exe…')
