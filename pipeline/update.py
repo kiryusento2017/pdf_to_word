@@ -479,7 +479,9 @@ def apply_update(zip_path):
         try:
             zf = zipfile.ZipFile(zip_path)
         except Exception as e:
-            return False, '更新包打不开，可能没下完整：%s' % str(e)[:80], 0
+            return (False,
+                    '更新包打不开，可能没下完整：%s。'
+                    '再点一次「检查更新」重下就行。' % str(e)[:80], 0)
 
         with zf:
             members = []
@@ -614,7 +616,8 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
         return False, '没有可下载的更新包', ''
     if not asset_url.startswith(ASSET_PREFIX):
         return (False,
-                '这个下载地址不是本仓库的 Release 附件，出于安全没有下载', '')
+                '这个下载地址不是本仓库的 Release 附件，出于安全没有下载。'
+                '可以自己去项目的 Releases 页面手动下安装包。', '')
     if not digest and not allow_unverified:
         # 🔴 **报警，但不阻拦** —— 这里返回一个可识别的标记，让上层去问用户，
         #    而不是在这儿把路堵死。
@@ -656,7 +659,8 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
                     if on_progress:
                         on_progress(got, total)
     except Exception as e:
-        return False, '下载失败：%s' % str(e)[:120], best['name']
+        return (False, '下载失败：%s。再点一次「检查更新」会换个源重试。'
+                % str(e)[:120], best['name'])
 
     def _drop():
         try:
