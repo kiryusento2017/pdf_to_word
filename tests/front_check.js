@@ -90,6 +90,9 @@ function goodEnv() {
     formula: { ok: true, why: '公式会转成 Word 原生公式对象，可编辑可搜索。' },
     models: { ok: true, dir: 'D:\\app\\models', bytes: 4.6e9 },
     writable: { ok: true, dir: 'D:\\app' },
+    // C++ 运行库（msvcp140 那一套）。它是 GPU 运行库的**前提** ——
+    // 缺了的话那 2.8 GB 装上也加载不了，所以拦截顺序排在前面。
+    vcruntime: { ok: true, missing: [] },
     // GPU 运行库（CUDA 版 PyTorch）。跟「有没有显卡」是两件事：
     // 这一项管的是装的 torch 能不能调用显卡，gpu 那项管的是机器上有没有卡。
     cuda_torch: { ok: true, why: 'GPU 运行库就绪（PyTorch 2.11.0+cu128，CUDA 12.8）。',
@@ -336,6 +339,37 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     const h = fn(st);
     if (h.includes('data-act="ackGate"')) throw new Error('引擎都没有还能继续？');
     if (!h.includes('转换引擎还没装好')) throw new Error('没说清楚缺什么');
+  });
+
+  ck('缺 C++ 运行库时拦住，而且排在 GPU 运行库前面', () => {
+    // 小蔡 2026-09-02 真机上踩的：自检显示「显卡 ✓ Office ✓」看着一切
+    // 正常，点「现在就装」下完 2.8 GB 才发现装不上，卸掉、退回同一屏。
+    // 他的原话：「不是一整个必须第一个装！不要排在 gpu 库后面好吗！」
+    const st = ready(sb);
+    st.env.vcruntime = { ok: false, missing: ['msvcp140_1.dll'] };
+    st.env.cuda_torch = { ok: false, why: '还没装 GPU 运行库（PyTorch）。' };
+    const h = fn(st);
+    if (!h.includes('Visual C++')) throw new Error('没拦在 C++ 运行库这一屏');
+    if (h.includes('data-act="installGpuLib"'))
+      throw new Error('拦成了 GPU 运行库那屏，顺序反了');
+    if (!h.includes('msvcp140_1.dll')) throw new Error('没说清楚缺哪个文件');
+    if (!h.includes('data-act="openVcRedist"')) throw new Error('没给下载按钮');
+  });
+
+  ck('C++ 运行库齐了才轮到 GPU 运行库那一屏', () => {
+    const st = ready(sb);
+    st.env.vcruntime = { ok: true, missing: [] };
+    st.env.cuda_torch = { ok: false, why: '还没装 GPU 运行库（PyTorch）。' };
+    const h = fn(st);
+    if (!h.includes('2.8 GB')) throw new Error('该显示 GPU 运行库那一屏了');
+  });
+
+  ck('缺 C++ 运行库那屏不给「现在就装」，免得又白下一趟', () => {
+    const st = ready(sb);
+    st.env.vcruntime = { ok: false, missing: ['msvcp140.dll'] };
+    const h = fn(st);
+    if (h.includes('data-act="installGpuLib"'))
+      throw new Error('这屏不该给装 GPU 运行库的按钮');
   });
 
   ck('缺 GPU 运行库时拦住，并给一键安装', () => {

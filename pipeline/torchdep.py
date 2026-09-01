@@ -298,7 +298,18 @@ _DLL_HINTS = (
 
 # torch 的 c10.dll 依赖的 MSVC 运行库。缺哪个都会让整个 torch import 不了。
 # 装在 C:\Windows\System32 下，随 Visual C++ Redistributable 一起来。
-VCRUNTIME_DLLS = ('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+# torch 加载时会用到的 MSVC 运行库。
+#
+# 🔴 2026-09-02 实测：小蔡那台缺这些里的东西，装 vc_redist 之后
+#    GPU 库一次就过。而在那之前，软件「自动补一份 msvcp140」的做法
+#    根本不够 —— vc_redist 装 13 个，我们包里只有 1 个。
+#
+#    尤其是 msvcp140_1.dll：PyTorch 用 C++17，一部分符号在这个文件里，
+#    而 numpy/pandas/shapely 的 wheel 都不带它。
+#
+#    所以这份清单的作用是**判断要不要拦**，不是「补齐它就行」。
+VCRUNTIME_DLLS = ('vcruntime140.dll', 'vcruntime140_1.dll',
+                  'msvcp140.dll', 'msvcp140_1.dll')
 VCREDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
 
 
@@ -317,9 +328,14 @@ def vcruntime_missing():
     """
     sysdir = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
                           'System32')
+    # python.exe 旁边也算 —— DLL 搜索顺序里「应用程序目录」排在
+    # System32 前面，Python embeddable 自带的 vcruntime140* 就在那儿，
+    # 只看 System32 会把它们误报成缺失。
+    beside = os.path.dirname(paths.python_exe())
     miss = []
     for dll in VCRUNTIME_DLLS:
-        if not os.path.isfile(os.path.join(sysdir, dll)):
+        if not (os.path.isfile(os.path.join(sysdir, dll))
+                or os.path.isfile(os.path.join(beside, dll))):
             miss.append(dll)
     return miss
 
@@ -401,7 +417,10 @@ def ensure_msvcp():
     try:
         import shutil
         shutil.copyfile(src, dst)
-        return True, '已补上 C++ 运行库（用的是安装包自带的那份）'
+        # 只是「补了一个」，不是「齐了」。齐没齐由 vcruntime_missing()
+        # 按完整清单说了算 —— 2026-09-02 就是在这儿把「复制过去了」
+        # 当成了「能用了」，害小蔡白下一趟 2.8 GB。
+        return True, '补上了包里自带的 msvcp140.dll（还要再查其余几个）'
     except Exception as e:
         return False, ('这台电脑缺少 C++ 运行库，想自动补上但没成功：%s。'
                        '到微软官网下一个 vc_redist.x64.exe 装上就好。' % e)
@@ -537,9 +556,16 @@ def install(on_log=None, stop_flag=None, on_progress=None):
     #    C++ 运行库缺了的话 torch 装上也加载不了。但**不用让用户去装** ——
     #    包里带着 numpy 那份，复制一下改回原名就行（小蔡：「那你为什么
     #    让我安装 vc」）。只在系统真缺的时候补，系统有就一个字不动。
-    okvc, vcmsg = ensure_msvcp()
-    if not okvc:
-        return False, vcmsg + ' 装好之后回来点一次，那 2.8 GB 现在先别下。'
+    #    包里那份 msvcp140 先复制过去（对只缺它的机器确实够），
+    #    但**不拿它当「搞定了」** —— 复制完还要按完整清单再查一遍。
+    ensure_msvcp()
+    miss = vcruntime_missing()
+    if miss:
+        return False, (
+            '这台电脑缺 Microsoft Visual C++ 运行库（少了 %s）。'
+            'GPU 运行库装上了也加载不了，所以那 2.8 GB 现在先别下 —— '
+            '点下面的「下载 Visual C++ 运行库」，装完回来再点一次「现在就装」。'
+            % '、'.join(miss))
 
     # 2.8 GB 下载 + 解压成 4.2 GB，中途还要放 wheel，留出余量
     need = int(7.5 * 1024 * 1024 * 1024)

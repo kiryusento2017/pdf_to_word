@@ -78,7 +78,11 @@ def env():
         # 不然是下完 2.8 GB 才发现前置条件不满足。
         # C++ 运行库。缺了的话 torch 的 c10.dll 加载不了（WinError 1114）。
         # 这里**顺手就补上**（用包里 numpy 自带的那份），不叫用户去装。
-        'vcruntime': {'ok': torchdep.ensure_msvcp()[0]},
+        # C++ 运行库。**按完整清单查**，不是只看一个文件 ——
+        # 只查 msvcp140 的话，缺 msvcp140_1 的机器会被放行，
+        # 然后白下 2.8 GB（2026-09-02 小蔡真踩了这一遭）。
+        'vcruntime': {'ok': not torchdep.vcruntime_missing(),
+                      'missing': torchdep.vcruntime_missing()},
         # 磁盘空间。首次要下约 7.4 GB，装完占约 10 GB。
         'space': {'free_gb': round(paths.free_bytes() / 1024.0 ** 3, 1)},
         # 模型和可写性 —— 首启要据此决定是拦住、还是先去下模型

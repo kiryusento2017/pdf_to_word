@@ -12,8 +12,8 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 240 条
-node tests\front_check.js                                   # 75 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 242 条
+node tests\front_check.js                                   # 78 条
 ```
 
 **红一条都不许发。** 不存在「这条测试早就坏了不用管」——
