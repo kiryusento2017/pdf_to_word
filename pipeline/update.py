@@ -199,6 +199,7 @@ def _pick_asset(rel):
     重下 0.69 GB。名字里带 update 的优先，没有再退回第一个 zip
     （比如早期只传了一个包的 Release）。
     """
+    # 只看 .zip —— requires-vX.json 那份是依赖清单，不是更新包
     zips = [a for a in (rel.get('assets') or [])
             if (a.get('name') or '').lower().endswith('.zip')]
     if not zips:
@@ -219,6 +220,37 @@ def _pick_asset(rel):
         dg = ''
     return {'name': pick['name'], 'url': pick.get('browser_download_url', ''),
             'size': pick.get('size', 0), 'digest': dg}
+
+
+def _requires_gap(rel):
+    r"""拉 Release 里那份依赖清单，跟本地比。返回缺了什么（空 = 能装）。
+
+    清单是打包时从**实际装的包**里读出来的（`importlib.metadata.version`），
+    不是手写的。所以它是事实，不是「我记得改版本号」。
+
+    拉不到就返回空 —— 不拿一次网络失败去挡住正常更新，
+    真装不了的话 `apply_update` 里还有一道（更新包里也带着同一份清单，
+    只是要下完才能看到）。
+    """
+    asset = None
+    for a in (rel.get('assets') or []):
+        n = (a.get('name') or '').lower()
+        if n.startswith('requires') and n.endswith('.json'):
+            asset = a
+            break
+    if not asset:
+        return []
+    url = asset.get('browser_download_url') or ''
+    if not url:
+        return []
+    for pre in ('', 'https://gh-proxy.com/', 'https://ghfast.top/'):
+        try:
+            req = urllib.request.Request(pre + url if pre else url, headers=UA)
+            with urllib.request.urlopen(req, timeout=API_TRY_TIMEOUT) as r:
+                return check_requires(r.read().decode('utf-8'))
+        except Exception:
+            continue
+    return []
 
 
 def check():
@@ -293,22 +325,30 @@ def check():
 
     out['has_update'] = True
 
-    # 🔴 跨了主版本或次版本 → 更新包补不上依赖，必须重下完整安装包。
+    # 🔴 **能不能自动更新，看依赖，不看版本号。**
     #
-    #    更新包里只有 .py 和 .js。docs/RELEASE.md 定的规矩：依赖变了就
-    #    进次版本。所以「次版本不同」等价于「依赖可能变了」，这时候
-    #    自动更新会让用户拿到**新代码配旧依赖** —— 下次启动 ImportError，
-    #    而他刚「更新成功」过，根本想不到是更新害的。
+    #    这里原来是 `rv[:2] != lv[:2] → need_full`：拿「次版本号变了」
+    #    去推断「依赖变了」。中间隔着一个约定（RELEASE.md 里的
+    #    「依赖变了必须进次版本」），而约定靠发版的人不出错 ——
+    #    哪天加了个 pip 包却只改修订号，用户就会拿到新代码配旧依赖，
+    #    下次启动 ImportError，而他刚「更新成功」过。
     #
-    #    跨多少个**修订号**都没事：更新包是全量替换不是增量补丁，
-    #    v0.0.1 直接下 v0.0.31 的包就变成 v0.0.31，不用一个一个来。
-    if lv and rv and rv[:2] != lv[:2]:
+    #    小蔡 2026-09-02 的指令：「禁止版本号作为判断依据」。
+    #    改成拉 Release 里那份 requires-vX.json（几百字节）跟本地实际装的
+    #    比对 —— 那是**事实**。拉不到就交给 apply_update 里的兜底
+    #    （更新包里也带了一份，只是要下完才能看）。
+    #
+    #    版本号还留着干一件事：判断**有没有**新版本。那件事没有别的
+    #    办法，也不涉及「能不能装」的推断。
+    miss = _requires_gap(rel)
+    if miss:
         out['need_full'] = True
         out['has_update'] = False
         out['error'] = (
-            '有新版本 %s，但它跟你现在这个（%s）差了一个大版本 —— '
-            '这种更新会带新的依赖，小小的更新包补不上，'
-            '需要重新下载完整安装包。' % (out['latest'], loc['tag']))
+            '有新版本 %s，但它需要的东西你这儿还没有（%s）—— '
+            '小小的更新包装不了这些，要重新下载完整安装包。'
+            '你已经下好的模型和 GPU 运行库不用重下。'
+            % (out['latest'], '、'.join(miss[:3])))
         return out
 
     if not out['asset']:
@@ -344,6 +384,55 @@ def probe_mirrors(asset_url, seconds=2.0, size=0):
     cand = [{'id': m['id'], 'name': m['name'], 'env': {},
              'probe': _mirrored(asset_url, m['prefix'])} for m in GH_MIRRORS]
     return sources.probe_all(cand, seconds=seconds)
+
+
+REQUIRES_NAME = 'requires.json'
+
+
+def check_requires(raw):
+    r"""比对更新包要求的依赖和本地实际装的。返回缺了什么（空 = 都满足）。
+
+    ## 为什么不能只看版本号
+
+    原来判断「这次更新能不能自动装」靠的是「次版本号变没变」，而那条
+    建立在一个**约定**上：「依赖变了必须进次版本」。约定靠发版的人
+    不出错 —— 哪天加了个 pip 包却只改了修订号，用户就会拿到
+    新代码配旧依赖，下次启动 ImportError，而他刚「更新成功」过。
+
+    依赖清单是**事实**：打包时把这一版需要的包和当时装的版本写进
+    `requires.json`，客户端拿它跟本地比。版本号判断留作第一道快速筛
+    （省掉一次下载），最终判据在这里。
+
+    ## 比对到什么程度
+
+    只看「本地有没有这个包」和「大版本对不对得上」，不做精确 pin ——
+    我们本来就不锁版本，锁了反而会因为无关的小版本差异挡住正常更新。
+    大版本不同才是真会出事的那种（比如 mineru 3.x → 4.x）。
+    """
+    import json as _json
+    try:
+        want = (_json.loads(raw) or {}).get('requires') or {}
+    except Exception:
+        return []          # 清单坏了/没有 —— 不拿它卡人，交回版本号那道
+
+    try:
+        import importlib.metadata as md
+    except Exception:
+        return []
+
+    miss = []
+    for name, ver in want.items():
+        try:
+            have = md.version(name)
+        except Exception:
+            miss.append('%s（没装）' % name)
+            continue
+        if ver and have:
+            a = str(ver).split('.')[0]
+            b = str(have).split('.')[0]
+            if a.isdigit() and b.isdigit() and a != b:
+                miss.append('%s（要 %s.x，装的是 %s）' % (name, a, have))
+    return miss
 
 
 def apply_update(zip_path):
@@ -400,6 +489,21 @@ def apply_update(zip_path):
 
             if not members:
                 return False, '更新包是空的', 0
+
+            # 🔴 依赖对不上就别覆盖 —— 覆盖完才发现的话，用户拿到的是
+            #    一个启动就崩的软件，而他刚「更新成功」过。
+            try:
+                raw = zf.read(REQUIRES_NAME).decode('utf-8')
+            except Exception:
+                raw = ''        # 老版本的更新包没有这个文件，跳过
+            if raw:
+                miss = check_requires(raw)
+                if miss:
+                    return (False,
+                            '这个更新需要的东西你这儿还没有（%s）—— '
+                            '小小的更新包装不了这些，要重新下载完整安装包。'
+                            '你已经下好的模型和 GPU 运行库不用重下。'
+                            % '、'.join(miss[:3]), 0)
 
             # 先全解到临时目录
             staged = []

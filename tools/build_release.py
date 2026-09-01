@@ -346,6 +346,10 @@ def install_deps(py_exe, cuda=False):
 #    这个 bug 最坏的地方是它不报错：pipeline/ 和 server/ 在根目录，
 #    两边路径一致，所以 Python 那半更新得好好的，用户看到「更新完成」，
 #    只有前端悄悄停在旧版本。跟 CODE 清单对着看，两处必须一致。
+# 更新包里那份依赖清单叫什么。客户端装之前拿它跟本地比对 ——
+# 见 update.check_requires 的说明。
+REQUIRES_NAME = 'requires.json'
+
 UPDATE_PARTS = [
     ('pipeline', 'pipeline'),
     ('server', 'server'),
@@ -376,8 +380,38 @@ def make_update_zip(version, sha=''):
         json.dumps({'tag': version, 'published_at': '', 'sha': sha},
                    ensure_ascii=False, indent=2))
 
+    # 🔴 这一版需要哪些 pip 包，写进更新包。
+    #
+    #    客户端解压之后、覆盖之前拿它跟本地比对：缺了或者版本对不上就
+    #    拒绝覆盖。为什么不能只靠版本号 —— 「次版本变了就是依赖变了」
+    #    是个**约定**，靠发版的人不出错。哪天加了个包却只改修订号，
+    #    用户就会拿到新代码配旧依赖，下次启动直接 ImportError。
+    #    依赖清单是**事实**。
+    #
+    #    只记包名和「打包时装的是哪个版本」，不记 pin —— 我们本来就不
+    #    锁版本，比对时只看「本地有没有、大版本对不对得上」。
+    rq = os.path.join(DIST, 'requires-%s.json' % version)
+    reqs = {}
+    for spec in DEPS:
+        name = spec.split('[')[0]
+        try:
+            import importlib.metadata as _md
+            reqs[name] = _md.version(name)
+        except Exception:
+            reqs[name] = ''
+    io.open(rq, 'w', encoding='utf-8').write(
+        json.dumps({'version': version, 'requires': reqs},
+                   ensure_ascii=False, indent=2))
+    # 🔴 这份要**单独作为 Release 附件上传**（几百字节）。
+    #    客户端 check() 时先拉它跟本地比，下载前就知道这次更新能不能装 ——
+    #    只放在更新包里的话，用户得先下 0.5 MB 才发现装不了。
+    #    包里那份也保留，双保险 + 兼容拉不到附件的情况。
+    say('依赖清单：%s' % os.path.basename(rq))
+
     n = 0
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.write(rq, REQUIRES_NAME)
+        n += 1
         for rel, arc_base in UPDATE_PARTS:
             if rel == 'version.json':
                 z.write(vj, 'version.json')

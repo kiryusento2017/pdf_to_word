@@ -828,7 +828,7 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('data-act="checkUpdate"')) throw new Error('没法重试');
   });
 
-  ck('跨大版本时让人去下完整包，不是硬更新', () => {
+  ck('依赖不满足时让人去下完整包，不是硬更新', () => {
     // 小蔡 2026-09-02：「一个人手里有旧版本，github 上比他快 30 个版本，
     // 难道要一个一个更新上去吗？」—— 跨修订号是一步到位的（更新包是
     // 全量替换）；但跨次版本意味着依赖变了，更新包只有 .py 和 .js，
@@ -836,8 +836,8 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     const st = ready(sb);
     st.upd = { ok: true, has_update: false, need_full: true,
                local: 'v1.0.5', latest: 'v1.1.0',
-               error: '有新版本 v1.1.0，但它跟你现在这个（v1.0.5）差了一个大版本，'
-                    + '需要重新下载完整安装包。' };
+               error: '有新版本 v1.1.0，但它需要的东西你这儿还没有'
+                    + '（某个包（没装）），需要重新下载完整安装包。' };
     const h = fn(st);
     if (!h.includes('重新下载安装包')) throw new Error('没说清楚这次要换个方式');
     if (!h.includes('data-act="openReleases"')) throw new Error('没给下载页入口');

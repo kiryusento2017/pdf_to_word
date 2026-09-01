@@ -59,6 +59,7 @@ NOT_PROJECT_FILES = {
     '安装依赖.cmd', '首次安装.cmd', '启动.cmd', '使用说明.txt',
     'mineru.json', 'MML2OMML.XSL', 'COPYRIGHT.txt', 'LICENSE',
     'python312.zip',                      # Python embeddable 包内部的 stdlib
+    'requires.json', 'requires-vX.json',  # 打包时生成的依赖清单（Release 附件）
 }
 
 PATH_RE = re.compile(

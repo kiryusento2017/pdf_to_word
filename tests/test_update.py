@@ -114,31 +114,60 @@ class Test版本比较看方向(unittest.TestCase):
         self.assertFalse(r['need_full'])
         self.assertTrue(r['asset'])
 
-    def test_跨次版本要重下完整包(self):
-        r"""更新包里只有 .py 和 .js，**装不了新的 pip 依赖**。
+    def test_禁止拿版本号判断能不能自动更新(self):
+        r"""🔴 小蔡 2026-09-02 的指令：「禁止版本号作为判断依据」。
 
-        docs/RELEASE.md 定的规矩：「依赖变了必须进次版本」。所以
-        「次版本不同」等价于「依赖可能变了」，这时候还照常自动更新的话，
-        用户会拿到**新代码配旧依赖** —— 下次启动直接 ImportError，
-        而他刚「更新成功」过，根本想不到是更新害的。
+        这里原来有两条测试，钉的是「跨次版本 → need_full」——
+        那是拿「次版本号变了」去**推断**「依赖变了」，中间隔着一个约定
+        （RELEASE.md 里的「依赖变了必须进次版本」）。约定靠发版的人
+        不出错：哪天加了个 pip 包却只改修订号，用户就会拿到新代码配旧依赖，
+        下次启动 ImportError，而他刚「更新成功」过。
 
-        这条规矩之前只写在文档里，代码里没人执行 —— 跟 sources.py 那次
-        一样（注释写着「不用 ping 判优」，实现算的就是延迟）。
+        现在判据换成**依赖清单跟本地实际装的比对**（那是事实）。
+        所以跨多大的版本号，只要依赖满足，就该正常自动更新。
         """
+        # 跨次版本
         self._local('v1.0.5', '')
         self._remote(_rel('v1.1.0', '2026-09-05T00:00:00Z'))
         r = update.check()
-        self.assertTrue(r['ok'])
-        self.assertTrue(r['need_full'], '跨次版本却让它走自动更新')
-        self.assertFalse(r['has_update'], '会去下一个补不上依赖的更新包')
-        self.assertIn('完整安装包', r['error'])
+        self.assertTrue(r['has_update'],
+                        '又拿版本号把正常更新挡住了')
+        self.assertFalse(r['need_full'])
 
-    def test_跨主版本也要重下(self):
+        # 跨主版本
         self._local('v1.9.9', '')
         self._remote(_rel('v2.0.0', '2026-09-05T00:00:00Z'))
         r = update.check()
-        self.assertTrue(r['need_full'])
+        self.assertTrue(r['has_update'], '又拿版本号挡了')
+        self.assertFalse(r['need_full'])
+
+    def test_依赖不满足才拦住(self):
+        r"""拦不拦看的是依赖，不是版本号。"""
+        self._local('v1.0.0', '')
+        rel = _rel('v1.0.1', '2026-09-05T00:00:00Z')
+        rel['assets'].append({
+            'name': 'requires-v1.0.1.json',
+            'browser_download_url': 'https://x/requires.json', 'size': 100})
+        self._remote(rel)
+
+        orig = update._requires_gap
+        update._requires_gap = lambda _rel: ['某个包（没装）']
+        self.addCleanup(setattr, update, '_requires_gap', orig)
+
+        r = update.check()
+        self.assertTrue(r['need_full'], '依赖不满足却让它自动更新')
         self.assertFalse(r['has_update'])
+        self.assertIn('完整安装包', r['error'])
+        self.assertIn('某个包', r['error'], '没说清楚缺什么')
+
+    def test_拉不到依赖清单时不挡人(self):
+        r"""一次网络失败不该把正常更新挡住 —— 真装不了的话
+        apply_update 里还有一道（更新包里也带着同一份清单）。"""
+        self._local('v1.0.0', '')
+        self._remote(_rel('v1.0.1', '2026-09-05T00:00:00Z'))
+        r = update.check()
+        self.assertTrue(r['has_update'])
+        self.assertFalse(r['need_full'])
 
     def test_一样的版本不报更新(self):
         self._local('v1.1.0', '2026-09-05T00:00:00Z')
@@ -369,6 +398,86 @@ class Test镜像(unittest.TestCase):
         ok, err, via = update.download('', os.path.join(self.__class__.__name__))
         self.assertFalse(ok)
         self.assertIn('没有可下载', err)
+
+
+class Test依赖比对(unittest.TestCase):
+    r"""小蔡 2026-09-02：「那问题来了，难道仅凭版本号判断吗，
+    真实的技术路线是什么」。
+
+    原来判断「这次更新能不能自动装」靠的是「次版本号变没变」，而那条
+    建立在一个**约定**上：「依赖变了必须进次版本」（写在 RELEASE.md 里）。
+    约定靠发版的人不出错 —— 哪天加了个 pip 包却只改了修订号，
+    用户就会拿到新代码配旧依赖，下次启动 ImportError，
+    而他刚「更新成功」过，根本想不到是更新害的。
+
+    真实的技术路线是**直接检查依赖本身**：打包时把这一版需要的包和
+    当时装的版本写进更新包的 requires.json，客户端解压之后、覆盖之前
+    拿它跟本地比。版本号那道留作快速筛（省一次下载），
+    最终判据是这里 —— 那是事实，不是约定。
+    """
+
+    def test_都装了就放行(self):
+        raw = json.dumps({'version': 'v9', 'requires': {
+            'fastapi': '0.141.1', 'lxml': '6.1.2'}})
+        self.assertEqual(update.check_requires(raw), [])
+
+    def test_缺包要拦住(self):
+        raw = json.dumps({'version': 'v9', 'requires': {
+            'fastapi': '0.141.1', '这个包根本不存在xyz': '1.0.0'}})
+        miss = update.check_requires(raw)
+        self.assertTrue(miss, '缺了包却放行了')
+        self.assertIn('没装', miss[0])
+
+    def test_大版本对不上要拦住(self):
+        r"""比如 mineru 3.x → 4.x：更新包里的新代码按 4.x 写，
+        本地还是 3.x，装上就崩。"""
+        raw = json.dumps({'version': 'v9', 'requires': {'fastapi': '99.0.0'}})
+        miss = update.check_requires(raw)
+        self.assertTrue(miss, '大版本差了却放行')
+        self.assertIn('99', miss[0])
+
+    def test_小版本差异不拦(self):
+        r"""我们本来就不锁版本，锁了反而会因为无关的小版本差异
+        挡住正常更新。"""
+        import importlib.metadata as md
+        cur = md.version('fastapi')
+        major = cur.split('.')[0]
+        raw = json.dumps({'version': 'v9',
+                          'requires': {'fastapi': major + '.999.999'}})
+        self.assertEqual(update.check_requires(raw), [],
+                         '小版本不同就把人拦下来了')
+
+    def test_清单坏了或没有时不拿它卡人(self):
+        r"""老版本的更新包里没有 requires.json；清单本身也可能损坏。
+        这两种情况都交回版本号那道判断，不在这里卡死。"""
+        self.assertEqual(update.check_requires(''), [])
+        self.assertEqual(update.check_requires('这不是 json'), [])
+        self.assertEqual(update.check_requires('{}'), [])
+
+    def test_装之前就拦住不是装完才发现(self):
+        r"""🔴 顺序很要紧：**解压之后、覆盖之前**比对。
+        覆盖完才发现的话，用户拿到的是一个启动就崩的软件。"""
+        work = tempfile.mkdtemp(prefix='p2w_req_')
+        self.addCleanup(shutil.rmtree, work, True)
+        root = os.path.join(work, 'app')
+        os.makedirs(os.path.join(root, 'pipeline'))
+        old_file = os.path.join(root, 'pipeline', 'a.py')
+        with io.open(old_file, 'w', encoding='utf-8') as f:
+            f.write('# 旧的\n')
+        self.addCleanup(setattr, paths, 'ROOT', paths.ROOT)
+        paths.ROOT = root
+
+        zp = os.path.join(work, 'u.zip')
+        with zipfile.ZipFile(zp, 'w') as z:
+            z.writestr('requires.json', json.dumps(
+                {'version': 'v9', 'requires': {'绝对没装的包abc': '1.0.0'}}))
+            z.writestr('pipeline/a.py', '# 新的\n')
+
+        ok, err, n = update.apply_update(zp)
+        self.assertFalse(ok)
+        self.assertIn('完整安装包', err)
+        with io.open(old_file, encoding='utf-8') as f:
+            self.assertIn('旧的', f.read(), '拦住了却还是把文件覆盖了')
 
 
 class Test安装失败要回滚(unittest.TestCase):
