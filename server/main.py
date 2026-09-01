@@ -25,6 +25,7 @@ from pydantic import BaseModel                        # noqa: E402
 
 import convert                                        # noqa: E402
 import gpu                                            # noqa: E402
+import paths                                          # noqa: E402
 import probe                                          # noqa: E402
 import sources                                      # noqa: E402
 import todocx                                         # noqa: E402
@@ -137,7 +138,7 @@ class ConvertReq(BaseModel):
     source: str = ''           # 模型下载源的 id，空 = 让 MinerU 自己决定
 
 
-def _work(task_id, paths, out_dir, prefer_xsl, source=''):
+def _work(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
     r"""后台线程：逐份转。一份失败不影响其余。
 
     🔴 **整体套一层兜底**。这是后台线程，异常会被 Python 悄悄吞掉，
@@ -146,7 +147,7 @@ def _work(task_id, paths, out_dir, prefer_xsl, source=''):
     四条测试全部等到超时才失败。
     """
     try:
-        _work_inner(task_id, paths, out_dir, prefer_xsl, source)
+        _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source)
     except Exception as e:
         with _LOCK:
             t = _TASKS.get(task_id)
@@ -155,17 +156,20 @@ def _work(task_id, paths, out_dir, prefer_xsl, source=''):
                 t['error'] = '%s: %s' % (type(e).__name__, str(e)[:200])
 
 
-def _work_inner(task_id, paths, out_dir, prefer_xsl, source=''):
+def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
     mineru = _find_mineru()
-    tmp = os.path.join(ROOT, '_tmp', 'extract')
+    tmp = paths.ensure(paths.TMP_EXTRACT)
     # 用户在首启那屏选的源。**必须真的传下去** —— 只记在前端等于让人
     # 做了个没用的选择题，比不给选更糟。
-    env = {}
+    src_env = {}
     for s in sources.MODEL_SOURCES:
         if s['id'] == source:
-            env = s['env']
+            src_env = s['env']
             break
-    for i, pdf in enumerate(paths):
+    # child_env 把模型目录和 MinerU 配置也锁进安装目录 —— 这是
+    # 「运行中产生的一切都留在安装文件夹内」的实现手段，少传一次就漏一处。
+    env = paths.child_env(src_env)
+    for i, pdf in enumerate(pdf_paths):
         with _LOCK:
             t = _TASKS[task_id]
             if t['cancel']:
@@ -190,10 +194,14 @@ def _work_inner(task_id, paths, out_dir, prefer_xsl, source=''):
         rep['line'] = convert.summary_line(rep)
         with _LOCK:
             _TASKS[task_id]['results'].append(rep)
+            # 记下「已完成的那些一共花了多久」。_remain 要拿它算真实速率——
+            # 不能用 elapsed，那里面含着当前这份正在跑的时间，会让估算
+            # 随时间单调变大（越等越久）。
+            _TASKS[task_id]['done_elapsed'] = time.time() - _TASKS[task_id]['started']
 
     with _LOCK:
         _TASKS[task_id]['state'] = 'done'
-        _TASKS[task_id]['current'] = len(paths)
+        _TASKS[task_id]['current'] = len(pdf_paths)
 
 
 @app.post('/api/convert')
@@ -235,26 +243,36 @@ def _remain(t, elapsed):
     r"""还要多久（秒）。算不出来就返回 None，**界面上宁可不显示也不瞎猜**。
 
     做法：没跑的那些按页数 x 每页秒数估；已经跑完的那些用真实耗时
-    反推速率，用它替掉估计值 —— 转到第三份时，前两份的真实速度
-    比出厂估值准得多。
+    反推速率 —— 转到第三份时，前两份的真实速度比出厂估值准得多。
+
+    🔴 速率只能用 `done_elapsed`（最后一份转完那一刻的耗时）来算，
+       **绝不能用 `elapsed`**。曾经写成 `spp = elapsed / done_pages`，
+       而 elapsed 里含着当前这份正在跑的时间，于是：
+           转得越久 → spp 越大 → 剩余时间越大
+       实测三份书的第二份进行中时，「还要」从 520 秒一路涨到 1400 秒，
+       等得越久说要等得越久。同一个式子还让下面那句 cur_spent 恒等于 0
+       （done_pages * (elapsed/done_pages) 就是 elapsed），
+       「扣掉当前这份已跑时间」整段逻辑是死的。
     """
     pages = t.get('pages') or []
     if not pages:
         return None
     done = len(t.get('results') or [])
     spp = t.get('sec_per_page') or SEC_PER_PAGE_GPU
-    if done:
+    done_elapsed = t.get('done_elapsed')
+    if done and done_elapsed:
         done_pages = sum(pages[:done]) or 1
-        spp = elapsed / float(done_pages)          # 真实速率更准
+        spp = done_elapsed / float(done_pages)     # 只用已完成部分的真实耗时
+
     left_pages = sum(pages[done:])
     if left_pages <= 0:
         return 0
-    # 当前这份已经跑了一会儿，按它在整批里的页数占比扣掉
+
+    left = left_pages * spp
+    # 当前这份已经跑掉的时间要扣掉，否则进度看着不动
     if done < len(pages):
-        cur_spent = elapsed - sum(pages[:done]) * spp
-        left = left_pages * spp - max(cur_spent, 0)
-    else:
-        left = left_pages * spp
+        cur_spent = elapsed - (done_elapsed or 0)
+        left -= max(cur_spent, 0)
     return max(int(left), 0)
 
 

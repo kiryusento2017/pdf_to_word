@@ -215,11 +215,56 @@ class Test转换任务(unittest.TestCase):
         self.assertEqual(r, int(30 * 26))          # 30 页 x 26 秒
 
     def test_跑完的用真实速率反推(self):
-        r"""转到第三份时，前两份的真实速度比出厂估值准得多。"""
-        t = {'pages': [10, 10], 'results': [{'ok': True}], 'sec_per_page': 26.0}
-        # 第一份 10 页真实花了 500 秒（这台机器慢），剩下 10 页也该按 50 秒/页估
-        r = srv._remain(t, elapsed=500)
-        self.assertEqual(r, 500)
+        r"""转到第三份时，前两份的真实速度比出厂估值准得多。
+
+        速率取自 done_elapsed（上一份转完那一刻），不是当前的 elapsed。
+        """
+        t = {'pages': [10, 10], 'results': [{'ok': True}],
+             'sec_per_page': 26.0, 'done_elapsed': 500.0}
+        # 第一份 10 页真实花了 500 秒（这台机器慢），剩下 10 页照 50 秒/页估
+        self.assertEqual(srv._remain(t, elapsed=500), 500)
+
+    def test_剩余时间必须随时间递减(self):
+        r"""🔴 这条是为一个真实 bug 立的桩。
+
+        原实现 `spp = elapsed / done_pages` 把当前这份正在跑的时间也算进了
+        「每页耗时」，于是转得越久估得越久。实测三份书的第二份进行中时：
+
+            已跑 260 秒 → 还要  520 秒
+            已跑 380 秒 → 还要  760 秒
+            已跑 700 秒 → 还要 1400 秒
+
+        用户拖一个文件夹进来就会撞上 —— 而且每个单点看着都"挺合理"，
+        只有连起来看才知道荒谬。所以必须测序列，不能测单点。
+        """
+        t = {'pages': [10, 10, 10], 'results': [{'ok': True}],
+             'sec_per_page': 26.0, 'done_elapsed': 260.0}
+        seq = [srv._remain(t, elapsed=e) for e in (260, 320, 380, 500, 700)]
+        for a, b in zip(seq, seq[1:]):
+            self.assertGreaterEqual(a, b,
+                                    '剩余时间涨了：%s（等得越久说要等越久）' % seq)
+        self.assertLess(seq[-1], seq[0], '完全没动：%s' % seq)
+
+    def test_第一份进行中也要递减(self):
+        r"""done=0 时走出厂估值，同样必须随时间往下走。"""
+        t = {'pages': [10, 10, 10], 'results': [], 'sec_per_page': 26.0}
+        seq = [srv._remain(t, elapsed=e) for e in (0, 60, 120, 240)]
+        for a, b in zip(seq, seq[1:]):
+            self.assertGreater(a, b, '第一份进行中没有递减：%s' % seq)
+
+    def test_一份转完后剩余时间不该突然暴涨(self):
+        r"""跨越「一份转完」这个边界时，估算不该跳变太离谱 ——
+        那一刻速率从出厂估值切换成实测值，是最容易出突刺的地方。
+        """
+        pages = [10, 10]
+        before = srv._remain({'pages': pages, 'results': [],
+                              'sec_per_page': 26.0}, elapsed=259)
+        after = srv._remain({'pages': pages, 'results': [{'ok': True}],
+                             'sec_per_page': 26.0, 'done_elapsed': 260.0},
+                            elapsed=261)
+        # 第一份正好按预期速度跑完，切换前后应当基本连续
+        self.assertLess(abs(after - before), 60,
+                        '切换瞬间跳了 %d 秒（%d → %d）' % (abs(after - before), before, after))
 
     def test_全跑完剩余是0(self):
         t = {'pages': [10], 'results': [{'ok': True}], 'sec_per_page': 26.0}
