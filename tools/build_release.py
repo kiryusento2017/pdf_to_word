@@ -487,7 +487,19 @@ def make_sfx(version):
     #      __pycache__ 里面嵌着开发机的源码路径
     #
     #    2026-09-02 的 v0.0.2 就带着 80 个 _tmp/appdata 条目发出去了。
-    exclude = ['-xr!_tmp', '-xr!appdata', '-xr!logs', '-xr!models',
+    #    🔴 `-x!` 不递归，`-xr!` 递归 —— 这一个字母的差别毁掉过一整版。
+    #
+    #    v0.0.3 用的是 `-xr!models`，本意是排除根目录下那个 4.6 GB 的
+    #    模型目录，实际把**所有**叫 models 的目录都剔了，一共 37 个：
+    #      pip/_internal/models     → pip 直接崩（用户点安装就报
+    #                                 ModuleNotFoundError）
+    #      modelscope/models        → 模型下载器的核心
+    #      transformers/models      → 转换引擎的核心
+    #      tokenizers、onnxruntime、magika 各自的 models
+    #
+    #    前四个都是**只在根目录出现**的名字，用 `-x!` 就够。
+    #    后两个必须递归 —— __pycache__ 和 .pyc 本来就散在各处。
+    exclude = ['-x!_tmp', '-x!appdata', '-x!logs', '-x!models',
                '-xr!__pycache__', '-xr!*.pyc']
     say('压缩中（要几分钟）…')
     r = subprocess.run([sz, 'a', '-t7z', '-mx=5', '-mmt=on'] + exclude

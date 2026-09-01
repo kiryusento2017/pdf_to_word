@@ -62,6 +62,24 @@ FORBIDDEN = [
      'GPU 运行库该由用户首启时下，不进包'),
 ]
 
+# 必须有的**目录**。
+#
+# 🔴 这一组是 v0.0.3 之后加的。那一版的包里 pip、modelscope、
+#    transformers 各自的 `models` 目录全被 `-xr!models` 剔掉了，
+#    用户装上之后点「装 GPU 运行库」直接报
+#    `ModuleNotFoundError: No module named 'pip._internal.models'`。
+#
+#    而这个脚本当时报的是「包是干净的」—— 因为它只查「有没有不该有的
+#    东西」，从不查「该有的还在不在」。干净得连 pip 都没了。
+#
+#    正向检查和反向检查抓的是两类错，缺一不可。
+REQUIRED_DIRS = [
+    (r'pip[\\/]_internal[\\/]models[\\/]', 'pip 的核心，缺了 pip 直接崩'),
+    (r'modelscope[\\/]models[\\/]', '模型下载器的核心'),
+    (r'transformers[\\/]models[\\/]', '转换引擎的核心'),
+    (r'tokenizers[\\/]models[\\/]', '分词器的核心'),
+]
+
 # 必须有
 REQUIRED = [
     'PDF转Word.exe',
@@ -124,6 +142,14 @@ def main():
             bad.append('包里有 %d 个 `%s` —— %s' % (len(hits), name, why))
         else:
             print('  [ok] 没有 %s' % name)
+
+    for pat, why in REQUIRED_DIRS:
+        n = len(re.findall(pat, listing, re.I))
+        if n:
+            print('  [ok] %s 有 %d 个条目' % (pat.replace(chr(92) * 2, '/')
+                                              .replace('[/]', '/'), n))
+        else:
+            bad.append('缺整个 `%s` —— %s' % (pat, why))
 
     for need in REQUIRED:
         if need not in listing:
