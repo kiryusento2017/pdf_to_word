@@ -34,7 +34,8 @@ import extract                                        # noqa: E402
 import gpu                                            # noqa: E402
 import models                                         # noqa: E402
 import paths
-import torchdep                                          # noqa: E402
+import torchdep
+import vcredist                                          # noqa: E402
 import probe                                          # noqa: E402
 import sources                                      # noqa: E402
 import todocx                                         # noqa: E402
@@ -78,11 +79,12 @@ def env():
         # 不然是下完 2.8 GB 才发现前置条件不满足。
         # C++ 运行库。缺了的话 torch 的 c10.dll 加载不了（WinError 1114）。
         # 这里**顺手就补上**（用包里 numpy 自带的那份），不叫用户去装。
-        # C++ 运行库。**按完整清单查**，不是只看一个文件 ——
-        # 只查 msvcp140 的话，缺 msvcp140_1 的机器会被放行，
-        # 然后白下 2.8 GB（2026-09-02 小蔡真踩了这一遭）。
-        'vcruntime': {'ok': not torchdep.vcruntime_missing(),
-                      'missing': torchdep.vcruntime_missing()},
+        # C++ 运行库。判据是「这个软件装过一次没有」，**不是**
+        # 「系统里装没装 VC++」——后者今天判错四次，最后一次是
+        # 把我们自己随包带的 vcruntime140* 当成了系统装的，
+        # 于是没装 VC 的机器也打勾（小蔡在网吧那台抓到）。
+        # 重复安装 vc_redist 无害（微软文档），所以不猜，装一次。
+        'vcredist': {'ok': vcredist.already_done()},
         # 磁盘空间。首次要下约 7.4 GB，装完占约 10 GB。
         'space': {'free_gb': round(paths.free_bytes() / 1024.0 ** 3, 1)},
         # 模型和可写性 —— 首启要据此决定是拦住、还是先去下模型
@@ -439,6 +441,56 @@ async def gpulib_status():
         d = dict(_DL)
     d['ready'] = torchdep.ready()
     d['why'] = torchdep.why()
+    return d
+
+
+def _vcredist_work():
+    def on_log(line):
+        _dl_log(line)
+
+    def on_prog(got, total):
+        with _LOCK:
+            _DL['got'], _DL['total'] = got, total
+
+    def stopped():
+        with _LOCK:
+            return _DL['cancel']
+
+    with _LOCK:
+        _DL['cmd'] = vcredist.cmd_text()
+        _DL['log'] = ''
+        _DL['got'], _DL['total'] = 0, vcredist.SIZE_HINT
+        _DL['lines'] = []
+    ok, err = vcredist.install(on_log=on_log, on_progress=on_prog,
+                               stop_flag=stopped)
+    with _LOCK:
+        _DL['state'] = 'done' if ok else 'error'
+        _DL['error'] = err
+        _DL['phase'] = ''
+
+
+@app.post('/api/vcredist/install')
+async def install_vcredist():
+    r"""下载并运行微软的 vc_redist.x64.exe。
+
+    这是首启的第一步 —— GPU 运行库要靠它才加载得起来，顺序反了
+    用户就得白下一趟 2.8 GB（2026-09-02 小蔡真踩了）。
+    """
+    with _LOCK:
+        if _DL['state'] == 'running':
+            return {'ok': True, 'already': True}
+        _DL.update({'state': 'running', 'got': 0, 'error': '',
+                    'line': '', 'lines': [], 'cancel': False,
+                    'phase': 'vcredist', 'cmd': '', 'log': ''})
+    threading.Thread(target=_vcredist_work, daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/vcredist/install')
+async def vcredist_status():
+    with _LOCK:
+        d = dict(_DL)
+    d['ready'] = vcredist.already_done()
     return d
 
 

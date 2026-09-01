@@ -57,7 +57,7 @@ function envLine(st) {
   parts.push('Office ✓');
   // C++ 运行库也摆出来 —— 它齐不齐决定那 2.8 GB 装不装得上，
   // 用户有权在点之前就看见，而不是下完才知道。
-  if (e.vcruntime) parts.push(e.vcruntime.ok ? 'C++ 运行库 ✓' : 'C++ 运行库 ✗');
+  if (e.vcredist) parts.push(e.vcredist.ok ? 'C++ 运行库 ✓' : 'C++ 运行库 ✗');
   return dot(g.ok ? '#15803d' : '#b45309') + ' <span'
     + (g.ok ? '' : ' class="f-warn"') + '>' + parts.join('　·　') + '</span>';
 }
@@ -76,7 +76,7 @@ function gateKind(st) {
   //    好吗！」原来这条只在点了「现在就装」之后才查，于是用户看着
   //    「显卡 ✓ Office ✓」以为没问题，下完 2.8 GB 才发现装不上，
   //    卸掉、退回原屏，白等半小时。
-  if (!(e.vcruntime || {}).ok) return 'vcredist';
+  if (!(e.vcredist || {}).ok) return 'vcredist';
   // 缺 GPU 运行库排在「显卡不够」前面：装不装得上运行库是能自己解决的事，
   // 显卡不行才是没办法的事。先让人做能做的那件。
   if (!(e.cuda_torch || {}).ok) return 'cudalib';   // 硬拦，但给一键安装
@@ -196,21 +196,33 @@ function gateView(st, kind) {
       + btn('quit', '退出') + '</div></div>';
   }
   if (kind === 'vcredist') {
-    // 缺的具体是哪几个 DLL，说出来 —— 用户拿这个能去搜、能对着查。
-    var vm = (e.vcruntime || {}).missing || [];
+    if (st.vcBusy) {
+      var vd = st.vcDl || {};
+      return dlPanel({
+        title: '正在装 C++ 运行库',
+        got: vd.got, total: vd.total, cmd: vd.cmd, lines: vd.lines,
+        note: '会弹出系统的权限确认框，点「是」才能装。这一步很快，'
+            + '装完才轮到那 2.8 GB 的 GPU 运行库。',
+      });
+    }
     return '<div class="fill">'
-      + '<div style="font-size:14px;font-weight:600">先装 Visual C++ 运行库</div>'
+      + '<div style="font-size:14px;font-weight:600">第一步：装 C++ 运行库</div>'
       + '<div class="f-dim" style="max-width:470px;line-height:1.65;text-align:left">'
-      + '这台电脑缺微软的 C++ 运行库'
-      + (vm.length ? '（少了 ' + esc(vm.join('、')) + '）' : '')
-      + '。<b>先装它，再装 GPU 运行库</b> —— 那 2.8 GB 装上了也要靠它才能加载，'
-      + '顺序反了就是白下一趟。'
-      + '<br><br>装的东西很小，几分钟就好。点下面的按钮会打开微软官网的'
-      + '下载页（vc_redist.x64.exe），装完回来点「重新检查」。'
+      + '微软的 Visual C++ 运行库，约 25 MB。<b>它是 GPU 运行库的前提</b> —— '
+      + '那 2.8 GB 装上了也要靠它才能加载，顺序反了就是白下一趟。'
+      + '<br><br>点下面的按钮会自动下载并安装，中途会弹出系统的权限确认框，'
+      + '点「是」就行。已经装过的电脑再装一次也没事，微软的安装程序会自己'
+      + '认出来直接跳过。'
       + '</div>'
+      + (st.vcError
+         ? '<div class="f-dim" style="max-width:470px;color:#c0392b;'
+           + 'line-height:1.6;text-align:left">' + esc(st.vcError) + '</div>'
+         : '')
       + '<div style="display:flex;gap:8px;margin-top:2px;flex-wrap:wrap;'
       + 'justify-content:center">'
-      + btn('openVcRedist', '下载 Visual C++ 运行库', { cls: 'primary' })
+      + btn('installVcRedist', st.vcError ? '再装一次' : '现在就装',
+            { cls: 'primary' })
+      + (st.vcError ? btn('openVcRedist', '自己去官网下') : '')
       + btn('reload', '重新检查')
       + btn('quit', '退出') + '</div></div>';
   }

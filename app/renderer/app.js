@@ -86,7 +86,7 @@ function isBlocked(st) {
   if (!(e.mineru || {}).ok) return true;
   // C++ 运行库排在 GPU 运行库前面 —— 它是那 2.8 GB 的前提，
   // 顺序反了用户就得白下一趟（2026-09-02 小蔡真踩了）。
-  if (!(e.vcruntime || {}).ok) return true;
+  if (!(e.vcredist || {}).ok) return true;
   // GPU 运行库（CUDA 版 PyTorch）没装或装成了 CPU 版 —— 硬拦。
   // 这台机器有没有显卡是另一回事（下面那条），两个都得过。
   if (!(e.cuda_torch || {}).ok) return true;

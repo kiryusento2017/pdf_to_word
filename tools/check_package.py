@@ -60,6 +60,8 @@ FORBIDDEN = [
     ('__pycache__/', r'(?<![\w-])__pycache__[\\/]', '里面嵌着开发机的源码路径'),
     ('site-packages/torch/', r'site-packages[\\/]torch[\\/]',
      'GPU 运行库该由用户首启时下，不进包'),
+    ('vc_done.json', r'(?<![\w-])vc_done\.json',
+     '「装过 vc_redist」的记号，打进包等于给每个新用户一个假标记'),
 ]
 
 # 必须有的**目录**。

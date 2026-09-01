@@ -141,6 +141,28 @@
     // GPU 运行库加载不了时最常见的解法：装 Visual C++ 运行库。
     // 直接给下载地址，不让人自己去搜 —— 搜「vc运行库」出来的
     // 前几条常常是第三方打包站。
+    // 第一步：装 C++ 运行库。跟装 GPU 运行库同一套轮询。
+    installVcRedist: function () {
+      var st = window.P2W_STATE;
+      st.vcBusy = true;
+      st.vcError = '';
+      st.vcDl = { got: 0, total: 0, cmd: '', lines: [] };
+      window.P2W_RENDER();
+      post('/api/vcredist/install').then(function () {
+        var tick = function () {
+          get('/api/vcredist/install').then(function (d) {
+            st.vcDl = d;
+            if (d.state === 'running') { setTimeout(tick, 500); return; }
+            st.vcBusy = false;
+            if (d.state === 'error') { st.vcError = d.error || '装失败了'; }
+            window.P2W_RELOAD_ENV();
+            window.P2W_RENDER();
+          });
+        };
+        setTimeout(tick, 400);
+      });
+    },
+
     openVcRedist: function () {
       window.api.openUrl('https://aka.ms/vs/17/release/vc_redist.x64.exe');
     },

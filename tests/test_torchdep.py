@@ -215,6 +215,12 @@ class Test装坏了必须卸掉(unittest.TestCase):
     """
 
     def setUp(self):
+        # install() 的第一关现在是「装过 vc_redist 没有」。这几条测的是
+        # 后面的逻辑（装坏了要卸掉），所以先让第一关过。
+        import vcredist
+        self._vc = vcredist.already_done
+        vcredist.already_done = lambda: True
+        self.addCleanup(setattr, vcredist, 'already_done', self._vc)
         self.calls = []
         self.work = tempfile.mkdtemp(prefix='p2w_broken_')
         self.addCleanup(shutil.rmtree, self.work, True)
@@ -339,9 +345,9 @@ class 补C运行库(unittest.TestCase):
         让用户装 VC++ → 重新下 2.8 GB」。小蔡：「顺序是不是不太对」。
         """
         src = io.open('pipeline/torchdep.py', encoding='utf-8').read()
-        i_vc = src.index('ensure_msvcp()', src.index('def install('))
+        i_vc = src.index('vcredist.already_done()', src.index('def install('))
         i_run = src.index('subprocess.Popen', src.index('def install('))
-        self.assertLess(i_vc, i_run, '补运行库排在真正开下之后了')
+        self.assertLess(i_vc, i_run, '查 C++ 运行库排在真正开下之后了')
 
 
 class 空间检查(unittest.TestCase):

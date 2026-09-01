@@ -556,16 +556,14 @@ def install(on_log=None, stop_flag=None, on_progress=None):
     #    C++ 运行库缺了的话 torch 装上也加载不了。但**不用让用户去装** ——
     #    包里带着 numpy 那份，复制一下改回原名就行（小蔡：「那你为什么
     #    让我安装 vc」）。只在系统真缺的时候补，系统有就一个字不动。
-    #    包里那份 msvcp140 先复制过去（对只缺它的机器确实够），
-    #    但**不拿它当「搞定了」** —— 复制完还要按完整清单再查一遍。
-    ensure_msvcp()
-    miss = vcruntime_missing()
-    if miss:
-        return False, (
-            '这台电脑缺 Microsoft Visual C++ 运行库（少了 %s）。'
-            'GPU 运行库装上了也加载不了，所以那 2.8 GB 现在先别下 —— '
-            '点下面的「下载 Visual C++ 运行库」，装完回来再点一次「现在就装」。'
-            % '、'.join(miss))
+    #    判据是「这个软件装过 vc_redist 没有」，不是数 DLL 文件 ——
+    #    数文件今天判错四次（最后一次把我们自己带的 vcruntime140*
+    #    当成系统装的，没装 VC 的机器也放行）。
+    import vcredist
+    if not vcredist.already_done():
+        return False, ('还没装 Microsoft Visual C++ 运行库。'
+                       'GPU 运行库要靠它才加载得起来，'
+                       '所以那 2.8 GB 先别下 —— 回首页把它装上再来。')
 
     # 2.8 GB 下载 + 解压成 4.2 GB，中途还要放 wheel，留出余量
     need = int(7.5 * 1024 * 1024 * 1024)

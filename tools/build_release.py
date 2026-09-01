@@ -499,7 +499,11 @@ def make_sfx(version):
     #
     #    前四个都是**只在根目录出现**的名字，用 `-x!` 就够。
     #    后两个必须递归 —— __pycache__ 和 .pyc 本来就散在各处。
+    #    vc_done.json 是运行时才产生的「这台机器装过 vc_redist」的记号。
+    #    打进包的话，每个新用户装上就自带一个假记号，第一步直接跳过 ——
+    #    而那一步正是为了修「没装 VC 却往下走」才加的。
     exclude = ['-x!_tmp', '-x!appdata', '-x!logs', '-x!models',
+               '-x!vc_done.json',
                '-xr!__pycache__', '-xr!*.pyc']
     say('压缩中（要几分钟）…')
     r = subprocess.run([sz, 'a', '-t7z', '-mx=5', '-mmt=on'] + exclude
