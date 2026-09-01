@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 runtime/pandoc/pandoc.exe
 node_modules/
+appdata/
+models/
+mineru.json

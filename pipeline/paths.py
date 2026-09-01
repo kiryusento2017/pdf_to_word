@@ -42,6 +42,38 @@ RUNTIME = os.path.join(ROOT, 'runtime')
 PANDOC = os.path.join(RUNTIME, 'pandoc', 'pandoc.exe')
 
 
+def find_exe(name, subdirs=()):
+    r"""找一个可执行文件。**发行版和开发环境用同一套查找顺序**。
+
+    顺序（先找到先用）：
+      1. `<安装目录>/runtime/<name>.exe`        发行版：打包进来的
+      2. `<安装目录>/runtime/<子目录>/<name>.exe`
+      3. `<安装目录>/.venv/Scripts/<name>.exe`  开发环境
+      4. 系统 PATH                              最后的退路
+
+    为什么要有这个函数：`_find_mineru()`、`download_exe()`、
+    `tomath._NODE` 三处各写各的路径，全都写死在 `.venv\\Scripts\\` ——
+    而发行版里根本没有 .venv（那目录不能打包分发：`.venv/Lib/` 下只有
+    site-packages，没有 stdlib，`os.__file__` 指向开发机上的 Python
+    安装目录，换台机器第一句 import 就死）。散着写的话，发行版要改三处，
+    改漏一处就是「在我这儿好好的」。
+
+    返回绝对路径，找不到返回空串。
+    """
+    import shutil
+    names = [name] if name.lower().endswith('.exe') else [name + '.exe', name]
+    roots = [RUNTIME]
+    roots += [os.path.join(RUNTIME, d) for d in subdirs]
+    roots.append(os.path.join(ROOT, '.venv', 'Scripts'))
+    for r in roots:
+        for n in names:
+            p = os.path.join(r, n)
+            if os.path.isfile(p):
+                return p
+    hit = shutil.which(name)
+    return hit or ''
+
+
 def ensure(path):
     """建目录，已存在也不报错。返回它本身，方便串着写。"""
     try:

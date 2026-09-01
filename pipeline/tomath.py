@@ -28,7 +28,18 @@ from lxml import etree
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _JS = os.path.join(HERE, 'tex2mml.js')
-_NODE = 'node'
+
+# node 只用来跑 KaTeX 把 LaTeX 转成 MathML，**全程不联网**。
+# 🔴 以前写死成 'node' 走系统 PATH —— 而老师的电脑上不会有 Node.js，
+#    那是开发者工具。XSL 又已经是硬性要求，结果就是老师被自己的
+#    拦截屏挡在门外，还被引导去 nodejs.org 下载一个他根本不该关心的东西。
+#    发行版必须把 node.exe 打进 runtime/，这里按同一套顺序找。
+def _find_node():
+    import paths as _p
+    return _p.find_exe('node') or 'node'
+
+
+_NODE = _find_node()
 
 # 🔴 **路径不写死**。工作台那边只写了 Office16 一条，换台机器
 #    （Office 2013 是 Office15、32 位版落在 Program Files (x86)、

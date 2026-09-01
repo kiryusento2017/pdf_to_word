@@ -91,15 +91,17 @@ def _formula_why(xsl_ok, node_ok):
 
 
 def _find_mineru():
-    r"""找 MinerU。**只认自己 venv 里那份**。
+    r"""找 MinerU。发行版找 runtime/，开发环境找 .venv/Scripts/。
 
     2026-08-31 之前这里有一条退路：找不到就用工作台的那份。
     环境独立之后撤掉了 —— 留着的话，别人机器上装漏了 MinerU 会静默失败，
     而在我这台机器上永远测不出来（因为工作台就在隔壁目录）。
     这种「只在开发机上能跑」的坑，宁可现在红。
+
+    2026-09-01 改走 paths.find_exe：路径不再写死在 .venv 上，
+    因为发行版里没有 .venv。
     """
-    here = os.path.join(ROOT, '.venv', 'Scripts', 'mineru.exe')
-    return here if os.path.isfile(here) else ''
+    return paths.find_exe('mineru')
 
 
 # ── 下载源（B35：点下载时并发实测，不存历史成绩，不用 ping 判优）────────

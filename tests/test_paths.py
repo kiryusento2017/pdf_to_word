@@ -5,6 +5,7 @@ r"""落点集中管理。
 只有导出的 Word 例外。这些测试盯住的就是这条 —— 任何一个落点跑到
 用户目录去，都算破坏了「删文件夹即卸载干净」的承诺。
 """
+import io
 import os
 import sys
 import unittest
@@ -68,6 +69,58 @@ class Test给子进程的环境变量(unittest.TestCase):
         """PATH 之类不能丢，丢了子进程连 exe 都找不到。"""
         env = paths.child_env()
         self.assertIn('PATH', {k.upper(): v for k, v in env.items()})
+
+
+class Test找可执行文件(unittest.TestCase):
+    r"""发行版和开发环境用同一套查找顺序。
+
+    这个函数存在的理由：_find_mineru / download_exe / tomath._NODE
+    三处曾经各写各的路径，全都写死在 .venv\Scripts\ —— 而发行版里
+    没有 .venv。散着写的话发行版要改三处，改漏一处就是「在我这儿好好的」。
+    """
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self._orig_root, self._orig_rt = paths.ROOT, paths.RUNTIME
+        paths.ROOT = self.tmp
+        paths.RUNTIME = os.path.join(self.tmp, 'runtime')
+        os.makedirs(paths.RUNTIME)
+        self._rm = shutil.rmtree
+
+    def tearDown(self):
+        paths.ROOT, paths.RUNTIME = self._orig_root, self._orig_rt
+        self._rm(self.tmp, ignore_errors=True)
+
+    def _touch(self, *parts):
+        p = os.path.join(*parts)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with io.open(p, 'w') as f:
+            f.write('x')
+        return p
+
+    def test_runtime_优先于_venv(self):
+        r"""发行版打包进 runtime/ 的那份，必须盖过开发环境的 .venv。"""
+        want = self._touch(paths.RUNTIME, 'node.exe')
+        self._touch(paths.ROOT, '.venv', 'Scripts', 'node.exe')
+        self.assertEqual(paths.find_exe('node'), want)
+
+    def test_没有runtime时回落到venv(self):
+        want = self._touch(paths.ROOT, '.venv', 'Scripts', 'mineru.exe')
+        self.assertEqual(paths.find_exe('mineru'), want)
+
+    def test_支持runtime下的子目录(self):
+        want = self._touch(paths.RUNTIME, 'node', 'node.exe')
+        self.assertEqual(paths.find_exe('node', subdirs=('node',)), want)
+
+    def test_都没有时回落到系统PATH(self):
+        r"""最后的退路。开发机上 node 装在系统里，找不到就该用它。"""
+        got = paths.find_exe('cmd')          # Windows 一定有
+        self.assertTrue(got, '连系统 PATH 都不找了')
+
+    def test_彻底找不到返回空串而不是抛异常(self):
+        self.assertEqual(paths.find_exe('绝对不存在的东西xyz'), '')
 
 
 class Test可写检查(unittest.TestCase):

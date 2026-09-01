@@ -49,6 +49,27 @@ function startServer() {
   });
 }
 
+// 🔴 把 Electron 自己的缓存挪进安装目录。
+//    小蔡定的规矩：运行中产生的一切都留在安装文件夹内，只有导出的 Word
+//    例外 —— 删掉文件夹 = 卸载干净。Electron 默认往
+//    %APPDATA%\\pdf2word 放 4.6 MB（GPU 缓存、字典、Code Cache…），
+//    是最后一处还落在外面的东西。
+//    **必须在 app ready 之前设**，ready 之后再设就来不及了。
+function relocateUserData() {
+  const dir = path.join(__dirname, '..', 'appdata');
+  try {
+    require('fs').mkdirSync(dir, { recursive: true });
+    app.setPath('userData', dir);
+    app.setPath('sessionData', dir);
+  } catch (e) {
+    // 目录建不出来（比如装进了 Program Files）就维持默认位置 ——
+    // 这种情况下后端的 writable 自检会拦住用户并说明原因，
+    // 不必在这里再弹一次窗。
+  }
+}
+
+relocateUserData();
+
 function createWindow() {
   // 小工具的尺寸，参照 Geek Uninstaller 那一类。620 宽刚好放得下
   // 「文件名 + 无文字层提示 + 页数」三列，440 高能露出 15 行左右。

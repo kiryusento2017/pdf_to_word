@@ -156,9 +156,11 @@ TOTAL_BYTES = int(4.6 * 1024 * 1024 * 1024)
 
 
 def download_exe():
-    """MinerU 自带的模型下载器。找不到返回空串。"""
-    p = os.path.join(paths.ROOT, '.venv', 'Scripts', 'mineru-models-download.exe')
-    return p if os.path.isfile(p) else ''
+    r"""MinerU 自带的模型下载器。找不到返回空串。
+
+    走 paths.find_exe —— 发行版里没有 .venv，路径不能写死。
+    """
+    return paths.find_exe('mineru-models-download')
 
 
 def download(source='modelscope', on_progress=None, on_log=None,
