@@ -63,6 +63,58 @@ import paths
 #   cu121  2.4.0 ~ 2.5.1   ← **出局**：MinerU 要 torch>=2.6.0
 #   cu118  2.5.1 ~ 2.7.1
 _BASE = 'https://download.pytorch.org/whl/'
+
+# 下 GPU 运行库的候选源。**都试一遍，谁快用谁** —— 跟模型下载一套思路。
+#
+# 2026-09-02 实测（本机，下同一个 wheel 各 6 秒）：
+#     pytorch 官方   4.7 MB/s     上海交大  3.0 MB/s     阿里云  1.9 MB/s
+#     清华 403、中科大 404（这两个的 pytorch-wheels 路径不通）
+#
+# **官方在开发机上反而最快**，所以不能反过来写死一个国内源。
+# 网吧、家里、学校的排序完全可能相反 —— 这正是 sources.py 那套
+# 「不存历史成绩、点下载时现测」的理由。
+#
+# 这些镜像是**扁平文件列表**，不是 PEP 503 的 /simple/ 结构，
+# 所以 pip 得用 --find-links 而不是 --index-url。
+TORCH_SOURCES = [
+    {'id': 'pytorch', 'name': 'PyTorch 官方',
+     'base': 'https://download.pytorch.org/whl/'},
+    {'id': 'sjtu', 'name': '上海交大',
+     'base': 'https://mirror.sjtu.edu.cn/pytorch-wheels/'},
+    {'id': 'aliyun', 'name': '阿里云',
+     'base': 'https://mirrors.aliyun.com/pytorch-wheels/'},
+]
+
+# 测速拿哪个文件当探针。要用**真的要下的那个大文件** —— 拿几 KB 的索引页
+# 测出来的是延迟不是带宽，这个坑在模型源那边栽过（界面显示「约 44 小时」）。
+PROBE_WHEEL = 'torch-2.9.1%2Bcu128-cp312-cp312-win_amd64.whl'
+
+
+def probe_sources(tag='cu128', seconds=3.0):
+    """并发实测各源，返回按快慢排好的列表。跟模型下载共用一套测速。"""
+    import sources
+    cand = []
+    for m in TORCH_SOURCES:
+        base = m['base'] + tag + '/'
+        cand.append({'id': m['id'], 'name': m['name'], 'env': {},
+                     'probe': base + PROBE_WHEEL, 'base': base})
+    return sources.probe_all(cand, seconds=seconds)
+
+
+def pick_source(tag='cu128', seconds=3.0):
+    """挑最快的源，返回它的 base URL。测不出来就用官方。"""
+    try:
+        import sources
+        rows = probe_sources(tag, seconds=seconds)
+        best = sources.pick_best(rows)
+        if best:
+            for m in TORCH_SOURCES:
+                if m['id'] == best['id']:
+                    return m['base'] + tag + '/', best.get('name', '')
+    except Exception:
+        pass
+    return _BASE + tag + '/', 'PyTorch 官方'
+
 TORCH_CHANNELS = [
     # (最低驱动主版本, index 后缀, 说明)
     (570, 'cu128', 'CUDA 12.8'),
@@ -272,6 +324,89 @@ def vcruntime_missing():
     return miss
 
 
+def _msvcp_beside_python():
+    """python.exe 旁边那个 msvcp140.dll 的路径（不管在不在）。"""
+    return os.path.join(os.path.dirname(paths.python_exe()), 'msvcp140.dll')
+
+
+def _bundled_msvcp():
+    r"""包里现成的 msvcp140.dll 在哪。找不到返回空串。
+
+    numpy / pandas / shapely 的 Windows wheel 都用 delvewheel 打包，
+    会把依赖的 MSVC 运行库改名（加内容 hash）塞进 `<包名>.libs/`：
+
+        numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll
+
+    改名是为了避免几个包各带一份互相覆盖。我们要的就是这个文件，
+    复制出来改回原名即可。
+    """
+    import glob
+    import importlib.util
+    for pkg in ('numpy', 'pandas', 'shapely'):
+        # 直接问包自己在哪，别拿 python.exe 的位置去拼 —— 发行版是
+        # runtime/python/Lib/site-packages，而 venv 的 python.exe 在
+        # Scripts/ 下、site-packages 在上一层，拼法对不上。
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except Exception:
+            continue
+        if not spec or not spec.origin:
+            continue
+        site = os.path.dirname(os.path.dirname(spec.origin))
+        hits = sorted(glob.glob(os.path.join(site, pkg + '.libs',
+                                             'msvcp140*.dll')))
+        if hits:
+            return hits[0]
+    return ''
+
+
+def ensure_msvcp():
+    r"""系统缺 msvcp140.dll 时，从包里复制一份放到 python.exe 旁边。
+
+    返回 (搞定了没, 说明)。
+
+    ## 为什么不让用户去装 vc_redist
+
+    小蔡 2026-09-02：「那你为什么让我安装 vc」。因为**没必要** ——
+    包里本来就有（numpy 带的），复制一下就行，不用下载、不用动系统、
+    删文件夹照样卸载干净。让用户去微软官网下一个装上，是我上一版
+    偷懒的写法。
+
+    ## 为什么只在系统缺失时才动
+
+    实测版本（2026-09-02）：numpy 自带的是 14.40，小蔡这台系统里的
+    是 14.50。而 `runtime/python/` 的 DLL 搜索优先级**高于**
+    System32 —— 无脑复制等于把这台机器降级到 14.40。
+
+    MSVC 运行库的向后兼容是单向的：新版能跑旧代码，旧版跑不了新代码。
+    torch 若用 14.5x 工具链编译、引用了 14.40 里没有的符号，
+    这一手会把本来正常的机器搞坏。
+
+    所以顺序是：系统有 → 什么都不做；系统没有 → 才补自己那份。
+    """
+    sysdir = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                          'System32')
+    if os.path.isfile(os.path.join(sysdir, 'msvcp140.dll')):
+        return True, ''                      # 系统有，用系统的，别插手
+
+    dst = _msvcp_beside_python()
+    if os.path.isfile(dst):
+        return True, ''                      # 之前补过了
+
+    src = _bundled_msvcp()
+    if not src:
+        return False, ('这台电脑缺少 C++ 运行库（msvcp140.dll），'
+                       '而安装包里也没找到可用的备份。'
+                       '到微软官网下一个 vc_redist.x64.exe 装上就好。')
+    try:
+        import shutil
+        shutil.copyfile(src, dst)
+        return True, '已补上 C++ 运行库（用的是安装包自带的那份）'
+    except Exception as e:
+        return False, ('这台电脑缺少 C++ 运行库，想自动补上但没成功：%s。'
+                       '到微软官网下一个 vc_redist.x64.exe 装上就好。' % e)
+
+
 def explain_load_error(err):
     r"""把 torch 加载失败的原始报错翻成人话。翻不了就返回空串。
 
@@ -364,9 +499,12 @@ def install_argv():
     `--progress-bar raw` 让 pip 吐机器可读的 `Progress N of M`，
     用来驱动界面上的进度条（见 parse_progress）。
     """
+    tag = pick_channel(current_driver())[0]
+    base, _name = pick_source(tag)
     return ([paths.python_exe(), '-m', 'pip', 'install', '--upgrade',
              '--no-warn-script-location', '--progress-bar', 'raw']
-            + PACKAGES + ['--index-url', pick_index(current_driver())])
+            + PACKAGES + ['--index-url', _BASE + tag + '/',
+                          '--find-links', base])
 
 
 def install_cmd_text():
@@ -388,6 +526,30 @@ def install(on_log=None, stop_flag=None, on_progress=None):
     `--upgrade` 是必需的：机器上可能已经有 CPU 版（发行版曾经打包过），
     不加的话 pip 认为「torch 已安装」直接跳过，装完还是用不了显卡。
     """
+    # 🔴 **下载之前**先把零成本能查的前置条件查完。
+    #
+    #    小蔡 2026-09-02：「顺序是不是不太对，是不是应该先装 VC」。
+    #    他说得对 —— 原来的流程是下 2.8 GB（十几分钟）、装上、
+    #    发现加载不了、卸掉、让用户去装 VC++ 运行库、**重新下 2.8 GB**。
+    #    而 vcruntime140.dll 在不在是一次本地文件检查，零成本。
+    #
+    #    通则：任何耗时操作之前，先查能零成本查的前置条件。
+    #    C++ 运行库缺了的话 torch 装上也加载不了。但**不用让用户去装** ——
+    #    包里带着 numpy 那份，复制一下改回原名就行（小蔡：「那你为什么
+    #    让我安装 vc」）。只在系统真缺的时候补，系统有就一个字不动。
+    okvc, vcmsg = ensure_msvcp()
+    if not okvc:
+        return False, vcmsg + ' 装好之后回来点一次，那 2.8 GB 现在先别下。'
+
+    # 2.8 GB 下载 + 解压成 4.2 GB，中途还要放 wheel，留出余量
+    need = int(7.5 * 1024 * 1024 * 1024)
+    okspace, free = paths.enough_space(need)
+    if not okspace:
+        return False, ('磁盘空间不够 —— GPU 运行库要下 2.8 GB、解压后占 '
+                       '4.2 GB，这个盘只剩 %.1f GB。'
+                       '腾出空间再来，或者把软件装到别的盘。'
+                       % (free / 1024.0 ** 3))
+
     paths.ensure(paths.LOGS)
     log = log_path()
     argv = install_argv()

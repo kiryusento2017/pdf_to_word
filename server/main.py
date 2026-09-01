@@ -73,6 +73,14 @@ def env():
         # 没有 N 卡 → 换台机器。混成一句「GPU 不可用」谁也不知道该干嘛。
         'cuda_torch': {'ok': torchdep.ready(), 'why': torchdep.why(),
                        'version': torchdep.info().get('version', '')},
+        # Visual C++ 运行库。torch 的 c10.dll 依赖它，缺了整个 torch 都
+        # import 不了。**在这儿报出来，用户点「现在就装」之前就知道** ——
+        # 不然是下完 2.8 GB 才发现前置条件不满足。
+        # C++ 运行库。缺了的话 torch 的 c10.dll 加载不了（WinError 1114）。
+        # 这里**顺手就补上**（用包里 numpy 自带的那份），不叫用户去装。
+        'vcruntime': {'ok': torchdep.ensure_msvcp()[0]},
+        # 磁盘空间。首次要下约 7.4 GB，装完占约 10 GB。
+        'space': {'free_gb': round(paths.free_bytes() / 1024.0 ** 3, 1)},
         # 模型和可写性 —— 首启要据此决定是拦住、还是先去下模型
         'models': {'ok': models.ready(), 'dir': models.where() or paths.MODELS,
                    'bytes': paths.models_size()},

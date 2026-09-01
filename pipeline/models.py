@@ -210,6 +210,16 @@ def download(source='modelscope', on_progress=None, on_log=None,
     """
     if not paths.mineru_available():
         return False, '这个 Python 环境里没有 MinerU，安装环境不完整'
+
+    # 下载之前先看空间够不够 —— 下到一半才发现不够，前面那半小时白等。
+    # （同一个通则：耗时操作之前，先查能零成本查的前置条件。）
+    need = int(TOTAL_BYTES * 1.15)      # 4.6 GB 加一点余量
+    okspace, free = paths.enough_space(need)
+    if not okspace:
+        return False, ('磁盘空间不够 —— 模型要 %.1f GB，这个盘只剩 %.1f GB。'
+                       '腾出空间再来，或者把软件装到别的盘。'
+                       % (TOTAL_BYTES / 1024.0 ** 3, free / 1024.0 ** 3))
+
     cmd = download_cmd()
 
     # 🔴 起下载器之前先把配置文件建出来。

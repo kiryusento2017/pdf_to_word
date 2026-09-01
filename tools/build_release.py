@@ -477,9 +477,21 @@ def make_sfx(version):
     if os.path.isfile(archive):
         os.remove(archive)
 
-    say('压缩中（1.97 GB，要几分钟）…')
-    r = subprocess.run([sz, 'a', '-t7z', '-mx=5', '-mmt=on', archive,
-                        os.path.join(OUT, '*')],
+    # 🔴 排除**运行时**产生的东西。开发时在 dist/PDF2Word 里真跑过软件
+    #    （那是验证发行版的必要动作），于是留下一堆缓存和临时文件：
+    #
+    #      appdata/   Electron 的 GPU 缓存、字典、Code Cache —— 带本机痕迹
+    #      _tmp/      转换的中间产物
+    #      logs/      我这台机器的日志
+    #      models/    4.6 GB 模型，用户自己下
+    #      __pycache__ 里面嵌着开发机的源码路径
+    #
+    #    2026-09-02 的 v0.0.2 就带着 80 个 _tmp/appdata 条目发出去了。
+    exclude = ['-xr!_tmp', '-xr!appdata', '-xr!logs', '-xr!models',
+               '-xr!__pycache__', '-xr!*.pyc']
+    say('压缩中（要几分钟）…')
+    r = subprocess.run([sz, 'a', '-t7z', '-mx=5', '-mmt=on'] + exclude
+                       + [archive, os.path.join(OUT, '*')],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if r.returncode != 0:
         raise SystemExit('压缩失败：%s' % r.stdout.decode('utf-8', 'replace')[-400:])
@@ -569,6 +581,13 @@ def main():
                 '产物里的版本是 %s，跟 --version %s 对不上。\n'
                 '先跑一次不带 --sfx 的完整构建，或者把 --version 改成 %s。'
                 % (have or '(读不出来)', a.version, have or a.version))
+        # 🔴 这几个小文件每次都重新生成。
+        #    它们是**从模板生成**的，不是组装来的 —— 改了 put_readme
+        #    却只跑 --sfx 的话，产物里还是旧的那份。
+        #    2026-09-02 就这么把一份写着 v0.0.1、下载量还是旧数字的
+        #    使用说明发了出去。
+        put_readme(OUT, a.version)
+        put_version(OUT, a.version, sha)
         make_sfx(a.version)
         make_update_zip(a.version, sha)
         return

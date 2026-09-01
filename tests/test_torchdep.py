@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 
+import paths
 import torchdep  # noqa: E402
 
 CUDA_VERSION_PY = """from typing import Optional
@@ -253,6 +254,114 @@ class Test装坏了必须卸掉(unittest.TestCase):
         import importlib.util as iutil
         # find_spec 找不到就返回 None —— modelscope 靠这个跳过 import torch
         self.assertIsNone(iutil.find_spec('绝对不存在的包xyz'))
+
+
+class 补C运行库(unittest.TestCase):
+    r"""缺 msvcp140.dll 时从包里复制一份，不叫用户去装 vc_redist。
+
+    小蔡 2026-09-02：「那你为什么让我安装 vc」—— 因为没必要，
+    numpy 的 wheel 里本来就带着一份（delvewheel 打包时塞进
+    `numpy.libs/` 并改名加了内容 hash）。复制出来改回原名就能用。
+    """
+
+    def setUp(self):
+        self.real = os.environ.get('SystemRoot', '')
+        self.tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.tmp, 'System32'), exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # setUp 抛异常时 tearDown 不会跑，所以用 addCleanup 还原环境 ——
+        # 这个坑在 test_paths 上栽过一次（ROOT 被污染，连累两条无关测试）。
+        self.addCleanup(os.environ.__setitem__, 'SystemRoot', self.real)
+
+    def _缺VC的机器(self):
+        os.environ['SystemRoot'] = self.tmp
+
+    def test_系统有就一个字不动(self):
+        r"""**这条最重要**：系统装了 VC++ 就别插手。
+
+        实测（2026-09-02）：numpy 自带的是 14.40，小蔡这台系统里是
+        14.50。而 python.exe 旁边的 DLL 优先级**高于** System32 ——
+        无脑复制等于把这台机器降级。运行库向后兼容是单向的：
+        新版能跑旧代码，旧版跑不了新代码。
+        """
+        sysdir = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                              'System32')
+        if not os.path.isfile(os.path.join(sysdir, 'msvcp140.dll')):
+            self.skipTest('这台机器系统里没有 msvcp140.dll，这条测不了')
+        dst = torchdep._msvcp_beside_python()
+        had = os.path.isfile(dst)
+        ok, msg = torchdep.ensure_msvcp()
+        self.assertTrue(ok)
+        self.assertEqual(msg, '', '系统已有却还是动了手')
+        self.assertEqual(os.path.isfile(dst), had, '系统已有却往安装目录里放了东西')
+
+    def test_系统没有就自己补上(self):
+        self._缺VC的机器()
+        dst = torchdep._msvcp_beside_python()
+        if os.path.isfile(dst):
+            self.skipTest('已经补过了')
+        self.addCleanup(lambda: os.path.isfile(dst) and os.remove(dst))
+        ok, msg = torchdep.ensure_msvcp()
+        self.assertTrue(ok, msg)
+        self.assertTrue(os.path.isfile(dst), '说补上了但文件不在')
+        self.assertGreater(os.path.getsize(dst), 100000, '补上的文件小得不像话')
+
+    def test_找不到备份才让用户去装(self):
+        r"""兜底路径：包里也没有的话，才提示装 vc_redist。"""
+        self._缺VC的机器()
+        real = torchdep._bundled_msvcp
+        torchdep._bundled_msvcp = lambda: ''
+        self.addCleanup(setattr, torchdep, '_bundled_msvcp', real)
+        dst = torchdep._msvcp_beside_python()
+        if os.path.isfile(dst):
+            self.skipTest('这台已经补过了，测不到这条路')
+        ok, msg = torchdep.ensure_msvcp()
+        self.assertFalse(ok)
+        self.assertIn('vc_redist', msg)
+
+    def test_备份是从包里找的不是硬编码路径(self):
+        r"""定位靠 find_spec 问包自己在哪，不拿 python.exe 的位置去拼。
+
+        拼路径的写法在发行版下对（runtime/python/Lib/site-packages），
+        在 venv 下错（python.exe 在 Scripts/，site-packages 在上一层）。
+        2026-09-02 本机就是这么跑出「没找到」的。
+        """
+        src = torchdep._bundled_msvcp()
+        self.assertTrue(src, '包里找不到 msvcp140 备份 —— '
+                             'numpy/pandas/shapely 至少有一个该带着')
+        self.assertTrue(os.path.isfile(src))
+        self.assertIn('.libs', src, 'delvewheel 打的 DLL 应该在 <包名>.libs/ 下')
+
+    def test_装GPU库之前会先补运行库(self):
+        r"""顺序：先补 C++ 运行库，再下那 2.8 GB。
+
+        原来的顺序是「下 2.8 GB → 装上 → 发现加载不了 → 卸掉 →
+        让用户装 VC++ → 重新下 2.8 GB」。小蔡：「顺序是不是不太对」。
+        """
+        src = io.open('pipeline/torchdep.py', encoding='utf-8').read()
+        i_vc = src.index('ensure_msvcp()', src.index('def install('))
+        i_run = src.index('subprocess.Popen', src.index('def install('))
+        self.assertLess(i_vc, i_run, '补运行库排在真正开下之后了')
+
+
+class 空间检查(unittest.TestCase):
+    r"""耗时操作之前先查磁盘空间 —— 下到一半才发现不够，前面全白等。"""
+
+    def test_够就放行(self):
+        ok, free = paths.enough_space(1)
+        self.assertTrue(ok)
+
+    def test_不够就拦(self):
+        ok, free = paths.enough_space(1 << 60)      # 1 EB，没人有
+        self.assertFalse(ok)
+        self.assertGreater(free, 0)
+
+    def test_读不出磁盘信息时不拿这条拦人(self):
+        real = paths.free_bytes
+        paths.free_bytes = lambda: 0
+        self.addCleanup(setattr, paths, 'free_bytes', real)
+        ok, free = paths.enough_space(1 << 60)
+        self.assertTrue(ok, '读不到磁盘信息就该放行，让下载自己去报真实原因')
 
 
 if __name__ == '__main__':

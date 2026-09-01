@@ -183,6 +183,27 @@ def writable():
         return False
 
 
+def free_bytes():
+    """安装目录所在盘还剩多少空间。读不到返回 0（读不到就不拿它拦人）。"""
+    try:
+        import shutil
+        return shutil.disk_usage(ensure(ROOT)).free
+    except Exception:
+        return 0
+
+
+def enough_space(need_bytes):
+    r"""空间够不够。返回 (够不够, 还剩多少字节)。
+
+    读不到就当够 —— 一个读不出磁盘信息的环境不该被这条拦住，
+    真不够的话下载会自己失败，那时错误信息里有真实原因。
+    """
+    free = free_bytes()
+    if not free:
+        return True, 0
+    return free >= need_bytes, free
+
+
 def models_ready():
     r"""模型在不在。
 
