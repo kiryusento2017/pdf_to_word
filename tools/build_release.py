@@ -55,15 +55,22 @@ EMBED_URL = ('https://www.python.org/ftp/python/%s/python-%s-embed-amd64.zip'
 GETPIP_URL = 'https://bootstrap.pypa.io/get-pip.py'
 
 # 业务代码：拷这些，别的一概不拷（测试、文档、开发脚本都不该发给老师）
+# 业务代码：拷这些，别的一概不拷（测试、文档、开发脚本都不该发给老师）。
+# app 下那几样放进 resources/app —— Electron 改名后的 exe 会自动找那儿，
+# 这样双击就能开，不用再弹 cmd 黑框去调它。
 CODE = [
     ('pipeline', 'pipeline'),
     ('server', 'server'),
-    ('app/main.js', 'app/main.js'),
-    ('app/preload.js', 'app/preload.js'),
-    ('app/package.json', 'app/package.json'),
-    ('app/renderer', 'app/renderer'),
+    ('app/main.js', 'resources/app/main.js'),
+    ('app/preload.js', 'resources/app/preload.js'),
+    ('app/package.json', 'resources/app/package.json'),
+    ('app/renderer', 'resources/app/renderer'),
     ('runtime/pandoc', 'runtime/pandoc'),
 ]
+
+# 双击的那个 exe 叫什么。这是用户唯一会点的东西，用中文名友好；
+# 文件名不是路径的一部分，不影响那条「路径别用中文」的规矩。
+APP_EXE = 'PDF转Word.exe'
 
 # Layer 1 的依赖。跟 setup_env.py 保持一致。
 DEPS = ['pymupdf', 'lxml', 'fastapi', 'uvicorn', 'python-docx', 'mineru[core]']
@@ -126,14 +133,33 @@ def put_python(out):
 
 
 def put_electron(out):
-    """Electron 运行时。只拷 dist/（367 MB），别的都是开发用的。"""
+    r"""Electron 运行时**摊在根目录**，exe 改成中文名。
+
+    这是 Electron 应用的标准形态：exe 旁边一堆 dll，代码在 resources/app。
+    改名之后双击 exe 直接开窗 —— 原来要靠 `启动.cmd` 调
+    `electron.exe app`，会弹一个黑框，既难看用户还不敢关。
+
+    只拷 dist/（367 MB），electron 包里其余 13 MB 是 TypeScript 定义、
+    安装脚本这些开发用的东西。
+    """
     src = os.path.join(ROOT, 'app', 'node_modules', 'electron', 'dist')
     if not os.path.isdir(src):
         raise SystemExit('找不到 electron/dist，先在 app/ 里跑一次 npm install')
-    dst = os.path.join(out, 'runtime', 'electron')
-    rm(dst)
-    shutil.copytree(src, dst)
-    say('Electron 运行时就位')
+    for name in os.listdir(src):
+        s_path = os.path.join(src, name)
+        d_path = os.path.join(out, name)
+        if os.path.isdir(s_path):
+            rm(d_path)
+            shutil.copytree(s_path, d_path)
+        else:
+            shutil.copy2(s_path, d_path)
+    old = os.path.join(out, 'electron.exe')
+    new = os.path.join(out, APP_EXE)
+    if os.path.isfile(old):
+        if os.path.isfile(new):
+            os.remove(new)
+        os.rename(old, new)
+    say('Electron 运行时就位，主程序 %s' % APP_EXE)
 
 
 def put_node(out):
@@ -169,29 +195,15 @@ def put_code(out):
     say('业务代码就位')
 
 
-def put_launcher(out, version):
-    r"""启动器。**不能跑 npm install** —— 老师机器上没有 npm，
-    而且依赖都已经打包好了。
+def put_launcher(out, version, slim=False):
+    r"""只在 --slim 构建时才放 `安装依赖.cmd`。
+
+    默认构建把依赖也装进去了，用户双击 `PDF转Word.exe` 就能用 ——
+    **不再有 cmd 黑框**。小蔡的原话：「为什么 cmd 启动，我看其他软件不是」。
     """
-    cmd = (
-        '@echo off\r\n'
-        'chcp 65001 >nul\r\n'
-        'cd /d "%~dp0"\r\n'
-        '\r\n'
-        'if not exist "runtime\\python\\python.exe" (\r\n'
-        '  echo 运行环境不完整，请重新解压安装包。\r\n'
-        '  pause\r\n'
-        '  exit /b 1\r\n'
-        ')\r\n'
-        '\r\n'
-        'if not exist "runtime\\python\\Lib\\site-packages\\mineru" (\r\n'
-        '  echo 第一次使用需要安装转换引擎，大约几分钟...\r\n'
-        '  call "安装依赖.cmd"\r\n'
-        ')\r\n'
-        '\r\n'
-        'start "" "runtime\\electron\\electron.exe" "app"\r\n'
-    )
-    io.open(os.path.join(out, '启动.cmd'), 'w', encoding='utf-8').write(cmd)
+    if not slim:
+        say('启动器：不需要（双击 %s 即可）' % APP_EXE)
+        return
 
     dep = (
         '@echo off\r\n'
@@ -204,11 +216,11 @@ def put_launcher(out, version):
         'runtime\\python\\python.exe -m pip install --no-warn-script-location '
         'torch torchvision --index-url https://download.pytorch.org/whl/cpu\r\n'
         'echo.\r\n'
-        'echo 装好了，可以关掉这个窗口，双击「启动.cmd」开始用。\r\n'
+        'echo 装好了，可以关掉这个窗口，双击「PDF转Word.exe」开始用。\r\n'
         'pause\r\n'
     ).replace('__DEPS__', ' '.join(DEPS))
-    io.open(os.path.join(out, '安装依赖.cmd'), 'w', encoding='utf-8').write(dep)
-    say('启动器就位')
+    io.open(os.path.join(out, '首次安装.cmd'), 'w', encoding='utf-8').write(dep)
+    say('slim 构建：放了「首次安装.cmd」')
 
 
 def put_version(out, version, sha=''):
@@ -222,7 +234,7 @@ def put_readme(out, version):
     txt = (
         'PDF 转 Word  __VER__\r\n'
         '\r\n'
-        '双击「启动.cmd」开始用。\r\n'
+        '双击「PDF转Word.exe」开始用。\r\n'
         '\r\n'
         '第一次打开会做两件事：\r\n'
         '  1. 装转换引擎（联网，几分钟）\r\n'
@@ -427,7 +439,7 @@ def main():
     put_electron(OUT)
     put_node(OUT)
     put_code(OUT)
-    put_launcher(OUT, a.version)
+    put_launcher(OUT, a.version, slim=a.slim)
     put_version(OUT, a.version, sha)
     put_readme(OUT, a.version)
 

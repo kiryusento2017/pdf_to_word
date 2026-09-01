@@ -12,7 +12,18 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const ROOT = path.join(__dirname, '..');
+// 安装目录。发行版和开发环境的层级不一样：
+//
+//   发行版    <安装目录>/resources/app/main.js   → 上两级
+//   开发环境  <项目>/app/main.js                 → 上一级
+//
+// 发行版把代码放进 resources/app 是 Electron 的标准形态（VS Code、Discord
+// 都是），这样 electron.exe 改个名就能双击直接开 —— 不用再弹个 cmd 黑框
+// 去调它。判断依据是父目录叫不叫 resources，不依赖 app.isPackaged
+// （我们没打 asar，那个标志不可靠）。
+const ROOT = path.basename(path.dirname(__dirname)) === 'resources'
+  ? path.join(__dirname, '..', '..')
+  : path.join(__dirname, '..');
 const SERVER = path.join(ROOT, 'server', 'main.py');
 
 // 🔴 Python 的位置：发行版和开发环境不一样，按顺序找。
@@ -72,7 +83,7 @@ function startServer() {
 //    是最后一处还落在外面的东西。
 //    **必须在 app ready 之前设**，ready 之后再设就来不及了。
 function relocateUserData() {
-  const dir = path.join(__dirname, '..', 'appdata');
+  const dir = path.join(ROOT, 'appdata');
   try {
     require('fs').mkdirSync(dir, { recursive: true });
     app.setPath('userData', dir);

@@ -46,10 +46,17 @@ def find_exe(name, subdirs=()):
     r"""找一个可执行文件。**发行版和开发环境用同一套查找顺序**。
 
     顺序（先找到先用）：
-      1. `<安装目录>/runtime/<name>.exe`        发行版：打包进来的
+      1. `<安装目录>/runtime/<name>.exe`             发行版：直接打包的（node）
       2. `<安装目录>/runtime/<子目录>/<name>.exe`
-      3. `<安装目录>/.venv/Scripts/<name>.exe`  开发环境
-      4. 系统 PATH                              最后的退路
+      3. `<安装目录>/runtime/python/Scripts/<name>.exe`  发行版：pip 装出来的
+      4. `<安装目录>/.venv/Scripts/<name>.exe`      开发环境
+      5. 系统 PATH                                  最后的退路
+
+    🔴 第 3 条是发行版实测才发现要加的。`mineru.exe` 是 pip 装 mineru 时
+       生成的入口点，落在 Python 的 `Scripts/` 下 —— 发行版的 Python 在
+       `runtime/python/`，所以它在 `runtime/python/Scripts/mineru.exe`。
+       开发环境有 `.venv/Scripts` 兜着，这个漏洞永远暴露不出来，
+       只有真跑一次打好的包才会看到「转换引擎缺失」。
 
     为什么要有这个函数：`_find_mineru()`、`download_exe()`、
     `tomath._NODE` 三处各写各的路径，全都写死在 `.venv\\Scripts\\` ——
@@ -64,7 +71,8 @@ def find_exe(name, subdirs=()):
     names = [name] if name.lower().endswith('.exe') else [name + '.exe', name]
     roots = [RUNTIME]
     roots += [os.path.join(RUNTIME, d) for d in subdirs]
-    roots.append(os.path.join(ROOT, '.venv', 'Scripts'))
+    roots.append(os.path.join(RUNTIME, 'python', 'Scripts'))   # 发行版 pip 装的
+    roots.append(os.path.join(ROOT, '.venv', 'Scripts'))       # 开发环境
     for r in roots:
         for n in names:
             p = os.path.join(r, n)

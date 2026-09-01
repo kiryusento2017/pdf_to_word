@@ -109,6 +109,42 @@ copy app\main.js app\preload.js app\package.json dist\PDF2Word\app\
 
 ---
 
+## 三点五、发行版长什么样
+
+Electron 应用的标准形态（VS Code、Discord 都是这样）：
+
+```
+PDF2Word/
+  PDF转Word.exe          ← 用户双击这个，直接开窗
+  resources/app/         ← main.js / preload.js / package.json / renderer
+  *.dll *.pak locales/   ← Electron 运行时，摊在根目录
+  runtime/python/        ← Python embeddable + 依赖
+  runtime/pandoc/
+  runtime/node.exe
+  pipeline/ server/
+  version.json 使用说明.txt
+```
+
+### 🔴 不要用 .cmd 当启动器
+
+早期版本是 `启动.cmd` 调 `electron.exe app`，会弹一个黑色命令行窗口。
+小蔡的原话：「为什么 cmd 启动，我看其他软件不是」—— 正经软件都是双击
+一个 exe 直接开窗，黑框既难看，用户还不知道能不能关。
+
+改法就是把代码放进 `resources/app`，Electron 的 exe 改个名就会自动找到它。
+`main.js` 里的 `ROOT` 要跟着算多一层：
+
+```js
+const ROOT = path.basename(path.dirname(__dirname)) === 'resources'
+  ? path.join(__dirname, '..', '..')   // 发行版
+  : path.join(__dirname, '..');        // 开发环境
+```
+
+`--slim` 构建例外：那种包里没有 Layer 1 依赖，会放一个 `首次安装.cmd`
+让用户先装依赖。默认构建不放任何 .cmd。
+
+---
+
 ## 四、Release 上传
 
 一个 Release 挂**两个**附件，缺一不可：

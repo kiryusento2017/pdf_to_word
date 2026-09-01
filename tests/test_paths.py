@@ -106,6 +106,18 @@ class Test找可执行文件(unittest.TestCase):
         self._touch(paths.ROOT, '.venv', 'Scripts', 'node.exe')
         self.assertEqual(paths.find_exe('node'), want)
 
+    def test_找得到发行版里pip装出来的exe(self):
+        r"""🔴 发行版实测才发现的坑。
+
+        mineru.exe 是 pip 装 mineru 时生成的入口点，落在 Python 的
+        Scripts/ 下 —— 发行版的 Python 在 runtime/python/，所以在
+        runtime/python/Scripts/mineru.exe。第一版 find_exe 没有这个候选，
+        发行版跑起来报「转换引擎缺失」，而开发环境有 .venv/Scripts 兜着，
+        这个漏洞永远暴露不出来。
+        """
+        want = self._touch(paths.RUNTIME, 'python', 'Scripts', 'mineru.exe')
+        self.assertEqual(paths.find_exe('mineru'), want)
+
     def test_没有runtime时回落到venv(self):
         want = self._touch(paths.ROOT, '.venv', 'Scripts', 'mineru.exe')
         self.assertEqual(paths.find_exe('mineru'), want)
