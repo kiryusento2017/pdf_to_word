@@ -207,6 +207,33 @@ class Test转换任务(unittest.TestCase):
         self.assertEqual(d['state'], 'done', '任务卡在 running 了')
         self.assertIn('假装内部炸了', d.get('error', ''), '炸了却没说原因')
 
+    def test_落日志用到的模块都import了(self):
+        r"""🔴 server/main.py 用了 io.open 却没 import io。异常被
+        `except Exception` 静默吞掉 —— convert.log 两个月一次都没生成过，
+        而它正是「远程排查唯一的凭据」（RELEASE.md 的硬约束之一）。
+
+        2026-09-02 靠新加的防御（不再静默吞异常）才把它揪出来：
+        NameError: name 'io' is not defined。
+        """
+        for name in ('io', 'os', 'time', 'threading', 'uuid', 'paths'):
+            self.assertTrue(hasattr(srv, name),
+                            'server/main.py 缺 import %s' % name)
+
+    def test_转换日志真的能落盘(self):
+        r"""光有 import 还不够 —— 真开一次文件才算数。
+        这条钉的是 RELEASE.md 那句「没有日志 = 远程排查等于零」。"""
+        log = os.path.join(srv.paths.ensure(srv.paths.LOGS), 'convert.log')
+        existed = os.path.isfile(log)
+        f = io.open(log, 'a', encoding='utf-8', errors='replace', newline='')
+        try:
+            f.write('')
+            f.flush()
+        finally:
+            f.close()
+        self.assertTrue(os.path.isfile(log))
+        if not existed:
+            os.remove(log)
+
     def test_预计剩余时间随页数走(self):
         r"""每页秒数是实测的（GPU 26 秒/页、CPU 46 秒/页），
         页数在体检时就知道 —— 这两个数一乘就是用户唯一关心的答案。"""

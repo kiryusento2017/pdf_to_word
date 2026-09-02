@@ -13,6 +13,7 @@ r"""本地 HTTP 服务。Electron 起它，前端跟它说话。
    写成 async 的话这 16 秒里连转换进度的轮询都排队，界面卡住不动。
    只有纯查内存字典的（ping / poll / cancel / download_status）才留 async。
 """
+import io
 import os
 import sys
 import threading
