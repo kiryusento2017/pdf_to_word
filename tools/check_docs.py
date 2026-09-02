@@ -49,7 +49,7 @@ DOCS = [
 #   · 举例用的假名字（讲 GitHub 会吃掉中文时举的例）
 NOT_PROJECT_FILES = {
     'PDF2Word-Setup-v0.0.1.exe', 'PDF转Word-v0.0.1.exe', 'PDF.Word-v0.0.1.exe',
-    'PDF2Word-Setup-v0.0.4.exe',          # 发行版产物在 dist，不在源码树
+    'PDF2Word-Setup-v0.1.0.exe',          # 发行版产物在 dist，不在源码树
     'pdf_to_word-v0.0.1-update.zip', 'pdf_to_word-v0.0.2-update.zip',
     'version.json', 'version.py', 'torch/version.py', 'logger.py',
     'pandoc.exe', 'node.exe', 'python.exe', 'PDF转Word.exe', 'mineru.exe',

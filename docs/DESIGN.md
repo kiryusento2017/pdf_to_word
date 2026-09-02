@@ -457,7 +457,7 @@ Layer 2 是 2026-09-02 从 Layer 1 里拆出来的：CUDA 版 torch 解压后 4.
     开发环境仍需手动放一份，README 写明了
   · 「开始下载」按钮什么都不下 → 09-01 接上 `mineru-models-download`，真下
   · 模型落点没管住 → `paths.child_env()` 三个环境变量锁进安装目录
-  · 打成安装包 → 7-Zip SFX 自解压 exe，v0.0.4 已发布
+  · 打成安装包 → 7-Zip SFX 自解压 exe，v0.1.0 已发布
 
 ## 九、还没定
 
