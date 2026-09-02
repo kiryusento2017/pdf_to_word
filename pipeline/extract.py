@@ -195,6 +195,28 @@ def _fp_matches(bucket, fp):
         return False
 
 
+def find_any_output(bucket):
+    r"""桶里任意一份产物。找不到返回 None。
+
+    🔴 **不按文件名找**。桶是按「PDF 内容 + 参数 + MinerU 版本」分的，
+    里面的产物必然等价 —— 用户把 PDF 改个名、换个目录，内容没变，
+    就不该让他重等四分钟。
+
+    改造初版这里写的是 find_output(bucket, stem)，stem 取自当前文件名：
+    指纹明明命中了，却因为桶里的子目录还叫旧名字而判成不命中。
+    2026-09-02 小蔡改了个文件名就撞上了。
+    """
+    if not os.path.isdir(bucket):
+        return None
+    for name in sorted(os.listdir(bucket)):
+        if not os.path.isdir(os.path.join(bucket, name)):
+            continue
+        got = find_output(bucket, name)
+        if got:
+            return got
+    return None
+
+
 def purge_old(root, days=CACHE_DAYS):
     """清掉超过 days 天没动过的桶。返回清掉几个。
 
@@ -353,7 +375,8 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
         on_log('读不到 MinerU 版本号，缓存指纹用 unknown 代替')
     bucket = os.path.join(out_dir, fp)
 
-    hit = find_output(bucket, stem) if _fp_matches(bucket, fp) else None
+    # 按桶找，不按文件名找 —— 改个名、换个目录不该让缓存失效。
+    hit = find_any_output(bucket) if _fp_matches(bucket, fp) else None
     if hit:
         mds = [f for f in os.listdir(hit) if f.endswith('.md')]
         if mds:

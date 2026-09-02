@@ -473,6 +473,21 @@ class Test缓存复用(unittest.TestCase):
         self.assertTrue(r2['ok'], r2.get('error'))
         self.assertEqual(r1['md'], r2['md'])
 
+    def test_改了文件名换了目录照样命中(self):
+        r"""指纹按**内容**算，文件名不参与 —— 用户把 PDF 改个名、
+        挪个位置，内容没变，不该让他重等四分钟。
+
+        初版这里用 find_output(桶, 当前文件名) 判命中：指纹明明对上了，
+        却因为桶里的子目录还叫旧名字而判成不命中。2026-09-02 小蔡改了个
+        文件名就撞上了。
+        """
+        extract.run(self.pdf, self.out, mineru='m.exe')
+        other = os.path.join(self.work, '换个名字.pdf')
+        shutil.copy2(self.pdf, other)
+        r = extract.run(other, self.out, mineru='m.exe')
+        self.assertTrue(r['cached'], '改个文件名就重跑了')
+        self.assertEqual(len(self.calls), 1, '不该再起一次 MinerU')
+
     def test_中途失败的桶不会被当成缓存(self):
         # 跑一半崩了：产物在，但没写指纹（_fp_write 在最后一步）
         fp = extract.fingerprint(self.pdf)
