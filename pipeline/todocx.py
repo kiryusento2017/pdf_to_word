@@ -21,6 +21,7 @@ Pandoc 是 GPL，我们**当独立程序调用**（起子进程、传文件路�
 """
 import io
 import json
+import locale
 import os
 import re
 import shutil
@@ -75,13 +76,49 @@ def pandoc_available():
     return os.path.isfile(PANDOC)
 
 
+def _dec(raw):
+    r"""解 pandoc 的输出。
+
+    🔴 **pandoc 不是 Python，PYTHONIOENCODING 管不着它。**
+    它是 Haskell 程序，Windows 上报错时**用系统本地代码页**（中文机器
+    是 GBK），而正文输出是 UTF-8。一律按 UTF-8 硬解，报错里的中文路径
+    就变成一片锟斤拷 —— 而 pandoc 报错时最需要看清的恰恰是路径
+    （「哪个文件写不进去」）。
+
+    先试 UTF-8（正文走这条），失败再退本地编码。
+    """
+    for enc in ('utf-8', locale.getpreferredencoding(False), 'gbk'):
+        if not enc:
+            continue
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode('utf-8', 'replace')
+
+
+def _writable_dir(d):
+    """这个文件夹能不能写。真写一个探针文件试 —— Windows 上
+    os.access(W_OK) 对只读目录会误报成能写。"""
+    probe = os.path.join(d, '.p2w_write_probe')
+    try:
+        with io.open(probe, 'w', encoding='utf-8') as f:
+            f.write('x')
+        os.remove(probe)
+        return True
+    except Exception:
+        try:
+            os.remove(probe)
+        except Exception:
+            pass
+        return False
+
+
 def _run_pandoc(args, stdin_text=None, cwd=None):
     p = subprocess.run([PANDOC] + args,
                        input=(stdin_text or '').encode('utf-8'),
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-    return (p.returncode,
-            p.stdout.decode('utf-8', 'replace'),
-            p.stderr.decode('utf-8', 'replace'))
+    return p.returncode, _dec(p.stdout), _dec(p.stderr)
 
 
 def _html_tables_to_markdown(text, cwd=None):
@@ -410,6 +447,18 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     if not os.path.isfile(md_path):
         rep['error'] = '找不到输入文件：%s' % md_path
         return rep
+    # 🔴 输出文件夹能不能写，**在花时间之前**就要知道。
+    #    微信、QQ 的下载目录是只读的（文件权限 -r--r--r--），而软件默认
+    #    「输出跟原 PDF 放一起」—— 用户直接转微信收到的讲义时必然撞上。
+    #    不前置检查的话，要等 pandoc 跑完才炸，而它抛的是
+    #    「withBinaryFile: permission denied」加一段 Haskell backtrace，
+    #    没人看得懂，更不知道该怎么办。
+    dest_dir = os.path.dirname(os.path.abspath(out_path)) or '.'
+    if not _writable_dir(dest_dir):
+        rep['error'] = ('输出文件夹写不进去：%s' % dest_dir + chr(10)
+                        + '微信、QQ 的下载目录通常是只读的。'
+                        '点工具条上的「更改」换一个输出位置，再试一次。')
+        return rep
 
     src_dir = resource_path or os.path.dirname(os.path.abspath(md_path))
     try:
@@ -468,7 +517,21 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
             [tmp_html, '-f', 'html+tex_math_dollars', '-t', 'docx',
              '-o', out_path, '--resource-path', src_dir], cwd=src_dir)
         if rc != 0 or not os.path.isfile(out_path):
-            rep['error'] = 'pandoc（html→docx）失败：%s' % (err.strip()[:200] or rc)
+            # 🔴 permission denied 翻成人话。pandoc 抛的是
+            #    「withBinaryFile: permission denied」加一段 Haskell
+            #    backtrace —— 老师看不懂，更猜不到「把 Word 关掉」。
+            #    最常见的两种：那份 Word 正开着；输出目录是只读的
+            #    （微信/QQ 的下载目录就是）。
+            low = (err or '').lower()
+            if 'permission denied' in low or 'access is denied' in low:
+                rep['error'] = (
+                    '写不了这个文件：%s' % out_path + chr(10)
+                    + '多半是它正被 Word 打开着 —— 关掉那个 Word 再试。'
+                    + '要是没开着，就是这个文件夹不让写（微信、QQ 的下载'
+                    + '目录通常是只读的），点工具条上的「更改」换个输出位置。')
+            else:
+                rep['error'] = ('pandoc（html→docx）失败：%s'
+                                % (err.strip()[:200] or rc))
             return rep
         img_targets = _img_targets(html, src_dir)
     finally:

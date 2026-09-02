@@ -332,5 +332,59 @@ class Test判失败也要留下产物(unittest.TestCase):
         self.assertFalse(os.path.isfile(todocx.degraded_path(self.out)))
 
 
+class Testpandoc的输出不能变乱码(unittest.TestCase):
+    r"""pandoc 不是 Python，PYTHONIOENCODING 管不着它。
+
+    它是 Haskell 程序，Windows 上**报错时用系统本地代码页**（中文机器
+    是 GBK），正文输出才是 UTF-8。一律按 UTF-8 硬解，报错里的中文路径
+    就变成一片锟斤拷 —— 而 pandoc 报错时最需要看清的恰恰是路径。
+
+    2026-09-02 真机上就是这么撞见的：转微信收到的讲义写不进去，
+    界面上只有一堆问号，完全看不出是哪个文件、为什么。
+    """
+
+    def test_GBK编码的报错要解得出来(self):
+        path = 'D:' + chr(92) + '微信wechat' + chr(92) + '讲义.docx'
+        msg = 'pandoc.exe: ' + path + ': permission denied'
+        self.assertEqual(todocx._dec(msg.encode('gbk')), msg)
+
+    def test_UTF8的正常输出照旧(self):
+        msg = '公式 613 个，表格 18 个'
+        self.assertEqual(todocx._dec(msg.encode('utf-8')), msg)
+
+    def test_两种编码都解不了也不抛异常(self):
+        self.assertIsInstance(todocx._dec(bytes([0xff, 0xfe, 0x80, 0x81])), str)
+
+
+class Test写不进去要说人话(unittest.TestCase):
+    def setUp(self):
+        if os.path.isdir(WORK):
+            shutil.rmtree(WORK, ignore_errors=True)
+        os.makedirs(WORK)
+        self.md = os.path.join(WORK, 'in.md')
+        io.open(self.md, 'w', encoding='utf-8').write('只有文字，没有公式。')
+
+    def tearDown(self):
+        shutil.rmtree(WORK, ignore_errors=True)
+
+    def test_能写的目录判成能写(self):
+        self.assertTrue(todocx._writable_dir(WORK))
+
+    def test_不存在的目录判成不能写(self):
+        self.assertFalse(todocx._writable_dir(os.path.join(WORK, '没有这个')))
+
+    def test_输出目录写不进去时给出路(self):
+        r"""微信、QQ 的下载目录是只读的，而软件默认「输出跟原 PDF 放一起」。
+        不前置检查的话要等 pandoc 跑完才炸，抛的还是一段 Haskell backtrace。
+        """
+        orig = todocx._writable_dir
+        todocx._writable_dir = lambda d: False
+        self.addCleanup(lambda: setattr(todocx, '_writable_dir', orig))
+        r = todocx.md_to_docx(self.md, os.path.join(WORK, 'out.docx'))
+        self.assertFalse(r['ok'])
+        self.assertIn('写不进去', r['error'])
+        self.assertIn('更改', r['error'], '没告诉用户怎么办')
+
+
 if __name__ == '__main__':
     unittest.main()
