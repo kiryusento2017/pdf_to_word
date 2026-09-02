@@ -85,7 +85,15 @@ TORCH_CUDA = ['torch', 'torchvision', '--index-url',
 
 
 def say(msg):
-    print('  ' + msg, flush=True)
+    try:
+        print('  ' + msg, flush=True)
+    except UnicodeEncodeError:
+        # 🔴 Windows 控制台默认是 GBK，emoji 打不出来会抛
+        #    UnicodeEncodeError，把整个打包流程炸在一个装饰符号上。
+        #    2026-09-02 就是这么炸的（一个 ⚠️）。降级成问号继续。
+        enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+        print('  ' + msg.encode(enc, 'replace').decode(enc, 'replace'),
+              flush=True)
 
 
 def rm(path):
@@ -566,15 +574,42 @@ def main():
                     help='配合 --sfx：产物里是旧版本号也照打。'
                          '用在「手工同步了代码、现在要升版本号」的场合，'
                          '**你得自己确认代码真同步过了**')
+    ap.add_argument('--dirty', action='store_true',
+                    help='工作区有未提交改动也照打。'
+                         '⚠️ 这会让 version.json 里的 sha 说谎')
     a = ap.parse_args()
 
     sha = ''
+    dirty = ''
     try:
         p = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
                            stdout=subprocess.PIPE, timeout=5)
         sha = p.stdout.decode('ascii', 'ignore').strip()
+        q = subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT,
+                           stdout=subprocess.PIPE, timeout=15)
+        dirty = q.stdout.decode('utf-8', 'replace').strip()
     except Exception:
         pass
+
+    # 🔴 **工作区不干净就别打包。**
+    #    version.json 里记的是 HEAD 的 sha，而 RELEASE.md 写着
+    #    「排查问题时以 version.json 里的 sha 为准，别信 tag」——
+    #    工作区有未提交改动的话，那个 sha 就是在说谎：包里的代码
+    #    根本不是那个 commit。
+    #
+    #    v0.0.4 正是这么发出去的（2026-09-02 事后比对安装包才发现）：
+    #      · vcredist.py 带着一个未提交的修改进了包
+    #      · update.py 反而落后于 HEAD 248 字节
+    #    两头都对不上，而 version.json 里的 sha 看着一切正常。
+    if dirty and not a.dirty:
+        say('工作区有未提交的改动，打包会让 version.json 里的 sha 说谎：')
+        for ln in dirty.split(chr(10))[:20]:
+            say('    ' + ln)
+        say('')
+        say('先提交（或 git stash），或者明确加 --dirty 强行打包。')
+        sys.exit(1)
+    if dirty:
+        say('注意：工作区不干净，--dirty 已强行打包 —— version.json 的 sha 不可信')
 
     if a.update_only:
         make_update_zip(a.version, sha)
