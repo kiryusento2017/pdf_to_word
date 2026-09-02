@@ -175,4 +175,4 @@ def install(on_log=None, on_progress=None, stop_flag=None):
     # 那一屏有「再装一次 C++ 运行库」的出路，不会卡死。
     _write_marker(0)
     log('已经交给微软的安装程序了。装完请重新打开本软件。')
-    return True, 
+    return True, ''
