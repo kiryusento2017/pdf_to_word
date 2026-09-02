@@ -6,13 +6,13 @@
 终末诗篇工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
 这边只做「PDF → Word」这一段。
 
-**最新发行版**：[v0.0.1](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.0.1)
+**最新发行版**：[v0.0.4](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.0.4)
 
 ---
 
 ## 给使用者
 
-下载 `PDF2Word-Setup-v0.0.1.exe`（287 MB），双击 → 选文件夹 → 解压完成 →
+下载 `PDF2Word-Setup-v0.0.4.exe`（287 MB），双击 → 选文件夹 → 解压完成 →
 双击里面的 `PDF转Word.exe`。
 
 **四件事得先知道**：
@@ -127,9 +127,21 @@ LaTeX --KaTeX(打包的 node)--> MathML --MML2OMML.XSL(用户的 Office)--> OMML
 | 括号 | OMML 定界符，Word 里随内容伸缩 | 当成普通文字 |
 
 与其让一部分人拿到次等产物还不知情，不如在门口说清楚要装 Office。
-公式转不出来时（没 XSL、没 node、数量对不上、部分转不了）**一律判失败**，
-不静默产出混着两种引擎的 Word。失败时会**把已经写出的那份 Word 删掉**——
-留着的话，界面说失败、目录里却躺着一份能打开的文件，多数人会当成功。
+
+公式怎么塞进 Word：**先把每个公式换成一个占位符**，pandoc 全程只当普通
+文字搬运，出 docx 后按占位符精确定位塞回 XSL 的结果。位置由占位符决定，
+不靠「数量必须相等」——2026-09-02 之前是按顺序一一对应的，一个 OCR
+粘连出来的 `\gtan` 让 pandoc 少产出一个公式，从缺口往后 70 个全部张冠
+李戴，只能整份判失败（11 份真实讲义里 1 份中招）。
+
+现在：**少数公式转不成不废掉整份**——错位已经不可能发生，那几处保留
+LaTeX 原文，报告里点名是第几个，其余照常。只有「一个都没转成」
+（没 XSL、没 node、XSL 链路坏了）才判整份失败。
+
+判失败时那份已经写出的 Word **不删，改名**成
+`xxx【公式未完全转换】.docx` 留下——要防的是「被当成正品」，不是
+「它存在」。转一份要几分钟，不该因为公式没转全就把 132 张图、18 个表
+一起扔掉。改不动名字（文件被 Word 占着）时会明确警告，不静默。
 
 ⚠️ **Pandoc 不能从包里去掉**：整个 docx 是它生成的（md→html→docx），
 XSL 只是把生成物里的公式替换掉。
@@ -256,15 +268,15 @@ app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源�
             icon.ico / icon_source.png（GitHub 头像做的图标）
 runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      242 条 Python + 80 条前端检查 + 四个真实数据验证脚本
+tests/      261 条 Python + 110 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 242 条，9 秒
-node tests\front_check.js                                   # 80 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 261 条，9 秒
+node tests\front_check.js                                   # 110 条，真渲染
 ```
 
 这两个都是离线的、秒级的。另有四个**依赖本机真实文件**的验证脚本，

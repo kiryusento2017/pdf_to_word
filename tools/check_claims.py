@@ -126,8 +126,10 @@ claim('vc_done.json 不许打进安装包（打进去等于给每个新用户假
 print()
 print('公式')
 td = read('pipeline/todocx.py')
-claim('失败时删掉已写出的 Word（README：「会把已经写出的那份 Word 删掉」）',
-      'os.remove(out_path)' in td)
+claim('失败时把已写出的 Word 改名留下（README：「不删，改名」）',
+      'degraded_path(out_path)' in td and '公式未完全转换' in td)
+claim('公式走占位符定位，不靠数量相等（README：「先把每个公式换成占位符」）',
+      '_ast_swap_math' in td and '_fill_placeholders' in td)
 claim('四条降级路径都判失败（DESIGN 第四节）',
       td.count("rep['error']") >= 4)
 

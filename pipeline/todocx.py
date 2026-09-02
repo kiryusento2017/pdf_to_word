@@ -39,8 +39,6 @@ PANDOC = os.path.join(ROOT, 'runtime', 'pandoc', 'pandoc.exe')
 _M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
-# 只认行内 $...$。与 tomath 同一口径。
-_INLINE = re.compile(r'(?<!\$)\$(?!\$)([^\$\n]+?)\$(?!\$)')
 _TABLE = re.compile(r'<table.*?</table>', re.S)
 
 # 🔴 **MinerU 切图用 200 DPI**，不是 Pandoc 假定的 96。
@@ -125,6 +123,103 @@ def _walk_math(node, out):
             _walk_math(v, out)
 
 
+# ── 公式：门牌号，不是排队顺序 ──────────────────────────────────────────
+#
+# 改造前：让 pandoc 照常转公式，出 docx 后按顺序把 m:oMath 一个个换成
+# XSL 的结果（zip(found, omml_list)）。这依赖一个 pandoc **自己不保证**
+# 的前提：它在 AST 里数出的公式数 == 它渲染进 docx 的 oMath 数。
+#
+# 2026-09-02 真机上就对不上：613 对 612。一个 OCR 粘连出来的 \gtan
+# 让 pandoc 在渲染时把那个公式退化成纯文本，从缺口往后 70 个公式全部
+# 张冠李戴 —— 只能整份判失败。11 份真实讲义里 1 份中招。
+#
+# 改造后：喂给 pandoc 之前就把每个公式换成一个**唯一的占位符**，
+# pandoc 全程只当它是普通文字搬运；出 docx 后按占位符精确定位塞回去。
+#     · 不依赖数量相等
+#     · 某个公式 XSL 转不了，只影响它自己
+#     · 报错能说出是第几个、内容是什么
+#
+# 占位符用 **Code 节点**而不是普通文本：Code 在 docx 里带 VerbatimChar
+# 字符样式，**必然独占一个 <w:r>** —— 省掉「占位符被拆进多个 run」
+# 这个最容易翻车的处理。
+_PH_FMT = '⟦MATH%04d⟧'
+_PH_RE = re.compile('⟦MATH([0-9]{4})⟧')
+
+
+def _ast_swap_math(node, texs):
+    """遍历 AST，把每个 Math 节点原地换成占位符，按文档顺序收集 LaTeX。
+
+    返回值就是 texs 被填充的内容；node 是原地改的。
+    """
+    if isinstance(node, dict):
+        if node.get('t') == 'Math':
+            c = node.get('c') or []
+            if len(c) == 2 and isinstance(c[1], str):
+                ph = _PH_FMT % len(texs)
+                texs.append(c[1])
+                node['t'] = 'Code'
+                node['c'] = [['', [], []], ph]
+            return
+        for v in node.values():
+            _ast_swap_math(v, texs)
+    elif isinstance(node, list):
+        for v in node:
+            _ast_swap_math(v, texs)
+
+
+def _fill_placeholders(docx_path, omml_list, texs):
+    """把 docx 里的占位符换成 OMML。
+
+    返回 (换掉几个, 没转成的下标列表, 没找到占位符的下标列表)。
+
+    XSL 没转出来的那些，把 LaTeX 原文写回去 —— 总比留一个
+    ⟦MATH0543⟧ 让人莫名其妙强，至少看得出原式是什么。
+    """
+    with zipfile.ZipFile(docx_path) as z:
+        names = z.namelist()
+        blobs = {n: z.read(n) for n in names}
+
+    doc = etree.fromstring(blobs['word/document.xml'])
+    wt = '{%s}t' % W_NS
+
+    slot = {}
+    for t in doc.iter(wt):
+        m = _PH_RE.match((t.text or '').strip())
+        if m:
+            slot[int(m.group(1))] = t
+
+    n = 0
+    failed = []
+    missing = []
+    for i, omml in enumerate(omml_list):
+        t = slot.get(i)
+        if t is None:
+            missing.append(i)
+            continue
+        if omml is None:
+            t.text = texs[i] if i < len(texs) else ''
+            failed.append(i)
+            continue
+        run = t.getparent()
+        parent = run.getparent() if run is not None else None
+        if parent is None:
+            missing.append(i)
+            continue
+        copy = etree.fromstring(etree.tostring(omml))
+        copy.tail = run.tail
+        parent.replace(run, copy)
+        n += 1
+
+    blobs['word/document.xml'] = etree.tostring(
+        doc, xml_declaration=True, encoding='UTF-8', standalone=True)
+    tmp = docx_path + '.tmp'
+    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+        for name in names:
+            z.writestr(name, blobs[name])
+    os.replace(tmp, docx_path)
+    return n, failed, missing
+
+
 def px_to_inch(px):
     """图片像素 → 在 Word 里该显示多宽（英寸）。超过正文宽就压到正文宽。"""
     return min(px / float(MINERU_IMAGE_DPI), MAX_IMAGE_INCH)
@@ -177,81 +272,6 @@ def _size_images(text, cwd):
             return m.group(0)
         return '![%s](%s){width="%.2fin"}' % (alt, path, px_to_inch(w))
     return re.sub(r'!\[([^\]]*)\]\(([^)\s]+)\)(\{[^}]*\})?', one, text)
-
-
-def _extract_tex_in_order(text, cwd=None):
-    r"""按文档顺序取出所有公式的 LaTeX 源码。
-
-    🔴 **问 pandoc 要，不自己用正则数**。第一版用正则数行内 $...$，
-    结果跟产物里的 m:oMath 数量对不上（185 对 186、806 对 808、187 对 201），
-    11 份里 9 份因此退回 pandoc —— XSL 优先形同虚设。
-
-    根子是**我在猜 pandoc 怎么断句**：我的正则不允许公式跨行（[^$
-]），
-    pandoc 允许。判据只要有一丝不同，数量就对不上。
-    从它自己的 AST 里取，顺序与数量必然一致。
-    """
-    rc, out, _err = _run_pandoc(
-        ['-f', 'markdown+tex_math_dollars+raw_html', '-t', 'json'],
-        text, cwd=cwd)
-    if rc != 0 or not out.strip():
-        return [m.group(1) for m in _INLINE.finditer(text)]   # 退回正则，聊胜于无
-    try:
-        ast = json.loads(out)
-    except Exception:
-        return [m.group(1) for m in _INLINE.finditer(text)]
-    got = []
-    _walk_math(ast.get('blocks', ast), got)
-    return got
-
-
-def count_omath(docx_path):
-    """产物里有几个 Word 原生公式对象。给报告和测试用。"""
-    try:
-        with zipfile.ZipFile(docx_path) as z:
-            xml = z.read('word/document.xml').decode('utf-8')
-        return xml.count('<m:oMath>') + xml.count('<m:oMath ')
-    except Exception:
-        return -1
-
-
-def _replace_omath(docx_path, omml_list):
-    r"""把 docx 里的 m:oMath 按顺序换成给定的那批。返回换掉几个。
-
-    只在数量完全一致时才动手 —— 调用方已经校验过，这里再断言一次。
-    """
-    with zipfile.ZipFile(docx_path) as z:
-        names = z.namelist()
-        blobs = {n: z.read(n) for n in names}
-
-    doc = etree.fromstring(blobs['word/document.xml'])
-    found = doc.findall('.//{%s}oMath' % _M_NS)
-    if len(found) != len(omml_list):
-        return 0
-
-    n = 0
-    for old, new in zip(found, omml_list):
-        if new is None:
-            continue                     # 这一个 XSL 没转出来，留 pandoc 的
-        parent = old.getparent()
-        if parent is None:
-            continue
-        # 新节点可能带自己的命名空间声明，lxml 会处理好；tail 要保住，
-        # 丢了会让相邻文字粘在一起
-        copy = etree.fromstring(etree.tostring(new))
-        copy.tail = old.tail
-        parent.replace(old, copy)
-        n += 1
-
-    blobs['word/document.xml'] = etree.tostring(
-        doc, xml_declaration=True, encoding='UTF-8', standalone=True)
-
-    tmp = docx_path + '.tmp'
-    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
-        for name in names:               # 保持原顺序，Word 对此不敏感但稳妥
-            z.writestr(name, blobs[name])
-    os.replace(tmp, docx_path)
-    return n
 
 
 def _add_table_borders(docx_path):
@@ -399,7 +419,33 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
         rep['error'] = '读不了输入文件：%s' % str(e)[:120]
         return rep
 
-    texs = _extract_tex_in_order(src, cwd=src_dir)
+    # 🔴 **先把公式换成占位符，再交给 pandoc**。
+    #    从 AST 层换，不用猜「pandoc 怎么断句」—— 位置天然精确，
+    #    也就不再需要 _extract_tex_in_order 那条「数出来的数必须等于
+    #    产物里的 oMath 数」的脆弱前提。
+    rc, astjson, err = _run_pandoc(
+        ['-f', 'markdown+tex_math_dollars+raw_html', '-t', 'json'],
+        src, cwd=src_dir)
+    if rc != 0 or not astjson.strip():
+        rep['error'] = 'pandoc（md→AST）失败：%s' % (err.strip()[:200] or rc)
+        return rep
+    try:
+        ast = json.loads(astjson)
+    except Exception as e:
+        rep['error'] = 'pandoc 的 AST 读不了：%s' % str(e)[:120]
+        return rep
+    texs = []
+    if prefer_xsl:
+        # 走占位符：pandoc 从此不碰公式，出 docx 后按门牌号填回去。
+        _ast_swap_math(ast.get('blocks', ast), texs)
+        html_src, html_from = json.dumps(ast), 'json'
+    else:
+        # 🔴 prefer_xsl=False 是调用方明确说「我就要 pandoc 转的公式」
+        #    （测试和批量脚本靠这条）。这时**不能换占位符** ——
+        #    换了没人填回去，用户会拿到满屏 ⟦MATH0001⟧。
+        #    所以这条路原样走老流程，只借 AST 数一下有几个公式。
+        _walk_math(ast.get('blocks', ast), texs)
+        html_src, html_from = src, 'markdown+tex_math_dollars+raw_html'
     rep['formulas_src'] = len(texs)
 
     # 🔴 **走 HTML 中转**，不把表格转成 markdown。
@@ -409,11 +455,11 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     #    HTML 没有列宽这回事，表格原样带过去，图一张不少。
     tmpdir = tempfile.mkdtemp(prefix='pdf2word_')
     try:
+        # 从改过的 AST 出发。公式已经是占位符文本，pandoc 只管搬运。
         rc, html, err = _run_pandoc(
-            ['-f', 'markdown+tex_math_dollars+raw_html', '-t', 'html', '--mathml'],
-            src, cwd=src_dir)
+            ['-f', html_from, '-t', 'html', '--mathml'], html_src, cwd=src_dir)
         if rc != 0 or not html.strip():
-            rep['error'] = 'pandoc（md→html）失败：%s' % (err.strip()[:200] or rc)
+            rep['error'] = 'pandoc（AST→html）失败：%s' % (err.strip()[:200] or rc)
             return rep
         tmp_html = os.path.join(tmpdir, 'input.html')
         with io.open(tmp_html, 'w', encoding='utf-8') as f:
@@ -448,42 +494,32 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
             return rep
         else:
             omml = tomath.batch_to_omml(texs)
-            n_ok = sum(1 for x in omml if x is not None)
-            n = _replace_omath(out_path, omml)
-            if n:
-                rep['math_engine'] = 'xsl'
-                rep['formulas_replaced'] = n
-                rep['math_note'] = '公式走 Office 的 MML2OMML.XSL（%d/%d 成功）' % (n_ok, len(texs))
-                if n_ok < len(texs):
-                    # 🔴 这是第四条降级路径，也是最常触发的一条 ——
-                    #    KaTeX 不认某个 LaTeX 命令是家常便饭，比「数量对不上」
-                    #    常见得多。那几个公式落的是 Pandoc 的结果（可能含 ⌀），
-                    #    以前 ok 仍是 True，用户拿到一份混着两种引擎产物的
-                    #    Word 却毫不知情。
-                    #    上一轮堵了另外三条，独独漏了这条，立论还是只贯彻一半。
-                    rep['error'] = (
-                        '有 %d 个公式没能转成 Word 原生公式（共 %d 个）。'
-                        '通常是公式里用了 KaTeX 不认识的写法。原因：%s'
-                        % (len(texs) - n_ok, len(texs), tomath.last_error()[:160]))
-                    return rep
-            else:
-                # 数量对不上：源文数出 N 个，产物里却不是 N 个 m:oMath。
-                # 对应关系已不可信，整批不换 —— 强行按序替换会让其后所有
-                # 公式张冠李戴，比不换糟得多。
-                # 差值几乎总是「有公式 Pandoc 转不出来」造成的：它转不了就
-                # 退化成纯文本，产物里少一个 oMath，后面全部错位。实测撞见过
-                # \textcircled —— 那是 LaTeX 文本模式命令，不是数学命令。
-                #
-                # 以前这里保留 Pandoc 的结果并判成功。现在判失败：
-                # 用户宁可知道这一份没转好，也不要拿到一份公式可能错位的 Word
-                # 却以为它是好的。
-                n_out = count_omath(out_path)
-                rep['error'] = (
-                    '这一份的公式没能转成 Word 原生公式：源文数出 %d 个公式，'
-                    '生成的文档里却是 %d 个，对应关系不可信，强行替换会让公式错位。'
-                    '通常是某个公式用了特殊写法（比如 \\textcircled 这类文本模式命令）。'
-                    % (len(texs), n_out))
+            n, failed, missing = _fill_placeholders(out_path, omml, texs)
+            rep['math_engine'] = 'xsl'
+            rep['formulas_replaced'] = n
+            rep['math_note'] = ('公式走 Office 的 MML2OMML.XSL（%d/%d 成功）'
+                                % (n, len(texs)))
+            # 一个都没换成 = XSL 这条链整个坏了，那才是真失败。
+            if n == 0:
+                rep['error'] = ('一个公式都没能转成 Word 原生公式（共 %d 个）。'
+                                '原因：%s'
+                                % (len(texs), tomath.last_error()[:160]))
                 return rep
+            bad = sorted(failed + missing)
+            if bad:
+                # 🔴 **少数几个转不成，不再废掉整份**。
+                #    改造前这里判整份失败，理由是「按序替换会让其后所有
+                #    公式错位」。占位符定位之后错位不可能发生了 ——
+                #    坏的那几个只影响它自己，132 张图、18 个表、612 个
+                #    已经转好的公式没有理由陪葬。
+                #    但必须说清楚是**哪几个**：改造前只说「有 N 个」，
+                #    等于让用户在几百个公式里自己猜。
+                where = '、'.join(
+                    '第 %d 个（%s）' % (i + 1, (texs[i] or '')[:40])
+                    for i in bad[:3])
+                rep['math_note'] += (
+                    '；%s%s 没转成，那几处保留了 LaTeX 原文'
+                    % (where, ' 等 %d 个' % len(bad) if len(bad) > 3 else ''))
     elif not prefer_xsl:
         rep['math_note'] = '按调用方要求跳过 XSL，公式由 Pandoc 转换'
 
@@ -501,10 +537,16 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     return rep
 
 
+def degraded_path(out_path):
+    """判失败的产物换成什么名字。一眼就能跟正品分开。"""
+    root, ext = os.path.splitext(out_path)
+    return root + '【公式未完全转换】' + ext
+
+
 def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     r"""把一份 Markdown 转成 Word。见 `_build_docx` 的完整说明。
 
-    这层只多做一件事：**判失败就把产物删掉**。
+    这层只多做一件事：**判失败就把产物改名，而不是删掉**。
 
     2026-09-02 查出来的：`_build_docx` 有四条失败路径发生在 pandoc
     已经把 docx 写出来之后（没 XSL、没 node、部分公式转不了、数量对不上），
@@ -512,17 +554,28 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     老师去目录一看躺着一份能双击打开、里面有内容的 Word —— 多半就当
     成功了，而那正是我们判失败要拦下的次等品（Pandoc 把空集 ∅ 转成 ⌀）。
 
-    其中「部分公式转不了」那条注释自己写着「比数量对不上常见得多」，
-    也就是说这不是罕见分支，是**日常都会走到**的那条。
+    最初的做法是删掉它。**手段超出了目的**：要防的是「被当成正品」，
+    不是「这份文件存在」。转一份要四分钟，因为一个公式没转成就把
+    132 张图、18 个表、612 个已经转好的公式一起扔掉，代价太大了。
+    改名之后谁也不会把它当成品，而它照样能打开、能用。
+
+    🔴 改不了名的时候必须**说出来**。以前那里是 `except OSError: pass`，
+       而删不掉的典型场景正是「文件被 Word 打开着」—— 于是原名的次等品
+       原地不动，界面只说一句「失败」。静默失守比不拦更糟。
     """
     rep = _build_docx(md_path, out_path, prefer_xsl=prefer_xsl,
                       resource_path=resource_path)
     if not rep.get('ok'):
-        try:
-            if os.path.isfile(out_path):
-                os.remove(out_path)
-        except OSError:
-            # 删不掉（被 Word 打开着之类）不该把失败原因换成删除失败 ——
-            # 用户真正需要看到的是「为什么没转成」。
-            pass
+        rep['degraded'] = ''
+        if os.path.isfile(out_path):
+            dst = degraded_path(out_path)
+            try:
+                os.replace(out_path, dst)
+                rep['degraded'] = dst
+            except OSError as e:
+                rep['error'] = (rep.get('error') or '') + (
+                    chr(10) + chr(10)
+                    + '⚠️ 另外：这份没转好的文件留在了 %s，而且改不成'
+                      '带标记的名字（%s）—— 它多半正被 Word 打开着。'
+                      '别把它当成品用。' % (out_path, str(e)[:80]))
     return rep

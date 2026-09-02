@@ -653,10 +653,25 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
         try:
             clog = io.open(conv_log, 'a', encoding='utf-8',
                            errors='replace', newline='')
-            clog.write('\n===== %s =====\n%s\n'
-                       % (time.strftime('%Y-%m-%d %H:%M:%S'), pdf))
-        except Exception:
+            clog.write(chr(10) + '===== %s =====' % time.strftime(
+                '%Y-%m-%d %H:%M:%S') + chr(10) + pdf + chr(10))
+            # 🔴 表头必须立刻落盘。MinerU 加载模型要几十秒，这期间
+            #    on_conv_log 一次都不会被调用 —— 不 flush 的话表头在
+            #    缓冲区里躺着，用户去看是个 0 字节的空文件。
+            clog.flush()
+        except Exception as e:
+            # 🔴 **不许静默**。2026-09-02 真机上转换跑了一个小时，
+            #    logs/ 全程是空的，而这段是必经之路 —— 异常被这里吞得
+            #    干干净净，事后完全无从查起（最后是靠人工复现 613 个
+            #    公式才定位到根因，代价极大）。
+            #    现在把原因摆到界面日志区，下次一眼能看见。
             clog = None
+            with _LOCK:
+                t0 = _TASKS.get(task_id)
+                if t0 is not None:
+                    t0['lines'].append(
+                        '⚠️ 落盘日志打不开，这次没有完整日志：%s: %s（%s）'
+                        % (type(e).__name__, str(e)[:120], conv_log))
 
         def on_conv_log(line, _f=clog, _tid=task_id):
             if _f:
@@ -670,6 +685,13 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
             #    在一秒内挤没。进度另有专门的显示（阶段名 + 比例条）。
             #    落盘的那份是全的 —— 出问题要细看就去 logs/convert.log。
             if extract.parse_progress(line) is not None:
+                # 进度行不进日志流（每秒几十行会把报错挤没），改成
+                # **钉在日志区最后一行原地刷新** —— MinerU 安静那几十秒
+                # 过去之后，这是「还在动」唯一看得见的证据。
+                with _LOCK:
+                    tp = _TASKS.get(_tid)
+                    if tp is not None:
+                        tp['progress_line'] = line[-300:]
                 return
             with _LOCK:
                 t = _TASKS.get(_tid)
@@ -702,11 +724,20 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
 
         rep['line'] = convert.summary_line(rep)
         with _LOCK:
-            _TASKS[task_id]['results'].append(rep)
+            t = _TASKS[task_id]
+            t['results'].append(rep)
             # 记下「已完成的那些一共花了多久」。_remain 要拿它算真实速率——
             # 不能用 elapsed，那里面含着当前这份正在跑的时间，会让估算
             # 随时间单调变大（越等越久）。
-            _TASKS[task_id]['done_elapsed'] = time.time() - _TASKS[task_id]['started']
+            now = time.time() - t['started']
+            one = now - (t.get('done_elapsed') or 0)      # 这一份单独花了多久
+            t['done_elapsed'] = now
+            # 🔴 缓存命中的份不进速率。它两秒转完一整本，混进去算出来
+            #    每页 0.09 秒，后面几份的「还要多久」会短得离谱。
+            if not rep.get('cached'):
+                t['real_elapsed'] = (t.get('real_elapsed') or 0) + one
+                t['real_pages'] = (t.get('real_pages') or 0) + (
+                    (t.get('pages') or [0])[i] if i < len(t.get('pages') or []) else 0)
 
     with _LOCK:
         _TASKS[task_id]['state'] = 'done'
@@ -732,7 +763,13 @@ def start_convert(req: ConvertReq):
                        'stage_total': 0, 'results': [], 'cancel': False,
                        'lines': [], 'log': '',
                        'error': '', 'started': time.time(),
-                       'pages': pages, 'sec_per_page': _sec_per_page()}
+                       'pages': pages, 'sec_per_page': _sec_per_page(),
+                       # 只累计**真跑过 GPU** 的那些份。缓存命中的份
+                       # 两秒转完 23 页，混进速率会把预估拉到荒谬的低。
+                       'real_elapsed': 0.0, 'real_pages': 0,
+                       # MinerU 最新的那条 tqdm 原样存着，钉在
+                       # 日志区最后一行原地刷新（见 on_conv_log）。
+                       'progress_line': ''}
     threading.Thread(target=_work, daemon=True,
                      args=(tid, req.paths, req.out_dir, req.prefer_xsl,
                            req.source)).start()
@@ -770,9 +807,12 @@ def _remain(t, elapsed):
     done = len(t.get('results') or [])
     spp = t.get('sec_per_page') or SEC_PER_PAGE_GPU
     done_elapsed = t.get('done_elapsed')
-    if done and done_elapsed:
-        done_pages = sum(pages[:done]) or 1
-        spp = done_elapsed / float(done_pages)     # 只用已完成部分的真实耗时
+    # 速率只按**真跑过 GPU** 的那些份算。全是缓存命中时这两个都是 0，
+    # 退回出厂估值 —— 宁可用个粗的，也不要用缓存那两秒推出来的假速率。
+    real_e = t.get('real_elapsed') or 0
+    real_p = t.get('real_pages') or 0
+    if real_p and real_e:
+        spp = real_e / float(real_p)
 
     left_pages = sum(pages[done:])
     if left_pages <= 0:

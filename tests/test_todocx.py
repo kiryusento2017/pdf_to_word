@@ -158,27 +158,45 @@ class Test两条路的优先级(unittest.TestCase):
 
     @unittest.skipUnless(tomath.xsl_available() and tomath.node_available(),
                          '本机没有 Office 的 XSL 或没有 node')
-    def test_数量对不上就整批不换且判失败(self):
-        r"""替换靠顺序一一对应。数量对不上说明对应关系已经不可信，
-        这时候**绝不能张冠李戴**把公式换错位置 —— 这个判断没变。
+    def test_少数公式转不成不再废掉整份(self):
+        r"""改造前：pandoc 在 AST 里数出 N 个公式、渲染进 docx 却只有 N-1 个，
+        于是「整批不换 + 判失败」。那个理由是成立的 —— 按顺序替换会让缺口
+        之后的公式全部张冠李戴。
 
-        变的是不换之后怎么算：2026-09-01 小蔡定 XSL 硬性要求之前，
-        这里保留 Pandoc 的结果并判成功，用户拿到一份含 ⌀（Pandoc 把
-        空集 ∅ 转错了）的 Word 却以为是好的，界面上那句提示还挤在
-        150px 宽的省略号里根本看不见。现在判失败，宁可让他知道
-        这一份没转好。
+        但代价是：一个 OCR 粘连出来的坏公式，能让 612 个转好的公式、
+        132 张图、18 个表一起陪葬（2026-09-02 真机，11 份里 1 份中招）。
+
+        占位符定位之后**错位不可能发生**，坏的那几个只影响它自己。
+        所以现在照常出 Word，并在报告里点名是第几个。
         """
-        orig = todocx._extract_tex_in_order
-        todocx._extract_tex_in_order = lambda text, cwd=None: ['只有一个']
+        orig = tomath.batch_to_omml
+
+        def half(texs):
+            out = orig(texs)
+            if out:
+                out[0] = None          # 第一个故意转不成
+            return out
+        tomath.batch_to_omml = half
         try:
             r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
-            self.assertFalse(r['ok'], '数量对不上却判成功了')
-            self.assertIn('公式', r['error'])
-            self.assertIn('错位', r['error'], '没说清楚为什么不能硬换')
-            # 原因里要带上两个数，用户才能判断是不是自己那份书的问题
-            self.assertIn('1', r['error'])
+            self.assertTrue(r['ok'],
+                            '一个公式没转成就废掉整份：%s' % r.get('error'))
+            self.assertTrue(os.path.isfile(self.out), '产物没了，白转一场')
+            self.assertIn('第 1 个', r['math_note'],
+                          '没说清是哪个公式没转成，等于让人猜')
         finally:
-            todocx._extract_tex_in_order = orig
+            tomath.batch_to_omml = orig
+
+    def test_一个都转不成才算真失败(self):
+        r"""少数几个转不成不算失败，但一个都没换成说明 XSL 这条链整个坏了。"""
+        orig = tomath.batch_to_omml
+        tomath.batch_to_omml = lambda texs: [None] * len(texs)
+        try:
+            r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+            self.assertFalse(r['ok'], '一个都没转成却判成功')
+            self.assertIn('一个公式都没能', r['error'])
+        finally:
+            tomath.batch_to_omml = orig
 
     def test_没有XSL时直接判失败而不是退回Pandoc(self):
         r"""门口拦了「完全没装 Office」，屋里这条也得拦 ——
@@ -225,15 +243,93 @@ class Test两条路的优先级(unittest.TestCase):
     def test_失败时不留下半成品Word_数量对不上(self):
         r"""这条是实际最常撞上的路径：KaTeX 不认某个命令，产物里的
         公式数对不上，整批不换判失败 —— 此时 docx 早就写出来了。"""
-        orig = todocx._extract_tex_in_order
-        todocx._extract_tex_in_order = lambda text, cwd=None: ['只有一个']
+        orig = tomath.batch_to_omml
+        tomath.batch_to_omml = lambda texs: [None] * len(texs)
         try:
             r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
             self.assertFalse(r['ok'])
             self.assertFalse(os.path.exists(self.out),
-                             '判失败了却留下一份 Word，用户会当成功')
+                             '判失败了却留下原名的 Word，用户会当成功')
         finally:
-            todocx._extract_tex_in_order = orig
+            tomath.batch_to_omml = orig
+
+
+class Test判失败也要留下产物(unittest.TestCase):
+    r"""判失败**不等于销毁产物**。
+
+    要防的是「次品被当成正品」，不是「次品存在」。转一份四分钟，因为一个
+    公式没转成就把 132 张图、18 个表、612 个已转好的公式一起扔掉，
+    代价太大。改名之后谁也不会认错，而它照样能打开、能用。
+    """
+
+    def setUp(self):
+        if os.path.isdir(WORK):
+            shutil.rmtree(WORK, ignore_errors=True)
+        os.makedirs(WORK)
+        self.md = os.path.join(WORK, 'in.md')
+        io.open(self.md, 'w', encoding='utf-8').write(
+            '第一个 $a + b$ 第二个 $c ' + chr(92) + 'times d$ 完。' + chr(10))
+        self.out = os.path.join(WORK, 'out.docx')
+
+    def tearDown(self):
+        shutil.rmtree(WORK, ignore_errors=True)
+
+    def _fail_on_count(self):
+        """造一个「一个公式都没转成」的失败。
+
+        占位符改造之后「数量对不上」这条路径不存在了（那正是改造要消灭的），
+        现在唯一的整份失败是「XSL 一个都没转出来」。
+        """
+        orig = tomath.batch_to_omml
+        tomath.batch_to_omml = lambda texs: [None] * len(texs)
+        self.addCleanup(lambda: setattr(tomath, 'batch_to_omml', orig))
+
+    @unittest.skipUnless(todocx.pandoc_available(), '本机没有 pandoc')
+    def test_失败时产物改名留下而不是删掉(self):
+        self._fail_on_count()
+        r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+        self.assertFalse(r['ok'], '这一步本来就该判失败')
+        self.assertFalse(os.path.isfile(self.out), '原名的次品还在，会被当成正品')
+        dst = todocx.degraded_path(self.out)
+        self.assertTrue(os.path.isfile(dst), '产物被删了，四分钟白等')
+        self.assertEqual(r.get('degraded'), dst, '没把次品路径告诉调用方')
+
+    @unittest.skipUnless(todocx.pandoc_available(), '本机没有 pandoc')
+    def test_次品名字一眼能认出来(self):
+        self._fail_on_count()
+        r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+        self.assertIn('公式未完全转换', os.path.basename(r['degraded']),
+                      '名字看不出是次品，等于没改')
+        self.assertTrue(r['degraded'].endswith('.docx'), '扩展名丢了就打不开')
+
+    @unittest.skipUnless(todocx.pandoc_available(), '本机没有 pandoc')
+    def test_改不了名必须说出来不能静默(self):
+        r"""🔴 改名失败的典型场景是「文件正被 Word 打开着」——
+        那时原名的次品原地不动，用户会把它当成品。
+        以前这里是 except OSError: pass，静默失守比不拦更糟。
+        """
+        self._fail_on_count()
+        # 只拦「改成带标记的名字」那一次 —— _fill_placeholders 内部也用
+        # os.replace 把改好的 docx 写回去，一刀切会误伤它。
+        orig = os.replace
+
+        def picky(a, b):
+            if '公式未完全转换' in str(b):
+                raise OSError('被占用')
+            return orig(a, b)
+        os.replace = picky
+        self.addCleanup(lambda: setattr(os, 'replace', orig))
+        r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
+        self.assertFalse(r['ok'])
+        self.assertIn('别把它当成品用', r['error'], '改名失败却没警告')
+        self.assertEqual(r.get('degraded'), '', '没改成却报了个路径')
+
+    @unittest.skipUnless(todocx.pandoc_available(), '本机没有 pandoc')
+    def test_成功时不改名(self):
+        r = todocx.md_to_docx(self.md, self.out, prefer_xsl=False)
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertTrue(os.path.isfile(self.out), '成功的产物被改名了')
+        self.assertFalse(os.path.isfile(todocx.degraded_path(self.out)))
 
 
 if __name__ == '__main__':

@@ -32,7 +32,7 @@ def pdf_to_word(pdf, out_docx, work_dir, on_progress=None, on_log=None,
            'pdf': pdf, 'docx': out_docx,
            'pages': 0, 'scan_pages': [], 'formulas': 0, 'formulas_xsl': 0,
            'tables': 0, 'images': 0, 'math_engine': '', 'math_note': '',
-           'auto_dir': ''}
+           'auto_dir': '', 'cached': False, 'degraded': ''}
 
     # ── ① 体检 ────────────────────────────────────────────────────────
     p = probe.probe_pdf(pdf)
@@ -69,12 +69,18 @@ def pdf_to_word(pdf, out_docx, work_dir, on_progress=None, on_log=None,
                         if human else e['error'])
         return rep
     rep['auto_dir'] = e['auto_dir']
+    # 这一份是直接用了上次的识别结果，还是真跑了一遍 GPU。
+    # 界面要标出来，剩余时间的速率也要把它排除掉。
+    rep['cached'] = e.get('cached', False)
 
     # ── ③ 出 Word ─────────────────────────────────────────────────────
     d = todocx.md_to_docx(e['md'], out_docx, prefer_xsl=prefer_xsl,
                           resource_path=e['auto_dir'])
     if not d['ok']:
         rep['error'] = d['error']
+        # 判失败不等于没有产物。次品改了名留在原地，路径带给界面 ——
+        # 转一份四分钟，不该因为一个公式没转成就让人两手空空。
+        rep['degraded'] = d.get('degraded', '')
         return rep
 
     rep['formulas'] = d['formulas_src']
@@ -99,6 +105,11 @@ def summary_line(rep):
         bits.append('公式走 Office')
     else:
         bits.append('公式走 Pandoc')
+    # 有公式没转成就说出来。以前这个事实只写进 math_note，而
+    # summary_line 不读它、前端 0 处引用 —— 等于写进了没人看的字段。
+    miss = (rep.get('formulas') or 0) - (rep.get('formulas_xsl') or 0)
+    if miss > 0:
+        bits.append('%d 个公式没转成' % miss)
     if rep['scan_pages']:
         n = len(rep['scan_pages'])
         bits.append('第 %s 页无文字层%s'

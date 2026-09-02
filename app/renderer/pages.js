@@ -20,6 +20,8 @@ function bar(cur, total) {
   return '<div class="bar"><i style="width:' + pct + '%"></i></div>';
 }
 
+function chr10() { return String.fromCharCode(10); }
+
 function dot(color) {
   return '<span class="dot" style="background:' + color + '"></span>';
 }
@@ -43,23 +45,49 @@ function shell(top, main, bot) {
 // ── 环境自检的两种呈现 ─────────────────────────────────────────────────
 // 一是压进状态栏的一句话，二是必须让用户拿主意时占住主区的拦截页。
 
-function envLine(st) {
+function envLine(st, compact) {
+  // compact：底部按钮多的屏（转换中、下载、选源）把这行缩成一个圆点，
+  // 详情进 title，把宽度让给「检查更新」——那个按钮任何时候都不能被挤掉。
+  // 判断顺序跟完整版共用一份，只有最后拼字符串时分岔。
+  var color, text, cls;
+  if (st.envLoading) {
+    color = '#9ca3af'; text = '正在检查这台电脑…'; cls = 'f-dim';
+  } else {
+    var e = st.env || {};
+    var g = e.gpu || {};
+    if (st.envError) { color = '#b91c1c'; text = '后台没连上'; cls = 'f-bad'; }
+    else if (!(e.writable || {}).ok) { color = '#b91c1c'; text = '安装目录不可写'; cls = 'f-bad'; }
+    else if (!(e.mineru || {}).ok) { color = '#b91c1c'; text = '转换引擎缺失'; cls = 'f-bad'; }
+    // Office 现在是硬性要求（2026-09-01 改定），不再是「有更好」。
+    else if (!(e.formula || {}).ok) { color = '#b91c1c'; text = '缺少 Office'; cls = 'f-bad'; }
+    else {
+      var parts = [];
+      parts.push(g.ok ? '显卡 ✓' : '显卡 ✗');
+      parts.push('Office ✓');
+      // C++ 运行库也摆出来 —— 它齐不齐决定那 2.8 GB 装不装得上，
+      // 用户有权在点之前就看见，而不是下完才知道。
+      if (e.vcredist) parts.push(e.vcredist.ok ? 'C++ 运行库 ✓' : 'C++ 运行库 ✗');
+      color = g.ok ? '#15803d' : '#b45309';
+      text = parts.join('　·　');
+      cls = g.ok ? '' : 'f-warn';
+    }
+  }
+  if (compact) return '<span title="' + esc(text) + '">' + dot(color) + '</span>';
+  // 非 compact 的输出跟改造前逐字一致，包括「正在检查」那条本来就没有圆点。
   if (st.envLoading) return '<span class="f-dim">正在检查这台电脑…</span>';
-  if (st.envError) return dot('#b91c1c') + ' <span class="f-bad">后台没连上</span>';
-  var e = st.env || {};
-  var g = e.gpu || {};
-  if (!(e.writable || {}).ok) return dot('#b91c1c') + ' <span class="f-bad">安装目录不可写</span>';
-  if (!(e.mineru || {}).ok) return dot('#b91c1c') + ' <span class="f-bad">转换引擎缺失</span>';
-  // Office 现在是硬性要求（2026-09-01 改定），不再是「有更好」。
-  if (!(e.formula || {}).ok) return dot('#b91c1c') + ' <span class="f-bad">缺少 Office</span>';
-  var parts = [];
-  parts.push(g.ok ? '显卡 ✓' : '显卡 ✗');
-  parts.push('Office ✓');
-  // C++ 运行库也摆出来 —— 它齐不齐决定那 2.8 GB 装不装得上，
-  // 用户有权在点之前就看见，而不是下完才知道。
-  if (e.vcredist) parts.push(e.vcredist.ok ? 'C++ 运行库 ✓' : 'C++ 运行库 ✗');
-  return dot(g.ok ? '#15803d' : '#b45309') + ' <span'
-    + (g.ok ? '' : ' class="f-warn"') + '>' + parts.join('　·　') + '</span>';
+  return dot(color) + ' <span'
+    + (cls ? ' class="' + cls + '"' : '') + '>' + text + '</span>';
+}
+
+// 公共底栏。**每一屏都要有「检查更新」** —— 卡在安装任何一步的用户，
+// 唯一的自救手段就是更新到修好的版本；按钮不在，人就只能重下安装包。
+// （v0.0.1 那次正是如此：模型下不成 → 停在下载屏 → 那屏底部没有这个按钮。）
+// extra 是各屏自己的东西，放右边；compact 见 envLine。
+function botBar(st, extra, compact) {
+  return envLine(st, compact)
+    + btn('checkUpdate', '检查更新', { cls: 'link' })
+    + '<span class="grow"></span>'
+    + (extra || '');
 }
 
 // 要不要占住主区拦一下。返回 '' 表示放行。
@@ -441,13 +469,13 @@ function pageMain(st) {
         + '<div class="f-dim mono" style="max-width:460px;white-space:pre-wrap;'
         + 'text-align:left">' + esc(st.envError) + '</div>'
         + '<div>' + btn('reload', '重试') + '</div></div>',
-      envLine(st));
+      botBar(st, ''));
   }
 
   var gate = gateKind(st);
   if (gate) {
     return shell('<span class="f-dim" style="padding:0 4px">PDF 转 Word</span>',
-                 gateView(st, gate), envLine(st));
+                 gateView(st, gate), botBar(st, ''));
   }
 
   // 更新面板排在 gate 之后 —— 环境有问题的话，先解决环境。
@@ -483,7 +511,7 @@ function mainPick(st) {
       + (st.items.length ? '<div class="f-dim">已经在列表里的 '
           + st.items.length + ' 份不受影响</div>' : '')
       + '</div>',
-      envLine(st) + '<span class="grow"></span><span class="f-dim">读取中…</span>');
+      botBar(st, '<span class="f-dim">读取中…</span>'));
   }
 
   // 空列表也要铺满 —— 拖放区撑满整个主区，而不是一个居中的小方框。
@@ -496,10 +524,8 @@ function mainPick(st) {
       + btn('pickFiles', '选文件') + btn('pickDir', '选文件夹') + '</div>'
       + (st.err ? '<div class="f-bad" style="margin-top:6px">' + esc(st.err) + '</div>' : '')
       + '</div>';
-    return shell(top, main, envLine(st)
-      + btn('checkUpdate', '检查更新', { cls: 'link' })
-      + '<span class="grow"></span>'
-      + '<span class="f-dim">还没有文件</span>');
+    return shell(top, main,
+      botBar(st, '<span class="f-dim">还没有文件</span>'));
   }
 
   var n = 0, pages = 0;
@@ -543,13 +569,11 @@ function mainPick(st) {
     + btn('selNone', '全不选', { cls: 'link' })
     + '<span style="width:52px;text-align:right">页数</span></div>';
 
-  var bot = envLine(st)
-    + btn('checkUpdate', '检查更新', { cls: 'link' })
-    + '<span class="grow"></span>'
-    + '<span>' + (st.err ? '<span class="f-bad">' + esc(st.err) + '</span>'
+  var bot = botBar(st,
+    '<span>' + (st.err ? '<span class="f-bad">' + esc(st.err) + '</span>'
         : ('选中 ' + n + ' 份 · ' + pages + ' 页')) + '</span>'
     + btn('start', st.starting ? '正在开始…' : '开始转换',
-          { cls: 'primary', off: !n || st.starting || st.scanning });
+          { cls: 'primary', off: !n || st.starting || st.scanning }));
 
   return shell(top, head + rows, bot);
 }
@@ -560,7 +584,7 @@ function mainRun(st) {
   if (!t) {
     return shell('<span class="f-dim" style="padding:0 4px">PDF 转 Word</span>',
       '<div class="fill"><div class="f-dim">正在开始…</div></div>',
-      envLine(st));
+      botBar(st, ''));
   }
 
   var done = t.state === 'done' || t.state === 'cancelled';
@@ -573,8 +597,15 @@ function mainRun(st) {
   // 也可能只花 1 秒。所以剩余时间加粗放顶上，阶段名降级到列表行里的小字。
   var top;
   if (!done) {
-    var eta = (t.remain === null || t.remain === undefined)
-      ? '正在估算…' : ('还要约 ' + F.sec(t.remain));
+    // 估不出来就说估不出来；估完了还没转完，认账 —— 总比让一个
+    // 「还要约 0 秒」挂在那儿不动强。
+    var eta;
+    // 估不出来也不能让屏幕静止 —— 已用时是永远在跳的那个数。
+    if (t.remain === null || t.remain === undefined) {
+      eta = '正在估算…（已用 ' + F.sec(t.elapsed) + '）';
+    }
+    else if (t.remain <= 0) eta = '你的 GPU 真垃圾';
+    else eta = '还要约 ' + F.sec(t.remain);
     top = '<span style="font-size:13px;font-weight:600;color:var(--theme);'
       + 'white-space:nowrap">' + esc(eta) + '</span>'
       + '<span class="grow" style="padding:0 4px">'
@@ -583,8 +614,15 @@ function mainRun(st) {
       + (t.total > 1 ? '<span class="f-dim" style="white-space:nowrap">第 '
           + (t.current + 1) + ' / ' + t.total + ' 份</span>' : '');
   } else {
+    // 比出厂估值快四成以上才夸。**全靠缓存的那种不算** ——
+    // 秒回是没跑 GPU，不是 GPU 快，夸错了对象。
+    var est = (t.pages || []).reduce(function (a, b) { return a + b; }, 0)
+      * (t.sec_per_page || 26);
+    var anyReal = res.some(function (r) { return !r.cached; });
+    var fast = anyReal && est > 0 && t.elapsed < est * 0.6;
     top = '<span style="font-size:13px;font-weight:600">'
-      + (t.state === 'cancelled' ? '已停止' : '转换完成') + '</span>'
+      + (t.state === 'cancelled' ? '已停止'
+         : (fast ? '你的 GPU 真牛逼' : '转换完成')) + '</span>'
       + '<span class="grow"></span>'
       + btn('newBatch', '再转一批', { cls: 'primary' });
   }
@@ -600,9 +638,15 @@ function mainRun(st) {
     var r = byPath[it.path];
 
     if (r && r.ok) {
-      return '<div class="it" title="' + esc(r.docx) + '">'
+      // 悬停能看到具体是第几个公式没转成 —— math_note 里写着，
+      // 以前那个字段没有任何地方读，等于白写。
+      return '<div class="it" title="' + esc(r.docx
+               + (r.math_note ? (chr10() + r.math_note) : '')) + '">'
         + dot('#15803d')
         + '<span class="grow ell">' + esc(F.base(r.docx)) + '</span>'
+        // 秒回的那几份得说清楚为什么 —— 不标的话用户会以为根本没转。
+        + (r.cached ? '<span class="rt f-dim" title="这份 PDF 和参数都没变，'
+            + '直接用了上次的识别结果，没有重跑 GPU">缓存</span>' : '')
         + (r.line ? '<span class="rt ell" style="max-width:150px">'
             + esc(r.line) + '</span>' : '')
         + btn('openFile', '打开', { cls: 'link', arg: r.docx })
@@ -613,8 +657,14 @@ function mainRun(st) {
       return '<div class="it" title="' + esc(r.error || '') + '">'
         + dot('#b91c1c')
         + '<span class="grow ell f-dim">' + esc(name) + '</span>'
-        + '<span class="rt f-bad ell" style="max-width:260px">失败：'
-        + esc(r.error || '') + '</span></div>';
+        + '<span class="rt f-bad ell" style="max-width:200px">失败：'
+        + esc(r.error || '') + '</span>'
+        // 次品也是四分钟换来的：正文、表格、图片都在，只是公式没转全。
+        // 名字里带着【公式未完全转换】，不会被当成正品。
+        + (r.degraded
+            ? btn('openFile', '打开次品', { cls: 'link', arg: r.degraded })
+              + btn('openPath', '文件夹', { cls: 'link', arg: r.degraded })
+            : '') + '</div>';
     }
     // 还没轮到 / 正在转。current 是已完成的份数，所以它就是当前这份的下标。
     var cur = !done && i === t.current;
@@ -655,18 +705,16 @@ function mainRun(st) {
     // 「停止只在当前这份转完之后生效」那句提示删了 —— 2026-09-02 起
     // 停止是当场生效的（extract._spawn 里有 watch 线程杀进程树）。
     // 留着一句过时的免责声明，比什么都不写更坏。
-    bot = '<span>已用 ' + F.sec(t.elapsed) + '</span>'
-      + '<span class="grow"></span>'
+    bot = botBar(st, '<span>已用 ' + F.sec(t.elapsed) + '</span>'
       + btn('toggleLog', st.showLog ? '返回列表' : '日志')
-      + btn('cancel', '停止');
+      + btn('cancel', '停止'), true);
   } else {
-    bot = envLine(st)
-      + '<span class="grow"></span>'
-      + '<span>' + (badN ? ('成功 ' + okN + ' 份 · <span class="f-bad">失败 '
+    bot = botBar(st,
+      '<span>' + (badN ? ('成功 ' + okN + ' 份 · <span class="f-bad">失败 '
           + badN + ' 份</span>') : ('全部完成 ' + okN + ' 份'))
       + ' · 用时 ' + F.sec(t.elapsed) + '</span>'
       // 转完了也留一个入口 —— 有失败的时候，日志正是最该看的东西
-      + btn('toggleLog', st.showLog ? '返回列表' : '日志');
+      + btn('toggleLog', st.showLog ? '返回列表' : '日志'), true);
   }
 
   // 🔴 日志覆盖主区，但顶部（剩余时间 + 总进度条）留着。
@@ -677,10 +725,23 @@ function mainRun(st) {
     var main = '<div class="fill" style="justify-content:flex-start;gap:6px">'
       + '<div class="log" id="dllog">'
       + (lg.length
-          ? lg.map(function (x) { return '<span class="l">' + esc(x) + '</span>'; }).join('')
+          ? lg.map(function (x) {
+              // 跑的那条命令用另一个颜色，跟输出分开 —— 跟下载面板一个待遇
+              return '<span class="' + (x.charAt(0) === '$' ? 'l cmd' : 'l')
+                + '">' + esc(x) + '</span>';
+            }).join('')
           : '<span class="l">（还没有输出。MinerU 刚起来时会安静一阵子，'
             + '模型加载要几十秒）</span>')
       + '</div>'
+      // 🔴 进度行**钉在日志下面单独一行**，原地刷新。
+      //    它不混进日志流：混进去的话往上翻会被一堆「识别中 98/247」
+      //    这种过期数字挡路；钉住则任何时候都在屏幕上，翻日志也翻不走。
+      //    这是「一直有数字在跳」最直接的那一个。
+      + (t.progress_line
+          ? '<div class="log" style="flex:none;min-height:0;overflow:hidden;'
+            + 'white-space:nowrap;text-overflow:ellipsis">'
+            + '<span class="l">' + esc(t.progress_line) + '</span></div>'
+          : '')
       + (t.log ? '<div class="f-dim mono ell" style="align-self:center;'
                  + 'max-width:92%;font-size:10px">完整日志：' + esc(t.log)
                  + '（含进度刷屏，这里只显示关键行）</div>' : '')
@@ -720,21 +781,19 @@ function pageModel(st) {
           ? '这是第一步，约 2.8 GB。装完接着下识别模型。'
           : '下载中断了也不要紧，重开软件会接着上次的位置继续。'),
       }),
-      dl.error
-        ? ('<span class="f-dim">上面是完整的输出，出错的原因通常在最后几行'
-           + '</span><span class="grow"></span>'
+      botBar(st, dl.error
+        ? ('<span class="f-dim">上面是完整的输出，出错的原因通常在最后几行</span>'
            + btn('startDownload', '再试一次', { cls: 'primary' })
            + btn('probeSources', '换个源'))
         : ('<span class="f-dim">'
-           + (isLib ? '第 1 步，共 2 步' : '第 2 步，共 2 步')
-           + '</span><span class="grow"></span>'
-           + btn('cancelDownload', '停止')));
+           + (isLib ? '第 1 步，共 2 步' : '第 2 步，共 2 步') + '</span>'
+           + btn('cancelDownload', '停止')), true));
   }
 
   if (st.srcLoading) {
     return shell(top,
       '<div class="fill"><div class="f-dim">正在测试各个下载源的速度…</div></div>',
-      '<span class="f-dim">同时连所有源实测 2-3 秒，比 ping 准</span>');
+      botBar(st, '<span class="f-dim">同时连所有源实测 2-3 秒，比 ping 准</span>'));
   }
 
   if (st.srcError) {
@@ -742,7 +801,7 @@ function pageModel(st) {
       '<div class="fill">'
       + '<div class="f-bad" style="max-width:440px">' + esc(st.srcError) + '</div>'
       + '<div>' + btn('probeSources', '重新测速') + '</div></div>',
-      '<span class="f-dim">测速失败</span>');
+      botBar(st, '<span class="f-dim">测速失败</span>'));
   }
 
   var items = st.sources || [];
@@ -750,7 +809,7 @@ function pageModel(st) {
     return shell(top,
       '<div class="fill"><div class="f-dim">还没测速。</div>'
       + '<div>' + btn('probeSources', '测速', { cls: 'primary' }) + '</div></div>',
-      '<span class="f-dim">先测速再选源</span>');
+      botBar(st, '<span class="f-dim">先测速再选源</span>'));
   }
 
   var anyOk = items.some(function (x) { return x.ok; });
@@ -774,11 +833,11 @@ function pageModel(st) {
       + esc(x.ok ? x.eta : '连不上') + '</span></div>';
   }).join('');
 
-  var bot = btn('startDownload', '开始下载', { cls: 'primary', off: !anyOk })
+  var bot = botBar(st,
+    btn('startDownload', '开始下载', { cls: 'primary', off: !anyOk })
     + btn('probeSources', '重新测速')
     + btn('pickLocal', '我已经有模型了')
-    + '<span class="grow"></span>'
-    + (anyOk ? '' : '<span class="f-bad">所有下载源都连不上，检查一下网络</span>');
+    + (anyOk ? '' : '<span class="f-bad">所有下载源都连不上，检查一下网络</span>'), true);
 
   return shell(top, head + rows, bot);
 }

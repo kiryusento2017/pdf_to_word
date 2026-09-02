@@ -15,7 +15,12 @@ r"""调 MinerU 把 PDF 提取成 Markdown + 图片。
 依据见 docs/DESIGN.md 第二节。
 """
 import codecs
+import hashlib
+import io
+import json
 import os
+import shutil
+import time
 
 import paths
 import re
@@ -112,6 +117,107 @@ def find_output(out_dir, stem):
         if any(f.endswith('.md') for f in os.listdir(d)):
             return d
     return None
+
+
+# ── 产物复用 ────────────────────────────────────────────────────────────
+#
+# 同一份 PDF 用同一组参数转第二次，没道理再等四分钟。产物按**指纹分桶**：
+#
+#     <out_dir>/<指纹16位>/<文件名>/hybrid_ocr/...
+#                        └─ .fingerprint.json
+#
+# 指纹 = sha256(PDF 内容) + 四个提取参数 + MinerU 版本。
+#
+# 🔴 **不能按文件名分桶**（这是改造前的做法）。两份不同内容的
+#    `讲义.pdf` 会落在同一个位置互相覆盖；你把 PDF 改了重新导出、名字没变，
+#    也会拿到旧产物 —— 而那种错最难查，因为界面上一切正常。
+#
+# 参数或 MinerU 版本变了 → 指纹不同 → 换个桶 → 自动重跑，
+# 不需要另写一套失效逻辑。
+FP_NAME = '.fingerprint.json'
+CACHE_DAYS = 10
+
+
+def mineru_version():
+    """MinerU 版本号。读元数据，**不 import mineru** —— import 要好几秒。
+
+    读不到就返回 'unknown'，照常参与指纹（小蔡 2026-09-02 定）。
+    代价是「既读不到版本、又升级了 MinerU」时旧缓存不会失效；
+    反过来（读不到就停用缓存）会让人每次白等四分钟还不知道为什么，
+    那更糟。真读不到时 run() 会往日志里记一句，留个线索。
+    """
+    try:
+        import importlib.metadata as md
+        return md.version('mineru')
+    except Exception:
+        return 'unknown'
+
+
+def fingerprint(pdf, backend=None, method=None, effort=None, lang=None):
+    """这份 PDF + 这组参数 + 这个 MinerU 版本的唯一标识（16 位十六进制）。
+
+    分块读文件，几十 MB 的 PDF 也只占 1 MB 内存、几十毫秒 ——
+    相对于四分钟的提取可以忽略。
+    """
+    h = hashlib.sha256()
+    with open(pdf, 'rb') as f:
+        while True:
+            blk = f.read(1024 * 1024)
+            if not blk:
+                break
+            h.update(blk)
+    tail = '|%s|%s|%s|%s|%s' % (backend or BACKEND, method or METHOD,
+                                effort or EFFORT, lang or LANG,
+                                mineru_version())
+    h.update(tail.encode('utf-8'))
+    return h.hexdigest()[:16]
+
+
+def _fp_write(bucket, fp, pdf, argv):
+    """把指纹和它的来龙去脉写进桶里。写不成不影响转换，只是下次不认这个桶。"""
+    try:
+        with io.open(os.path.join(bucket, FP_NAME), 'w', encoding='utf-8') as f:
+            json.dump({'fp': fp, 'pdf': os.path.basename(pdf),
+                       'mineru': mineru_version(),
+                       'argv': [str(x) for x in (argv or [])],
+                       'at': time.strftime('%Y-%m-%d %H:%M:%S')},
+                      f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _fp_matches(bucket, fp):
+    """桶里那份指纹对不对得上。读不到或对不上都算不命中。"""
+    try:
+        with io.open(os.path.join(bucket, FP_NAME), encoding='utf-8') as f:
+            return (json.load(f) or {}).get('fp') == fp
+    except Exception:
+        return False
+
+
+def purge_old(root, days=CACHE_DAYS):
+    """清掉超过 days 天没动过的桶。返回清掉几个。
+
+    只清 root 下的一级子目录 —— 那是软件自己的临时区，里面只该有桶。
+    清不掉（被占用之类）就跳过，绝不让清理失败挡住转换。
+    """
+    if not os.path.isdir(root):
+        return 0
+    cutoff = time.time() - days * 86400
+    n = 0
+    for name in os.listdir(root):
+        d = os.path.join(root, name)
+        if not os.path.isdir(d):
+            continue
+        try:
+            if os.path.getmtime(d) >= cutoff:
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            if not os.path.isdir(d):
+                n += 1
+        except OSError:
+            pass
+    return n
 
 
 def _split_lines(buf):
@@ -224,7 +330,8 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
     报告字段：ok / error / auto_dir / md / pages / tail
     """
     rep = {'ok': False, 'error': '', 'auto_dir': '', 'md': '',
-           'pages': 0, 'tail': '', 'stage': '', 'cancelled': False}
+           'pages': 0, 'tail': '', 'stage': '', 'cancelled': False,
+           'cached': False}
     mineru = mineru or paths.mineru_cmd()
     if isinstance(mineru, str):
         # 老写法：给的是一个可执行文件路径
@@ -237,6 +344,34 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
     if not os.path.isfile(pdf):
         rep['error'] = '找不到 PDF：%s' % pdf
         return rep
+    os.makedirs(out_dir, exist_ok=True)
+
+    # ── 缓存 ────────────────────────────────────────────────────────────
+    # 顺手清掉十天没碰过的桶。清理失败不影响转换（purge_old 自己吞掉）。
+    purge_old(out_dir)
+
+    stem = os.path.splitext(os.path.basename(pdf))[0]
+    fp = fingerprint(pdf, **kw)
+    if on_log and mineru_version() == 'unknown':
+        # 留个线索：这种情况下升级 MinerU 不会让旧缓存失效。
+        on_log('读不到 MinerU 版本号，缓存指纹用 unknown 代替')
+    bucket = os.path.join(out_dir, fp)
+
+    hit = find_output(bucket, stem) if _fp_matches(bucket, fp) else None
+    if hit:
+        mds = [f for f in os.listdir(hit) if f.endswith('.md')]
+        if mds:
+            # 直接用上次的产物。**不跑 MinerU，也就没有 GPU 开销**。
+            if on_log:
+                on_log('这份和参数都没变，直接用上次的识别结果（%s）' % fp)
+            rep['auto_dir'] = hit
+            rep['md'] = os.path.join(hit, mds[0])
+            rep['cached'] = True
+            rep['ok'] = True
+            return rep
+
+    # 没命中：产物落进这个桶，后面 build_argv / find_output 都跟着走。
+    out_dir = bucket
     os.makedirs(out_dir, exist_ok=True)
 
     lines = []
@@ -256,9 +391,18 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
             if on_progress:
                 on_progress(stage, cur, tot)
 
+    argv = build_argv(mineru, pdf, out_dir, **kw)
+    # 🔴 把命令原样摆出来，跟下载面板一个待遇。出问题时这一行往往
+    #    比任何解释都有用（参数漏了、路径不对，一眼就看见）。
+    if on_log:
+        on_log('$ ' + ' '.join(str(x) for x in argv))
+    # MinerU 起来到第一条 tqdm 之间有几十秒在加载模型，**一个字都不吐**。
+    # 不说一声的话界面上阶段名停在「准备」、进度条不动、日志区不加行 ——
+    # 三样死在一起，用户只能判断为卡死。
+    if on_progress:
+        on_progress('正在加载识别模型', 0, 0)
     try:
-        rc = _spawn(build_argv(mineru, pdf, out_dir, **kw), on_line, env=env,
-                    stop_flag=stop_flag)
+        rc = _spawn(argv, on_line, env=env, stop_flag=stop_flag)
     except Exception as e:
         rep['error'] = '起 mineru 失败：%s: %s' % (type(e).__name__, str(e)[:120])
         return rep
@@ -270,7 +414,6 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
         rep['cancelled'] = True
         return rep
 
-    stem = os.path.splitext(os.path.basename(pdf))[0]
     auto = find_output(out_dir, stem)
     rep['tail'] = chr(10).join(lines[-25:])
     if auto is None:
@@ -295,6 +438,8 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
         return rep
 
     mds = [f for f in os.listdir(auto) if f.endswith('.md')]
+    # 认领这个桶。写在最后 —— 中途失败的桶没有指纹文件，下次不会被当成缓存。
+    _fp_write(out_dir, fp, pdf, argv)
     rep['auto_dir'] = auto
     rep['md'] = os.path.join(auto, mds[0])
     rep['ok'] = True

@@ -83,8 +83,8 @@ class Test版本比较看方向(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _local(self, tag, published):
-        io.open(update.VERSION_FILE, 'w', encoding='utf-8').write(
-            json.dumps({'tag': tag, 'published_at': published}))
+        with io.open(update.VERSION_FILE, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'tag': tag, 'published_at': published}))
 
     def _remote(self, rel):
         update._api = lambda url: rel

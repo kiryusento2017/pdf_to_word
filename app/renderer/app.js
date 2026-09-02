@@ -129,16 +129,32 @@ function render() {
   var prev = el.querySelector ? el.querySelector('.main') : null;
   var top = prev ? prev.scrollTop : 0;
 
+  // 🔴 日志区**只在用户本来就贴着底部时**才跟着滚。
+  //    原来是无条件 scrollTop = scrollHeight，而转换和下载期间每秒重绘
+  //    一次 —— 用户想往上翻看历史，一秒之内就被拽回最底下，等于翻不动。
+  //    3px 的容差是为了吃掉亚像素和缩放带来的误差。
+  //    拿不到 scrollHeight/clientHeight（测试用的假 DOM）时按贴底处理，
+  //    保持改造前的行为。
+  var prevLog = el.querySelector ? el.querySelector('#dllog') : null;
+  var logStick = true, logTop = 0;
+  if (prevLog) {
+    logTop = prevLog.scrollTop || 0;
+    var sh = prevLog.scrollHeight, ch = prevLog.clientHeight;
+    logStick = !(typeof sh === 'number' && typeof ch === 'number')
+      || (sh - logTop - ch) <= 3;
+  }
+
   var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.main;
   el.innerHTML = page(state);
 
   // 下载日志要自动滚到底 —— 不滚的话新行出现在看不见的地方，
   // 用户盯着一屏不动的旧输出，跟没有日志一样。
+  // 但只在他没有主动翻上去的时候滚（见上面 logStick）。
   // （这跟下面保住 .main 滚动位置是两回事：那边是别把用户翻到的位置
   //   弄丢，这边是新内容必须自己露出来。）
   if (el.querySelector) {
     var lg = el.querySelector('#dllog');
-    if (lg) lg.scrollTop = lg.scrollHeight;
+    if (lg) lg.scrollTop = logStick ? lg.scrollHeight : logTop;
   }
 
   if (top && el.querySelector) {

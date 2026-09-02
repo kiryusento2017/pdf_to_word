@@ -35,11 +35,21 @@ function mkSandbox() {
   // 那个 bug 就出在这里，不模拟这一点就测不出来。
   const appEl = (function () {
     let mainEl = { scrollTop: 0 };
+    let logEl = null;
     return {
-      set innerHTML(v) { this._html = v; mainEl = { scrollTop: 0 }; },
+      set innerHTML(v) {
+        this._html = v;
+        mainEl = { scrollTop: 0 };
+        // 日志区跟 .main 一样，innerHTML 换掉之后是**新元素**。
+        // 给出 scrollHeight/clientHeight，粘底判据才算得出来。
+        logEl = v.indexOf('id="dllog"') >= 0
+          ? { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 } : null;
+      },
       get innerHTML() { return this._html || ''; },
-      querySelector: (s) => (s === '.main' ? mainEl : null),
+      querySelector: (s) => (s === '.main' ? mainEl
+                           : (s === '#dllog' ? logEl : null)),
       get _main() { return mainEl; },
+      get _log() { return logEl; },
     };
   }());
   const sb = {
@@ -1155,6 +1165,231 @@ console.log('\n\u4e0b\u8f7d\u6a21\u578b\uff08\u9996\u6b21\u4f7f\u7528\uff09\uff1
     const h = fn(st);
     if (!h.includes('getaddrinfo ENOTFOUND modelscope.cn')) throw new Error('没显示原因');
     if (!h.includes('data-act="probeSources"')) throw new Error('没给重试的路');
+  });
+}
+
+console.log('底部常驻：');
+{
+  const sb = mkSandbox();
+  const M = sb.window.P2W_PAGES.main;
+  const D = sb.window.P2W_PAGES.model;
+
+  // 卡在安装任何一步的人，唯一的自救手段就是更新到修好的版本。
+  // 按钮不在那一屏，人就只能重下安装包 —— v0.0.1 那次正是如此。
+  function runSt2() {
+    const st = ready(sb);
+    st.items = [{ path: 'C:/a/x.pdf', ok: true, pages: 10, scan_pages: [] }];
+    st.task = { state: 'running', total: 1, current: 0, current_name: 'x.pdf',
+                stage: '识别中', stage_cur: 4, stage_total: 10,
+                results: [], elapsed: 65, remain: 320 };
+    return st;
+  }
+  const screens = [
+    ['后台连不上', M, Object.assign(ready(sb), { envError: '炸了' })],
+    ['环境拦截·显卡不达标', M, Object.assign(ready(sb), {
+      env: Object.assign(goodEnv(), { gpu: { ok: false, why: '不达标' } }) })],
+    ['环境拦截·引擎缺失', M, Object.assign(ready(sb), {
+      env: Object.assign(goodEnv(), { mineru: { ok: false } }) })],
+    ['主屏·空态', M, ready(sb)],
+    ['主屏·读取中', M, Object.assign(ready(sb), { scanning: true })],
+    ['主屏·有文件', M, Object.assign(ready(sb), {
+      items: [{ path: 'C:/a/x.pdf', ok: true, pages: 10, scan_pages: [] }] })],
+    ['转换中', M, runSt2()],
+    ['转换完成', M, (function () {
+      const st = runSt2();
+      st.task = { state: 'done', total: 1, current: 1, elapsed: 240, remain: 0,
+                  results: [{ ok: true, pdf: 'C:/a/x.pdf', docx: 'C:/a/x.docx',
+                              line: '公式 213' }] };
+      return st;
+    }())],
+    ['测速中', D, Object.assign(ready(sb), { srcLoading: true })],
+    ['测速失败', D, Object.assign(ready(sb), { srcError: '全都连不上' })],
+    ['还没测速', D, Object.assign(ready(sb), { sources: [] })],
+    ['选源列表', D, Object.assign(ready(sb), {
+      sources: [{ id: 'ms', name: 'ModelScope', ok: true, eta: '约 6 分钟' }] })],
+    ['下载中', D, Object.assign(ready(sb), {
+      dl: { phase: 'models', got: 1e9, total: 4.6e9, cmd: 'mineru-models-download',
+            lines: ['开始下载'], log: 'D:/logs/model_download.log' } })],
+    ['下载失败', D, Object.assign(ready(sb), {
+      dl: { phase: 'gpulib', got: 0, total: 2.8e9, cmd: 'pip install torch',
+            lines: ['连不上'], error: '下载中断' } })],
+  ];
+  for (const [name, fn, st] of screens) {
+    ck('「' + name + '」屏底部有检查更新', () => {
+      const h = fn(st);
+      if (!h.includes('data-act="checkUpdate"')) throw new Error('没有检查更新按钮');
+      if (!segs(h)) throw new Error('三段结构不全');
+    });
+  }
+
+  ck('更新屏自己不放检查更新（那是死按钮）', () => {
+    const st = Object.assign(ready(sb), { upd: { has: false, local: 'v0.0.4' } });
+    const h = M(st);
+    if (!segs(h)) throw new Error('三段结构不全');
+  });
+
+  ck('底部挤的时候环境状态缩成圆点，不挤时显示全文', () => {
+    const tight = sb.window.P2W_PAGES.model(Object.assign(ready(sb), {
+      sources: [{ id: 'ms', name: 'ModelScope', ok: true, eta: '约 6 分钟' }] }));
+    // compact 把文字塞进 title，所以判据是「标签外有没有可见文字」，
+    // 不能只 includes('显卡 ✓') —— title 里也有。
+    if (tight.includes('>显卡 ✓')) throw new Error('挤的屏没缩成圆点');
+    if (!tight.includes('title="显卡 ✓')) throw new Error('缩了但没给悬停详情');
+    const roomy = M(ready(sb));
+    if (!roomy.includes('>显卡 ✓')) throw new Error('不挤的屏该显示全文');
+  });
+}
+
+console.log('日志粘底：');
+{
+  const sb = mkSandbox();
+  const st = sb.window.P2W_STATE;
+  Object.assign(st, ready(sb));
+  st.showLog = true;
+  st.items = [{ path: 'C:/a/x.pdf', ok: true, pages: 10, scan_pages: [] }];
+  st.task = { state: 'running', total: 1, current: 0, current_name: 'x.pdf',
+              stage: '识别中', stage_cur: 4, stage_total: 10, results: [],
+              elapsed: 65, remain: 320, lines: ['第一行', '第二行'] };
+  const el = sb.document.getElementById('app');
+
+  ck('新内容自己露出来（用户贴着底部时跟随）', () => {
+    sb.window.P2W_RENDER();
+    if (el._log.scrollTop !== el._log.scrollHeight) throw new Error('没滚到底');
+  });
+
+  ck('用户翻上去看历史，不许被拽回底部', () => {
+    sb.window.P2W_RENDER();
+    el._log.scrollTop = 200;          // 用户手动往上滚
+    sb.window.P2W_RENDER();           // 轮询又重绘了一次
+    if (el._log.scrollTop !== 200) {
+      throw new Error('被拽回去了，停在 ' + el._log.scrollTop);
+    }
+  });
+
+  ck('用户自己滚回底部后，恢复跟随', () => {
+    sb.window.P2W_RENDER();
+    el._log.scrollTop = 200;
+    sb.window.P2W_RENDER();
+    el._log.scrollTop = 900;          // 1000 - 100，正好贴底
+    sb.window.P2W_RENDER();
+    if (el._log.scrollTop !== 1000) throw new Error('没恢复跟随');
+  });
+}
+
+console.log('缓存与兜底：');
+{
+  const sb = mkSandbox();
+  const M = sb.window.P2W_PAGES.main;
+  function withTask(task) {
+    const st = ready(sb);
+    st.items = [{ path: 'C:/a/x.pdf', ok: true, pages: 23, scan_pages: [] }];
+    st.task = task;
+    return st;
+  }
+  const okRes = (cached) => [{ ok: true, pdf: 'C:/a/x.pdf', docx: 'C:/a/x.docx',
+                               line: '公式 613', cached: cached }];
+
+  ck('缓存命中的份要标出来', () => {
+    const h = M(withTask({ state: 'done', total: 1, current: 1, elapsed: 2,
+      remain: 0, pages: [23], sec_per_page: 26, results: okRes(true) }));
+    if (!h.includes('>缓存<')) throw new Error('没标出来，用户会以为根本没转');
+  });
+
+  ck('倒计时归零还没转完就认账', () => {
+    const h = M(withTask({ state: 'running', total: 1, current: 0,
+      current_name: 'x.pdf', stage: '识别中', stage_cur: 9, stage_total: 10,
+      results: [], elapsed: 900, remain: 0, pages: [23], sec_per_page: 26 }));
+    if (!h.includes('你的 GPU 真垃圾')) throw new Error('还挂着「还要约 0 秒」');
+  });
+
+  ck('比预估快得多就夸一句', () => {
+    // 出厂估 23 x 26 = 598 秒，实际 100 秒
+    const h = M(withTask({ state: 'done', total: 1, current: 1, elapsed: 100,
+      remain: 0, pages: [23], sec_per_page: 26, results: okRes(false) }));
+    if (!h.includes('你的 GPU 真牛逼')) throw new Error('该夸没夸');
+  });
+
+  ck('哪几个公式没转成，悬停要看得到', () => {
+    // math_note 以前没有任何地方读 —— 点名了也到不了用户眼前。
+    const h = M(withTask({ state: 'done', total: 1, current: 1, elapsed: 240,
+      remain: 0, pages: [23], sec_per_page: 26,
+      results: [{ ok: true, pdf: 'C:/a/x.pdf', docx: 'C:/a/x.docx',
+                  line: '公式 613 ｜ 1 个公式没转成',
+                  math_note: '第 543 个（a=gtan alpha）没转成' }] }));
+    if (!h.includes('第 543 个')) throw new Error('点名的信息没到用户眼前');
+  });
+
+  ck('失败的那份也要给出次品的入口', () => {
+    // 转一份四分钟。因为一个公式没转成就让人两手空空，代价太大 ——
+    // 正文、表格、图片都在，名字里带着【公式未完全转换】不会被认错。
+    const h = M(withTask({ state: 'done', total: 1, current: 1, elapsed: 240,
+      remain: 0, pages: [23], sec_per_page: 26,
+      results: [{ ok: false, pdf: 'C:/a/x.pdf', error: '公式没转成',
+                  degraded: 'C:/a/x【公式未完全转换】.docx' }] }));
+    if (!h.includes('打开次品')) throw new Error('四分钟换来的东西没给用户');
+    if (!h.includes('公式未完全转换')) throw new Error('没带上次品路径');
+  });
+
+  ck('没有次品时不显示那个入口（避免死按钮）', () => {
+    const h = M(withTask({ state: 'done', total: 1, current: 1, elapsed: 240,
+      remain: 0, pages: [23], sec_per_page: 26,
+      results: [{ ok: false, pdf: 'C:/a/x.pdf', error: '连 PDF 都打不开',
+                  degraded: '' }] }));
+    if (h.includes('打开次品')) throw new Error('没有次品却给了入口');
+  });
+
+  ck('全靠缓存的秒回不算 GPU 快', () => {
+    const h = M(withTask({ state: 'done', total: 1, current: 1, elapsed: 2,
+      remain: 0, pages: [23], sec_per_page: 26, results: okRes(true) }));
+    if (h.includes('真牛逼')) throw new Error('夸错了对象 —— 秒回是没跑 GPU');
+    if (!h.includes('转换完成')) throw new Error('该显示转换完成');
+  });
+}
+
+
+console.log('转换时永远有数字在跳：');
+{
+  const sb = mkSandbox();
+  const M = sb.window.P2W_PAGES.main;
+  function running(extra) {
+    const st = ready(sb);
+    st.items = [{ path: 'C:/a/x.pdf', ok: true, pages: 23, scan_pages: [] }];
+    st.task = Object.assign({
+      state: 'running', total: 1, current: 0, current_name: 'x.pdf',
+      stage: '识别中', stage_cur: 4, stage_total: 10, results: [],
+      elapsed: 132, remain: 320, pages: [23], sec_per_page: 26, lines: [],
+    }, extra || {});
+    return st;
+  }
+
+  ck('进度行钉在日志区，往上翻也翻不走', () => {
+    const st = running({ progress_line: '识别中: 57%|#####| 142/247' });
+    st.showLog = true;
+    const h = M(st);
+    if (!h.includes('142/247')) throw new Error('进度行没显示，屏幕上没有动的东西');
+  });
+
+  ck('跑的那条命令要摆出来', () => {
+    const st = running({ lines: ['$ python -m mineru.cli.client -p x.pdf',
+                                 'MFR model loaded'] });
+    st.showLog = true;
+    const h = M(st);
+    if (!h.includes('mineru.cli.client')) throw new Error('命令没显示');
+    if (!h.includes('class="l cmd"')) throw new Error('命令没跟输出区分开');
+  });
+
+  ck('估不出剩余时间也要有数字在跳', () => {
+    // remain=null 是 MinerU 还没吐第一条进度的那几十秒。
+    // 以前这里只有「正在估算…」五个字，一动不动，看着像卡死。
+    const h = M(running({ remain: null, elapsed: 47 }));
+    if (!h.includes('正在估算')) throw new Error('该说估不出来');
+    if (!h.includes('已用')) throw new Error('屏幕上一个动的数字都没有');
+  });
+
+  ck('加载模型那几十秒也有阶段名', () => {
+    const h = M(running({ stage: '正在加载识别模型', stage_cur: 0,
+                          stage_total: 0, remain: null }));
+    if (!h.includes('正在加载识别模型')) throw new Error('阶段名没显示');
   });
 }
 

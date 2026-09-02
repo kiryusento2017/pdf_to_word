@@ -220,7 +220,8 @@ class Test转换任务(unittest.TestCase):
         速率取自 done_elapsed（上一份转完那一刻），不是当前的 elapsed。
         """
         t = {'pages': [10, 10], 'results': [{'ok': True}],
-             'sec_per_page': 26.0, 'done_elapsed': 500.0}
+             'sec_per_page': 26.0, 'done_elapsed': 500.0,
+             'real_elapsed': 500.0, 'real_pages': 10}
         # 第一份 10 页真实花了 500 秒（这台机器慢），剩下 10 页照 50 秒/页估
         self.assertEqual(srv._remain(t, elapsed=500), 500)
 
@@ -238,7 +239,8 @@ class Test转换任务(unittest.TestCase):
         只有连起来看才知道荒谬。所以必须测序列，不能测单点。
         """
         t = {'pages': [10, 10, 10], 'results': [{'ok': True}],
-             'sec_per_page': 26.0, 'done_elapsed': 260.0}
+             'sec_per_page': 26.0, 'done_elapsed': 260.0,
+             'real_elapsed': 260.0, 'real_pages': 10}
         seq = [srv._remain(t, elapsed=e) for e in (260, 320, 380, 500, 700)]
         for a, b in zip(seq, seq[1:]):
             self.assertGreaterEqual(a, b,
@@ -260,11 +262,31 @@ class Test转换任务(unittest.TestCase):
         before = srv._remain({'pages': pages, 'results': [],
                               'sec_per_page': 26.0}, elapsed=259)
         after = srv._remain({'pages': pages, 'results': [{'ok': True}],
-                             'sec_per_page': 26.0, 'done_elapsed': 260.0},
+                             'sec_per_page': 26.0, 'done_elapsed': 260.0,
+                             'real_elapsed': 260.0, 'real_pages': 10},
                             elapsed=261)
         # 第一份正好按预期速度跑完，切换前后应当基本连续
         self.assertLess(abs(after - before), 60,
                         '切换瞬间跳了 %d 秒（%d → %d）' % (abs(after - before), before, after))
+
+    def test_缓存命中的份不进速率(self):
+        r"""缓存两秒转完一整本，混进速率会把「还要多久」拉到荒谬的低。
+
+        第一份 23 页走缓存（2 秒），第二份 10 页真跑（240 秒）。
+        速率必须按 240/10 算，而不是 242/33。
+        """
+        t = {'pages': [23, 10, 10], 'results': [{'ok': True}, {'ok': True}],
+             'sec_per_page': 26.0, 'done_elapsed': 242.0,
+             'real_elapsed': 240.0, 'real_pages': 10}
+        self.assertEqual(srv._remain(t, elapsed=242), int(10 * 24.0))
+
+    def test_全部命中缓存时退回出厂估值(self):
+        r"""一份真跑的都没有，就没有可信的实测速率 ——
+        宁可用粗的出厂估值，也不能拿缓存那两秒推出每页 0.2 秒。"""
+        t = {'pages': [10, 10], 'results': [{'ok': True}],
+             'sec_per_page': 26.0, 'done_elapsed': 2.0,
+             'real_elapsed': 0.0, 'real_pages': 0}
+        self.assertEqual(srv._remain(t, elapsed=2), int(10 * 26.0))
 
     def test_全跑完剩余是0(self):
         t = {'pages': [10], 'results': [{'ok': True}], 'sec_per_page': 26.0}

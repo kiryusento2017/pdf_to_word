@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -170,7 +171,10 @@ class Test跑一次(unittest.TestCase):
             for ln in lines:
                 on_line(ln)
             if make_output:
-                d = os.path.join(self.out, '某讲义', 'hybrid_ocr')
+                # 真 MinerU 按 argv 里的 -o 写产物，fake 也得这样。
+                # 写死 self.out 的话，产物按指纹分桶之后就对不上了。
+                o = argv[argv.index('-o') + 1]
+                d = os.path.join(o, '某讲义', 'hybrid_ocr')
                 os.makedirs(d, exist_ok=True)
                 io.open(os.path.join(d, '某讲义.md'), 'w',
                         encoding='utf-8').write('# x')
@@ -187,8 +191,11 @@ class Test跑一次(unittest.TestCase):
         r = extract.run(self.pdf, self.out, mineru='mineru.exe',
                         on_progress=lambda s, c, t: seen.append((s, c, t)))
         self.assertTrue(r['ok'], r.get('error'))
-        self.assertEqual(seen, [('处理页面', 0, 3), ('处理页面', 1, 3),
-                                ('处理页面', 3, 3)])
+        # 第一条是「加载模型」—— MinerU 起来到第一条 tqdm 之间有几十秒
+        # 一个字都不吐，不说一声的话界面三样（阶段名/进度条/日志）一起死。
+        self.assertEqual(seen[0], ('正在加载识别模型', 0, 0))
+        self.assertEqual(seen[1:], [('处理页面', 0, 3), ('处理页面', 1, 3),
+                                    ('处理页面', 3, 3)])
 
     def test_成功时给出产物目录(self):
         self._fake(['Processing pages: 100%|██| 1/1 [00:01<00:00,  1.0s/it]'])
@@ -249,8 +256,11 @@ class Test退出码不能不看(unittest.TestCase):
         with io.open(self.pdf, 'wb') as f:
             f.write(b'%PDF-1.4 fake')
         self.out = os.path.join(self.work, 'out')
-        # 造一份「产物在，但进程是崩掉的」的现场
-        auto = os.path.join(self.out, 'x', 'hybrid_ocr')
+        # 造一份「产物在，但进程是崩掉的」的现场。
+        # 要造进指纹桶里 —— run() 现在按桶找产物。桶里故意不写
+        # .fingerprint.json，所以不会被当成缓存命中，正是这组要测的场景。
+        auto = os.path.join(self.out, extract.fingerprint(self.pdf),
+                            'x', 'hybrid_ocr')
         os.makedirs(auto)
         with io.open(os.path.join(auto, 'x.md'), 'w', encoding='utf-8') as f:
             f.write('# 只转了前 6 页就崩了\n')
@@ -380,7 +390,8 @@ class Test停止要当场生效(unittest.TestCase):
         subprocess.Popen = lambda *a, **k: _Quick()
         self.addCleanup(lambda: setattr(subprocess, 'Popen', orig))
 
-        d = os.path.join(self.out, 'x', 'hybrid_ocr')
+        d = os.path.join(self.out, extract.fingerprint(self.pdf),
+                         'x', 'hybrid_ocr')
         os.makedirs(d)
         with io.open(os.path.join(d, 'x.md'), 'w', encoding='utf-8') as f:
             f.write('# x')
@@ -388,6 +399,116 @@ class Test停止要当场生效(unittest.TestCase):
                           stop_flag=lambda: False)
         self.assertFalse(rep.get('cancelled'))
         self.assertTrue(rep['ok'], rep.get('error'))
+
+
+class Test缓存复用(unittest.TestCase):
+    r"""同一份 PDF 同一组参数转第二次，不该再等四分钟。
+
+    判据是**指纹**（PDF 内容 + 四个参数 + MinerU 版本），不是文件名 ——
+    按文件名会让两份不同内容的「讲义.pdf」互相覆盖，那种错最难查。
+    """
+
+    def setUp(self):
+        self.work = tempfile.mkdtemp(prefix='p2w_cache_')
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.pdf = os.path.join(self.work, '某讲义.pdf')
+        with io.open(self.pdf, 'wb') as f:
+            f.write(b'%PDF-1.4 content-A')
+        self.out = os.path.join(self.work, 'out')
+        self.calls = []
+        orig = extract._spawn
+        self.addCleanup(lambda: setattr(extract, '_spawn', orig))
+
+        def fake(argv, on_line, env=None, stop_flag=None):
+            self.calls.append(argv)
+            o = argv[argv.index('-o') + 1]
+            d = os.path.join(o, '某讲义', 'hybrid_ocr')
+            os.makedirs(d, exist_ok=True)
+            with io.open(os.path.join(d, '某讲义.md'), 'w',
+                         encoding='utf-8') as f:
+                f.write('# x')
+            return 0
+        extract._spawn = fake
+
+    def test_第二次直接用缓存不再跑mineru(self):
+        r1 = extract.run(self.pdf, self.out, mineru='m.exe')
+        self.assertTrue(r1['ok'], r1.get('error'))
+        self.assertFalse(r1['cached'])
+        r2 = extract.run(self.pdf, self.out, mineru='m.exe')
+        self.assertTrue(r2['ok'], r2.get('error'))
+        self.assertTrue(r2['cached'])
+        self.assertEqual(len(self.calls), 1, '第二次不该再跑 MinerU')
+        self.assertEqual(r1['md'], r2['md'])
+
+    def test_PDF内容变了就不算同一份(self):
+        extract.run(self.pdf, self.out, mineru='m.exe')
+        with io.open(self.pdf, 'wb') as f:
+            f.write(b'%PDF-1.4 content-B')      # 名字没变，内容变了
+        r = extract.run(self.pdf, self.out, mineru='m.exe')
+        self.assertFalse(r['cached'], '改了内容还敢用旧产物')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_提取参数变了就不算同一份(self):
+        extract.run(self.pdf, self.out, mineru='m.exe')
+        r = extract.run(self.pdf, self.out, mineru='m.exe', effort='medium')
+        self.assertFalse(r['cached'], 'effort 变了还用旧产物')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_mineru升级了就不算同一份(self):
+        extract.run(self.pdf, self.out, mineru='m.exe')
+        orig = extract.mineru_version
+        extract.mineru_version = lambda: '9.9.9'
+        self.addCleanup(lambda: setattr(extract, 'mineru_version', orig))
+        r = extract.run(self.pdf, self.out, mineru='m.exe')
+        self.assertFalse(r['cached'], '换了模型版本还用旧识别结果')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_没有指纹文件的桶不算缓存(self):
+        r1 = extract.run(self.pdf, self.out, mineru='m.exe')
+        fp = extract.fingerprint(self.pdf)
+        os.remove(os.path.join(self.out, fp, extract.FP_NAME))
+        r2 = extract.run(self.pdf, self.out, mineru='m.exe')
+        self.assertFalse(r2['cached'], '没认领过的桶不能当缓存')
+        self.assertEqual(len(self.calls), 2)
+        self.assertTrue(r2['ok'], r2.get('error'))
+        self.assertEqual(r1['md'], r2['md'])
+
+    def test_中途失败的桶不会被当成缓存(self):
+        # 跑一半崩了：产物在，但没写指纹（_fp_write 在最后一步）
+        fp = extract.fingerprint(self.pdf)
+        d = os.path.join(self.out, fp, '某讲义', 'hybrid_ocr')
+        os.makedirs(d)
+        with io.open(os.path.join(d, '某讲义.md'), 'w', encoding='utf-8') as f:
+            f.write('# 只转了一半')
+        r = extract.run(self.pdf, self.out, mineru='m.exe')
+        self.assertFalse(r['cached'])
+        self.assertEqual(len(self.calls), 1, '该重跑')
+
+
+class Test清理过期缓存(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='p2w_purge_')
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def _bucket(self, name, days_ago):
+        d = os.path.join(self.root, name)
+        os.makedirs(d)
+        t = time.time() - days_ago * 86400
+        os.utime(d, (t, t))
+        return d
+
+    def test_超过十天的清掉(self):
+        old = self._bucket('old', 11)
+        self.assertEqual(extract.purge_old(self.root), 1)
+        self.assertFalse(os.path.isdir(old))
+
+    def test_没超期的留着(self):
+        new = self._bucket('new', 3)
+        self.assertEqual(extract.purge_old(self.root), 0)
+        self.assertTrue(os.path.isdir(new))
+
+    def test_目录不存在也不报错(self):
+        self.assertEqual(extract.purge_old(os.path.join(self.root, '没有')), 0)
 
 
 if __name__ == '__main__':

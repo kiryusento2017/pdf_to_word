@@ -8,3 +8,5 @@ appdata/
 models/
 mineru.json
 dist/
+logs/
+vc_done.json
