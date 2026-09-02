@@ -248,16 +248,12 @@ def _spawn(argv, on_line, env=None, stop_flag=None):
     """
     # env 用来指定模型下载源（MINERU_MODEL_SOURCE / HF_ENDPOINT）。
     # **合并进现有环境而不是替换** —— 替换会丢掉 PATH，子进程直接起不来。
-    real_env = dict(os.environ)
+    # 🔴 强制子进程用 UTF-8 输出（paths.utf8_env 里写了为什么）。
+    #    先铺 UTF-8 再合并调用方的 env —— 调用方给的是 child_env()，
+    #    它本身也是从 utf8_env 起头的，值一样，谁先谁后都不影响。
+    real_env = paths.utf8_env()
     if env:
         real_env.update(env)
-    # 🔴 强制子进程用 UTF-8 输出。
-    #    不设的话，Python 的 stdout 编码跟随系统 codepage —— 中文 Windows
-    #    上是 cp936(GBK)，而我们按 UTF-8 解，整段中文全是乱码。
-    #    2026-09-02 真机报「失败信息后面画一行乱码」就有这一半原因，
-    #    而错误信息看不懂 = 没有诊断信息。
-    real_env['PYTHONIOENCODING'] = 'utf-8'
-    real_env['PYTHONUTF8'] = '1'
 
     p = subprocess.Popen(argv, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, env=real_env)

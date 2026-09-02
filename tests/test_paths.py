@@ -70,6 +70,25 @@ class Test给子进程的环境变量(unittest.TestCase):
         env = paths.child_env()
         self.assertIn('PATH', {k.upper(): v for k, v in env.items()})
 
+    def test_强制子进程用UTF8输出(self):
+        r"""中文 Windows 的默认代码页是 cp936，而所有读子进程输出的地方
+        都按 UTF-8 解 —— 不设这两个变量，中文全变成一片问号。
+
+        最要命的是它专挑最需要看清楚的时候坏事：torch 加载不了时抛的
+        WinError 1114 在中文系统上本身就是中文的，而 explain_load_error()
+        要靠解析它把错误翻译成人话。
+        """
+        env = paths.utf8_env()
+        self.assertEqual(env['PYTHONIOENCODING'], 'utf-8')
+        self.assertEqual(env['PYTHONUTF8'], '1')
+
+    def test_child_env也带着UTF8(self):
+        """模型下载和装 GPU 运行库两条日志链都走 child_env。"""
+        env = paths.child_env()
+        self.assertEqual(env['PYTHONIOENCODING'], 'utf-8')
+        self.assertEqual(env['PYTHONUTF8'], '1')
+        self.assertEqual(env['MINERU_DEVICE_MODE'], 'cuda')   # 别顾此失彼
+
 
 class Test找可执行文件(unittest.TestCase):
     r"""发行版和开发环境用同一套查找顺序。

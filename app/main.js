@@ -49,7 +49,14 @@ let apiPort = 0;
 
 function startServer() {
   return new Promise((resolve, reject) => {
-    py = spawn(PYTHON, [SERVER], { cwd: ROOT });
+    // 强制 server 用 UTF-8 输出。中文 Windows 的默认代码页是 cp936，
+    // 而下面 d.toString() 按 UTF-8 解 —— 不设的话 server 打出来的中文
+    // （报错、路径）在这一侧全是乱码。
+    py = spawn(PYTHON, [SERVER], {
+      cwd: ROOT,
+      env: Object.assign({}, process.env,
+                         { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }),
+    });
     let buf = '';
     // 超时给到两分钟：首次启动要 import torch / mineru，机械盘或者
     // 网吧那种机器上二十秒根本不够 —— 超时了软件就直接打不开，

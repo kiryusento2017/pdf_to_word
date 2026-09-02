@@ -480,7 +480,9 @@ def can_load():
         p = subprocess.run(
             [paths.python_exe(), '-c', 'import torch; print(torch.__version__)'],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            cwd=paths.ROOT, timeout=180)
+            # 加载失败时抛的是中文异常（WinError 1114），不设 UTF-8
+            # 就是一片乱码 —— 而下面 explain_load_error 要靠它翻译。
+            cwd=paths.ROOT, timeout=180, env=paths.utf8_env())
     except Exception as e:
         return False, '%s: %s' % (type(e).__name__, str(e)[:200])
     out = (p.stdout or b'').decode('utf-8', 'replace').strip()
@@ -503,7 +505,7 @@ def uninstall():
             [paths.python_exe(), '-m', 'pip', 'uninstall', '-y', '-q']
             + PACKAGES,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            cwd=paths.ROOT, timeout=300)
+            cwd=paths.ROOT, timeout=300, env=paths.utf8_env())
     except Exception as e:
         return False, '%s: %s' % (type(e).__name__, str(e)[:200])
     return (p.returncode == 0), (p.stdout or b'').decode('utf-8', 'replace')

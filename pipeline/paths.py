@@ -236,6 +236,26 @@ def models_size():
     return total
 
 
+def utf8_env(base=None):
+    r"""强制子进程用 UTF-8 输出。**每个会读子进程输出的地方都要用它。**
+
+    中文 Windows 的 ANSI 代码页是 cp936(GBK)，Python 子进程的 stdout
+    默认跟随它 —— 而我们的代码一律按 UTF-8 解，于是整段中文变成一片 �。
+
+    最要命的是它专挑最需要看清楚的时候坏事：torch 加载不了时抛的
+    `[WinError 1114] 动态链接库(DLL)初始化例程失败` 在中文系统上本身
+    就是中文的，而 torchdep.explain_load_error() 正是靠解析这段把错误
+    翻译成人话。信息乱了，诊断就断了。
+
+    （2026-09-02 真机上「失败信息后面画一行乱码」就是这么来的。
+      当时只在 extract._spawn 里补了这两行，其余五处漏了。）
+    """
+    env = dict(base if base is not None else os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUTF8'] = '1'
+    return env
+
+
 def child_env(source_env=None):
     r"""给 MinerU 子进程用的环境变量。
 
@@ -260,7 +280,7 @@ def child_env(source_env=None):
     source_env 是选源屏选中的那个源带的变量（MINERU_MODEL_SOURCE 等），
     合并进来。
     """
-    env = dict(os.environ)
+    env = utf8_env()
     ensure(MODELS)
     env['MODELSCOPE_CACHE'] = MODELS
     env['HF_HOME'] = MODELS

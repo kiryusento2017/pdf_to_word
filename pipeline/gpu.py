@@ -15,6 +15,8 @@ r"""GPU 检测：这台机器跑不跑得动 MinerU。
 import re
 import subprocess
 
+import paths
+
 # MinerU 的硬件门槛
 MIN_COMPUTE_CAP = 7.5          # Turing。1080Ti 是 6.1，不够
 MIN_VRAM_MB = 6 * 1024         # pipeline 后端 6G；VLM 后端要 8G
@@ -30,7 +32,8 @@ _FAKE_GPU = ('virtual', 'idd', 'oray', 'todesk', 'gameviewer',
 def _run(argv, timeout=30):
     try:
         p = subprocess.run(argv, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, timeout=timeout)
+                           stderr=subprocess.STDOUT, timeout=timeout,
+                           env=paths.utf8_env())
         return p.returncode, p.stdout.decode('utf-8', 'replace')
     except Exception:
         return -1, ''
