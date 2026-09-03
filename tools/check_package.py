@@ -89,6 +89,8 @@ REQUIRED = [
     r'resources\app\renderer\index.html',
     r'runtime\python\python.exe',
     r'pipeline\paths.py',
+    # 漏了它，装在中文目录里的用户一份都转不了，而包本身看着完全正常。
+    r'pipeline\sitepatch\sitecustomize.py',
     r'server\main.py',
     'version.json',
     '使用说明.txt',

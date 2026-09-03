@@ -41,6 +41,11 @@ LOGS = os.path.join(ROOT, 'logs')
 RUNTIME = os.path.join(ROOT, 'runtime')
 PANDOC = os.path.join(RUNTIME, 'pandoc', 'pandoc.exe')
 
+# 给子进程用的 sitecustomize 放这儿。**只放那一个文件**，理由见
+# sitepatch/sitecustomize.py 顶部（整个 pipeline/ 塞进子进程的 sys.path
+# 会盖掉同名模块）。
+SITEPATCH = os.path.join(ROOT, 'pipeline', 'sitepatch')
+
 
 def find_exe(name, subdirs=()):
     r"""找一个可执行文件。**发行版和开发环境用同一套查找顺序**。
@@ -277,6 +282,19 @@ def child_env(source_env=None):
     （变量名是从 mineru/utils/config_reader.py:106 读出来的，
       它的优先级最高：设了就直接返回，根本不走自动探测。）
 
+    还有第五个，管的是**中文安装路径**：
+
+      PYTHONPATH                把 sitepatch/ 挂进子进程，让 Python 启动时
+                                自动 import 那份 sitecustomize
+
+    2026-09-03 真机上，装在「新建文件夹 (2)」里的软件转换必失败 ——
+    fasttext 的 C++ 层按 GBK 解 UTF-8 路径，模型文件在它眼里根本不存在。
+    补丁做了什么、为什么只能这么做，见 sitepatch/sitecustomize.py。
+
+    🔴 **追加，不覆盖。** 用户自己可能设了 PYTHONPATH（跑别的 Python
+    项目留下的），直接赋值会把它顶掉；而我们的目录排在最前，保证
+    site 找到的是我们这份 sitecustomize。
+
     source_env 是选源屏选中的那个源带的变量（MINERU_MODEL_SOURCE 等），
     合并进来。
     """
@@ -286,6 +304,10 @@ def child_env(source_env=None):
     env['HF_HOME'] = MODELS
     env['MINERU_TOOLS_CONFIG_JSON'] = CONFIG
     env['MINERU_DEVICE_MODE'] = 'cuda'
+    if env.get('PYTHONPATH'):
+        env['PYTHONPATH'] = SITEPATCH + os.pathsep + env['PYTHONPATH']
+    else:
+        env['PYTHONPATH'] = SITEPATCH
     if source_env:
         env.update(source_env)
     return env

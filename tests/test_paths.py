@@ -9,6 +9,7 @@ import io
 import os
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -88,6 +89,32 @@ class Test给子进程的环境变量(unittest.TestCase):
         self.assertEqual(env['PYTHONIOENCODING'], 'utf-8')
         self.assertEqual(env['PYTHONUTF8'], '1')
         self.assertEqual(env['MINERU_DEVICE_MODE'], 'cuda')   # 别顾此失彼
+
+    def test_把补丁目录挂进子进程(self):
+        r"""中文安装路径全靠它 —— 挂不上，装在中文目录里的用户一份都转不了。
+        细节见 pipeline/sitepatch/sitecustomize.py。"""
+        env = paths.child_env()
+        first = env['PYTHONPATH'].split(os.pathsep)[0]
+        self.assertEqual(os.path.abspath(first),
+                         os.path.abspath(paths.SITEPATCH))
+
+    def test_不顶掉用户自己的PYTHONPATH(self):
+        r"""用户机器上可能因为别的 Python 项目已经设了 PYTHONPATH。
+        直接赋值会把它抹掉，那是动了跟我们无关的东西。"""
+        with mock.patch.dict(os.environ, {'PYTHONPATH': r'C:\his\own\libs'}):
+            env = paths.child_env()
+        parts = env['PYTHONPATH'].split(os.pathsep)
+        self.assertEqual(os.path.abspath(parts[0]),
+                         os.path.abspath(paths.SITEPATCH), '我们的没排在最前')
+        self.assertIn(r'C:\his\own\libs', parts, '把用户自己的顶掉了')
+
+    def test_原本没有PYTHONPATH时不留空段(self):
+        r"""多一个分隔符，子进程的 sys.path 里就会多一个空字符串 ——
+        那等于把**当前工作目录**塞进搜索路径，是能引出诡异 import 的。"""
+        env_no_pp = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+        with mock.patch.dict(os.environ, env_no_pp, clear=True):
+            env = paths.child_env()
+        self.assertEqual(env['PYTHONPATH'], paths.SITEPATCH)
 
 
 class Test找可执行文件(unittest.TestCase):
