@@ -45,8 +45,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DIST = os.path.join(ROOT, 'dist')
 # 产物目录用英文。中文路径要经过 Electron → Python 子进程 → MinerU →
-# pandoc 好几手，而我们全程在英文路径下开发测试，没验过中文路径。
-# 默认给中文路径等于让老师去踩一条没人走过的路。
+# pandoc 好几手。2026-09-03 之前这里写着「没验过中文路径」，
+# 那条已经不成立了：v0.1.1 修掉了 fasttext 按 GBK 解 UTF-8 路径的
+# 毛病，并把整个 1.24 GB 发行版复制到中文目录实跑验证过。
 OUT = os.path.join(DIST, 'PDF2Word')
 
 PY_VER = '3.12.10'          # 跟开发环境一致
@@ -298,7 +299,7 @@ def put_readme(out, version):
         '整个文件夹就行，转好的 Word 不受影响。\r\n'
         '\r\n'
         '⚠ 不要放在 C:\\Program Files 里 —— 那个位置写不了文件。\r\n'
-        '   放 D 盘之类的地方最好，路径里别带中文和空格。\r\n'
+        '   放 D 盘之类的地方最好。路径里可以有中文、空格和括号。\r\n'
         '\r\n'
         '以后要更新：软件里点「检查更新」，会自动下载安装。\r\n'
     ).replace('__VER__', version)
@@ -528,7 +529,7 @@ def make_sfx(version):
         'Title="PDF 转 Word __VER__"\n'
         'BeginPrompt="要把「PDF 转 Word」安装到哪里？\\n\\n'
         '请不要选 C:\\\\Program Files —— 那个位置写不了文件。\\n'
-        '路径里最好不要有中文和空格。\\n\\n'
+        '路径里可以有中文、空格和括号。\\n\\n'
         '所有文件都会留在这个文件夹里，不想用了直接删掉即可。"\n'
         'ExtractDialogText="正在解压，大约 1-3 分钟…"\n'
         'ExtractTitle="正在安装 PDF 转 Word"\n'
