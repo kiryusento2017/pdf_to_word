@@ -238,6 +238,32 @@ class Test端到端子进程(unittest.TestCase):
                       r.stderr.decode('utf-8', 'replace'),
                       '失败了，但不是我们要修的那个原因')
 
+    def test_引导脚本必须原样传出退出码(self):
+        r"""🔴 **这条比看上去要紧得多。**
+
+        `extract.py` 的判据是「有产物不等于成功，rc != 0 一律判失败」——
+        因为 MinerU 是边处理边写的，十页崩在第七页也会留下前六页的 .md。
+        引导脚本如果把非零退出码吃掉（比如 runpy 抛的 SystemExit 被
+        try/except 拦下），**残缺的 Word 会被当成品交给老师**，
+        而界面显示「转好了」。
+
+        这是加了这一层之后新出现的风险，原来 `-m` 直连没有中间人。
+        """
+        cases = [('import sys; sys.exit(3)', 3),
+                 ('raise SystemExit(7)', 7),
+                 ("raise RuntimeError('boom')", 1),
+                 ("print('fine')", 0)]
+        probe = os.path.join(ROOT, 'pipeline', 'sitepatch', '_rc_probe.py')
+        self.addCleanup(lambda: os.path.exists(probe) and os.remove(probe))
+        for code, want in cases:
+            with open(probe, 'w', encoding='utf-8') as f:
+                f.write(code + '\n')
+            r = subprocess.run([sys.executable, paths.BOOT, '_rc_probe'],
+                               capture_output=True, env=paths.child_env())
+            self.assertEqual(r.returncode, want,
+                             '%r 应当退出 %d，实际 %d —— 退出码被吃掉了，'
+                             '转换失败会被当成功' % (code, want, r.returncode))
+
     def test_引导脚本会把模块名之后的参数原样转交(self):
         r"""转交错了的话，MinerU 会拿不到 -p / -o，报的却是它自己的
         用法错误 —— 跟中文路径毫无关系，极难往这边想。"""
