@@ -90,31 +90,23 @@ class Test给子进程的环境变量(unittest.TestCase):
         self.assertEqual(env['PYTHONUTF8'], '1')
         self.assertEqual(env['MINERU_DEVICE_MODE'], 'cuda')   # 别顾此失彼
 
-    def test_把补丁目录挂进子进程(self):
-        r"""中文安装路径全靠它 —— 挂不上，装在中文目录里的用户一份都转不了。
-        细节见 pipeline/sitepatch/sitecustomize.py。"""
-        env = paths.child_env()
-        first = env['PYTHONPATH'].split(os.pathsep)[0]
-        self.assertEqual(os.path.abspath(first),
-                         os.path.abspath(paths.SITEPATCH))
+    def test_不靠PYTHONPATH挂中文路径补丁(self):
+        r"""🔴 **这条钉的是 2026-09-03 差点发出去的一个洞。**
 
-    def test_不顶掉用户自己的PYTHONPATH(self):
-        r"""用户机器上可能因为别的 Python 项目已经设了 PYTHONPATH。
-        直接赋值会把它抹掉，那是动了跟我们无关的东西。"""
+        中文路径补丁一度是靠往 child_env 加 `PYTHONPATH` 来挂的，
+        开发环境测试全绿 —— 而发行版的 Python 是 embeddable 版，目录里
+        有 `python312._pth`；**`._pth` 一存在，PYTHONPATH 就被整个忽略**。
+        实测发行版子进程的 sys.path 只有三条，补丁一次都没生效过，
+        而所有测试照样绿着。
+
+        现在改走引导脚本（见下面那条）。这里反过来钉死：**别再回到
+        PYTHONPATH 那条路**，它在真实发行版上是不通的。
+        """
         with mock.patch.dict(os.environ, {'PYTHONPATH': r'C:\his\own\libs'}):
             env = paths.child_env()
-        parts = env['PYTHONPATH'].split(os.pathsep)
-        self.assertEqual(os.path.abspath(parts[0]),
-                         os.path.abspath(paths.SITEPATCH), '我们的没排在最前')
-        self.assertIn(r'C:\his\own\libs', parts, '把用户自己的顶掉了')
-
-    def test_原本没有PYTHONPATH时不留空段(self):
-        r"""多一个分隔符，子进程的 sys.path 里就会多一个空字符串 ——
-        那等于把**当前工作目录**塞进搜索路径，是能引出诡异 import 的。"""
-        env_no_pp = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
-        with mock.patch.dict(os.environ, env_no_pp, clear=True):
-            env = paths.child_env()
-        self.assertEqual(env['PYTHONPATH'], paths.SITEPATCH)
+        self.assertEqual(env.get('PYTHONPATH'), r'C:\his\own\libs',
+                         '又往 PYTHONPATH 里塞东西了 —— 发行版收不到，'
+                         '而且顺手改了用户自己的设置')
 
 
 class Test找可执行文件(unittest.TestCase):
@@ -239,24 +231,34 @@ class Test绝不调pip生成的launcher(unittest.TestCase):
     最标准的一个形态：**测速正常、下载一直失败**，因为测速走的是我们
     自己的 Python 代码，不经过那些 exe。
 
-    修法：一律用「解释器 + `-m` 模块」的方式跑，路径全部运行时算。
+    修法：一律用「解释器 + 我们自己的 .py」的方式跑，路径全部运行时算。
+
+    （2026-09-03 起中间多了一层引导脚本 `sitepatch/run_mineru.py`，
+      它负责在 MinerU 起来之前打中文路径补丁，再把模块名转交下去。
+      本条要钉的东西没变：**除了解释器自己，命令里不许出现 .exe**。）
     """
 
-    def test_跑MinerU用解释器加模块而不是exe(self):
+    def test_跑MinerU用解释器加引导脚本而不是exe(self):
         cmd = paths.mineru_cmd()
         self.assertGreaterEqual(len(cmd), 3)
-        self.assertEqual(cmd[1], '-m', '没走 -m，可能又调回 launcher 了')
+        self.assertTrue(cmd[1].endswith('run_mineru.py'),
+                        '没走引导脚本，中文路径补丁就挂不上：%s' % cmd[1])
         self.assertEqual(cmd[2], 'mineru.cli.client')
         # argv[0] 是解释器；后面不许再出现任何 .exe
         for a in cmd[1:]:
             self.assertNotIn('.exe', a.lower(), '命令里混进了 exe：%s' % a)
 
-    def test_下模型也用解释器加模块(self):
+    def test_下模型也走同一个引导脚本(self):
         cmd = paths.models_download_cmd()
-        self.assertEqual(cmd[1], '-m')
+        self.assertTrue(cmd[1].endswith('run_mineru.py'))
         self.assertEqual(cmd[2], 'mineru.cli.models_download')
         for a in cmd[1:]:
             self.assertNotIn('.exe', a.lower())
+
+    def test_引导脚本真的存在(self):
+        r"""路径拼错了不会有人发现 —— 子进程起不来的报错是
+        「can't open file」，跟中文路径八竿子打不着。"""
+        self.assertTrue(os.path.isfile(paths.BOOT), paths.BOOT)
 
     def test_解释器就是正在跑自己的这个(self):
         r"""它一定装着 mineru —— server 能起来就证明这个环境是齐的。

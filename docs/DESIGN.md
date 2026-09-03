@@ -516,8 +516,30 @@ Layer 2 是 2026-09-02 从 Layer 1 里拆出来的：CUDA 版 torch 解压后 4.
     的 C++ 层用 `std::ifstream` 按系统 ACP(936) 解那串 UTF-8 字节，对不上。
     小蔡定的前提是「中文不可避免」，所以不能靠让用户改路径了事。
     修法：`pipeline/sitepatch/sitecustomize.py` 接管 `fasttext.load_model`，
-    非 ASCII 路径改递 mbcs bytes；靠 `child_env()` 的 `PYTHONPATH` 挂进子进程，
-    第三方包一个字没改（改源码要在 `.venv` 和 `runtime` 各改一次，迟早不同步）。
+    非 ASCII 路径改递 mbcs bytes，第三方包一个字没改（改源码要在 `.venv`
+    和 `runtime` 各改一次，迟早不同步）。
+
+    🔴 **补丁挂在哪儿，比补丁本身难。这一步在发包前一刻才被抓住。**
+    最初是靠 `child_env()` 加 `PYTHONPATH`，让 `site` 自动加载
+    `sitecustomize` —— 开发环境完全可行，298 条测试全绿。**但发行版根本
+    走不到**：发行版的 Python 是 embeddable 版，目录里有 `python312._pth`，
+    而 **`._pth` 一存在，`sys.path` 就完全由它决定，`PYTHONPATH` 被直接
+    忽略**。实测发行版子进程的 `sys.path` 只有三条，补丁一次都没生效过，
+    而所有测试照样绿着 —— 又一个「开发机上好好的」，形状跟 v0.0.1 那个
+    pip launcher 一模一样。
+
+    换过的两个位置和它们各自的死因：
+
+      · 放进发行版 Python 自己的 site-packages 目录 —— 能被自动加载
+        （实测可行），但**对老用户无效**：更新包只覆盖 `pipeline/`
+        `server/` `app/`，碰不到 `runtime/`
+      · 往 `python312._pth` 里加一行 —— 同样在 `runtime/` 下，同样的问题
+
+    最后落在 `sitepatch/run_mineru.py`：一个引导脚本，先 import 补丁再把
+    模块名转交给 MinerU 的 CLI。用**脚本路径**启动时 Python 会把脚本所在
+    目录放进 `sys.path[0]`，这个机制既不看 `._pth` 也不看 `PYTHONPATH`，
+    两个环境完全一致；而它在 `pipeline/` 底下，更新包覆盖得到。
+    同时满足「更新包能覆盖」和「不依赖 site 机制」的位置，只有这一个。
 
     ⚠️ **否掉过一个更漂亮的方案**：Windows 8.3 短路径名。它能一招治所有
     吃 `char*` 的 C++ 库，但 Win10 起非系统盘默认关闭 8.3 名生成，

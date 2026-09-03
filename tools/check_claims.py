@@ -69,11 +69,16 @@ claim('日志落在安装目录内的 logs/',
 print()
 print('跑 MinerU 的方式')
 cmd = paths.mineru_cmd()
-claim('用「解释器 + -m 模块」，不调 Scripts/*.exe（README 有专门一节）',
-      cmd[1] == '-m' and not any('.exe' in a.lower() for a in cmd[1:]),
+claim('用「解释器 + 我们自己的 .py」，不调 Scripts/*.exe（README 有专门一节）',
+      cmd[1].endswith('run_mineru.py')
+      and not any('.exe' in a.lower() for a in cmd[1:]),
       repr(cmd))
-claim('models_download 也走 -m',
-      paths.models_download_cmd()[1] == '-m')
+claim('models_download 也走同一个引导脚本',
+      paths.models_download_cmd()[1].endswith('run_mineru.py'))
+# 查的是「有没有往 env 里塞 PYTHONPATH」这个动作，不是文本里出现过
+# 这个词 —— child_env 的说明里正解释着为什么不能用它。
+claim('中文路径补丁不靠 PYTHONPATH（发行版 ._pth 会忽略它）',
+      "env['PYTHONPATH']" not in read('pipeline/paths.py'))
 claim('判 MinerU 在不在用 find_spec，不是查文件',
       'find_spec' in read('pipeline/paths.py'))
 

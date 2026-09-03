@@ -46,8 +46,10 @@ pybind11 原样透传，C++ 拿到的就是 ACP 字节，和它自己的解释�
 迟早不同步；`pip` 重装或升级 `fast_langdetect` 就丢。这里是一份补丁同时
 管两边，且第三方包保持原样。
 
-挂载方式见 `paths.child_env()`：把**这个目录**（不是整个 `pipeline/`）
-加进子进程的 `PYTHONPATH`，Python 启动时 `site` 会自动 import 本模块。
+**怎么挂上去的**：见同目录的 `run_mineru.py`。一句话——不是靠
+`PYTHONPATH` + `site` 那条常规路（发行版的 embeddable Python 有 `._pth`，
+PYTHONPATH 会被整个忽略，那条路在真实发行版上一次都没生效过），
+而是让 MinerU 经由 `run_mineru.py` 启动，它 import 本模块作为第一步。
 
 🔴 **单开一个目录只放这一个文件是有意的。** `pipeline/` 里有 `paths.py`、
 `models.py`、`update.py` 这些名字很普通的模块，整个目录塞进 MinerU 子进程

@@ -88,9 +88,11 @@ def build_argv(mineru, pdf, out_dir, backend=None, method=None,
     四个参数一个都不能漏 —— 漏了不会报错，MinerU 会用它自己的默认值
     悄悄降级（比如 effort 默认 medium 会关掉图片分析），事后极难发现。
     """
-    # mineru 可以是一个字符串（老写法，一个可执行文件），也可以是
-    # 命令前缀列表 —— 现在走的是后者：[python.exe, '-m', 'mineru.cli.client']。
-    # 见 paths.py：pip 生成的 mineru.exe 里硬编码了打包机器的解释器路径。
+    # mineru 可以是一个字符串（老写法，一个可执行文件），也可以是命令
+    # 前缀列表 —— 现在走的是后者：
+    #     [python.exe, sitepatch/run_mineru.py, 'mineru.cli.client']
+    # 见 paths.py：pip 生成的 mineru.exe 里硬编码了打包机器的解释器路径；
+    # 中间那层引导脚本负责在 MinerU 起来之前打上中文路径补丁。
     head = list(mineru) if isinstance(mineru, (list, tuple)) else [mineru]
     return head + ['-p', pdf, '-o', out_dir,
             '-b', backend or BACKEND,

@@ -278,10 +278,23 @@ Failed to load FastText model: ...\lid.176.ftz cannot be opened for loading!
 是 C++ 写的，Python 把路径按 UTF-8 编码递过去，那边按系统的 GBK 解，
 中文字节对不上——那个文件在 C++ 眼里就是不存在。
 
-修法是在把路径交给它之前先转成 GBK 字节。补丁挂在 MinerU 子进程启动
-时自动加载的 `sitecustomize` 里，第三方库本身没动过
-（`pipeline/sitepatch/sitecustomize.py` 里写了为什么只能这么做，
-以及为什么「用 Windows 短路径名」那个看着更漂亮的方案是死路）。
+修法是在把路径交给它之前先转成 GBK 字节，第三方库本身没动过。
+
+**补丁挂在哪儿，比补丁本身还费事。** 常规做法是靠 `PYTHONPATH` +
+`sitecustomize` 让 Python 启动时自动加载，开发环境完全可行、测试全绿——
+但发行版的 Python 是 embeddable 版，目录里有 `python312._pth`，
+而 `._pth` 一存在，`PYTHONPATH` 就被整个忽略，那份补丁在真实发行版上
+**一次都不会生效**。放进 `runtime/python/Lib/site-packages/` 倒是能加载，
+可更新包只覆盖 `pipeline/` `server/` `app/`，碰不到 `runtime/`，
+老用户更新完照样没有。
+
+最后落在 `pipeline/sitepatch/run_mineru.py`：一个引导脚本，先打补丁再把
+控制权交给 MinerU 的 CLI。用脚本路径启动时 Python 会把脚本所在目录放进
+`sys.path[0]`，这个机制不看 `._pth` 也不看 `PYTHONPATH`，两个环境完全
+一致；而它在 `pipeline/` 底下，更新包覆盖得到。
+
+（那个文件的开头还记着为什么「用 Windows 短路径名」那个看着更漂亮的
+方案是死路。）
 
 **唯一还不行的**：文件夹名里带 emoji，或者中文系统上混进韩文这类当前
 系统编码表示不了的字。碰上了软件会直接说清楚是哪个路径、该怎么改，
@@ -380,12 +393,21 @@ tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 
 另外**不碰用户的全局 `~/mineru.json`**——那是 MinerU 的全局配置，用户机器上
 可能装着别的用 MinerU 的东西，我们通过 `MINERU_TOOLS_CONFIG_JSON` 指向自己那份。
 
-### 跑 MinerU 一律用「解释器 + `-m` 模块」
+### 跑 MinerU 一律用「解释器 + 我们自己的 .py」
 
 ```python
-paths.mineru_cmd()           # [python.exe, '-m', 'mineru.cli.client']
-paths.models_download_cmd()  # [python.exe, '-m', 'mineru.cli.models_download']
+paths.mineru_cmd()           # [python.exe, sitepatch/run_mineru.py, 'mineru.cli.client']
+paths.models_download_cmd()  # [python.exe, sitepatch/run_mineru.py, 'mineru.cli.models_download']
 ```
+
+中间那层 `run_mineru.py` 是引导脚本：先打上中文路径补丁，再把模块名
+转交给 MinerU 的 CLI。**为什么补丁只能挂在这儿**——发行版的 Python 是
+embeddable 版，目录里有 `python312._pth`，而 `._pth` 一存在，
+`PYTHONPATH` 就被整个忽略，常规的 `sitecustomize` 那条路在发行版上
+一次都不会生效（开发环境却是好的，测试照样全绿）。而放进
+`runtime/python/Lib/site-packages/` 又对老用户无效：更新包只覆盖
+`pipeline/` `server/` `app/`，碰不到 `runtime/`。同时满足「更新包能覆盖」
+和「不依赖 site 机制」的位置，只有这一个。
 
 **绝不调 `runtime/python/Scripts/mineru*.exe`。** 那些是 pip 给
 console_scripts 生成的 launcher，尾部硬编码着生成它那一刻的 python.exe

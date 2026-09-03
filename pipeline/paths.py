@@ -109,8 +109,9 @@ def find_exe(name, subdirs=()):
 #    2026-09-02 网吧实测的现象是「测速正常、下载一直失败」：测速走的是
 #    我们自己的 Python 代码，不经过 launcher，所以只有那一半是好的。
 #
-#    改法：解释器 + `-m 模块`，路径全部运行时算。两个入口点是从
+#    改法：解释器 + 我们自己的 .py，路径全部运行时算。两个入口点是从
 #    launcher 内嵌的 __main__.py 里读出来的，跟它调的完全一样。
+#    （2026-09-03 起中间多一层引导脚本，见下面的 BOOT。）
 
 MINERU_CLI = 'mineru.cli.client'                   # 转换
 MINERU_DOWNLOAD_CLI = 'mineru.cli.models_download'  # 下模型
@@ -136,14 +137,21 @@ def python_exe():
     return 'python'
 
 
+# 引导脚本。**不是直接 `-m 模块`，而是先过它一道** —— 它负责在
+# MinerU 起来之前打上中文路径补丁。为什么只能这么挂，见那个文件的开头：
+# 发行版的 embeddable Python 有 `._pth`，PYTHONPATH 会被整个忽略，
+# 常规的 sitecustomize 那条路在发行版上一次都没生效过。
+BOOT = os.path.join(SITEPATCH, 'run_mineru.py')
+
+
 def mineru_cmd():
     """转换用的命令前缀。后面接 -p / -o 等参数。"""
-    return [python_exe(), '-m', MINERU_CLI]
+    return [python_exe(), BOOT, MINERU_CLI]
 
 
 def models_download_cmd():
     """下模型用的命令前缀。后面接 -s / -m 等参数。"""
-    return [python_exe(), '-m', MINERU_DOWNLOAD_CLI]
+    return [python_exe(), BOOT, MINERU_DOWNLOAD_CLI]
 
 
 def mineru_available():
@@ -282,18 +290,11 @@ def child_env(source_env=None):
     （变量名是从 mineru/utils/config_reader.py:106 读出来的，
       它的优先级最高：设了就直接返回，根本不走自动探测。）
 
-    还有第五个，管的是**中文安装路径**：
-
-      PYTHONPATH                把 sitepatch/ 挂进子进程，让 Python 启动时
-                                自动 import 那份 sitecustomize
-
-    2026-09-03 真机上，装在「新建文件夹 (2)」里的软件转换必失败 ——
-    fasttext 的 C++ 层按 GBK 解 UTF-8 路径，模型文件在它眼里根本不存在。
-    补丁做了什么、为什么只能这么做，见 sitepatch/sitecustomize.py。
-
-    🔴 **追加，不覆盖。** 用户自己可能设了 PYTHONPATH（跑别的 Python
-    项目留下的），直接赋值会把它顶掉；而我们的目录排在最前，保证
-    site 找到的是我们这份 sitecustomize。
+    ⚠️ **中文路径补丁不在这儿挂。** 2026-09-03 一度是靠往这里加
+    `PYTHONPATH` 来挂 sitecustomize 的，开发环境测试全绿 —— 而发行版
+    的 embeddable Python 有 `._pth`，**`._pth` 一存在，PYTHONPATH 就被
+    整个忽略**，那份补丁在真实发行版上一次都没生效过。现在改成走引导
+    脚本（见 `BOOT` 和 `sitepatch/run_mineru.py`），别再往这儿加。
 
     source_env 是选源屏选中的那个源带的变量（MINERU_MODEL_SOURCE 等），
     合并进来。
@@ -304,10 +305,6 @@ def child_env(source_env=None):
     env['HF_HOME'] = MODELS
     env['MINERU_TOOLS_CONFIG_JSON'] = CONFIG
     env['MINERU_DEVICE_MODE'] = 'cuda'
-    if env.get('PYTHONPATH'):
-        env['PYTHONPATH'] = SITEPATCH + os.pathsep + env['PYTHONPATH']
-    else:
-        env['PYTHONPATH'] = SITEPATCH
     if source_env:
         env.update(source_env)
     return env

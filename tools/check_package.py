@@ -89,8 +89,10 @@ REQUIRED = [
     r'resources\app\renderer\index.html',
     r'runtime\python\python.exe',
     r'pipeline\paths.py',
-    # 漏了它，装在中文目录里的用户一份都转不了，而包本身看着完全正常。
+    # 漏了这两个，装在中文目录里的用户一份都转不了，而包本身看着完全正常。
+    # run_mineru.py 更要命：它是 MinerU 的启动入口，漏了谁都转不了。
     r'pipeline\sitepatch\sitecustomize.py',
+    r'pipeline\sitepatch\run_mineru.py',
     r'server\main.py',
     'version.json',
     '使用说明.txt',

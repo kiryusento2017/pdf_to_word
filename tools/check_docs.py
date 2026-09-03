@@ -92,7 +92,8 @@ def check_files():
             if plain in NOT_PROJECT_FILES or os.path.basename(plain) in NOT_PROJECT_FILES:
                 continue
             cands = [plain] + [os.path.join(d, plain) for d in
-                               ('app', 'app/renderer', 'pipeline', 'tools',
+                               ('app', 'app/renderer', 'pipeline',
+                                'pipeline/sitepatch', 'tools',
                                 'tests', 'docs', 'server')]
             if not any(os.path.exists(c) for c in cands):
                 problems.append('[缺文件] %s 提到 `%s`，项目里找不到' % (name, h))

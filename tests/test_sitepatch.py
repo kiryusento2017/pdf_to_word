@@ -201,35 +201,52 @@ class Test端到端子进程(unittest.TestCase):
         os.makedirs(zhdir, exist_ok=True)
         self.zhmodel = os.path.join(zhdir, 'lid.176.ftz')
         shutil.copy2(MODEL, self.zhmodel)
-        # 子进程里完全不知道有补丁这回事，就照 MinerU 的用法直接调
-        self.code = ('import fasttext, sys;'
-                     'fasttext.load_model(sys.argv[1]);'
-                     'print("LOADED")')
+
+        # 一个「假装自己是 MinerU」的模块：完全不知道有补丁这回事，
+        # 就照 MinerU 的用法直接加载模型。放进 sitepatch/ 才能被引导器
+        # 的 runpy 找到（那个目录就是子进程的 sys.path[0]），跑完删掉。
+        self.probe = os.path.join(ROOT, 'pipeline', 'sitepatch',
+                                  '_e2e_probe.py')
+        with open(self.probe, 'w', encoding='utf-8') as f:
+            f.write('import fasttext, sys\n'
+                    'fasttext.load_model(sys.argv[1])\n'
+                    'print("LOADED")\n')
+        self.addCleanup(lambda: os.path.exists(self.probe)
+                        and os.remove(self.probe))
 
     def tearDown(self):
         shutil.rmtree(getattr(self, 'tmp', ''), ignore_errors=True)
 
-    def _run(self, env):
-        return subprocess.run([sys.executable, '-c', self.code, self.zhmodel],
-                              capture_output=True, env=env)
-
-    def test_child_env起的子进程能在中文路径下加载(self):
-        r = self._run(paths.child_env())
+    def test_引导脚本起的子进程能在中文路径下加载(self):
+        r"""走的是**真实的那条命令形态**：解释器 + 引导脚本 + 模块名。"""
+        r = subprocess.run(
+            [sys.executable, paths.BOOT, '_e2e_probe', self.zhmodel],
+            capture_output=True, env=paths.child_env())
         self.assertEqual(r.returncode, 0,
                          '子进程失败了：%s'
                          % r.stderr.decode('utf-8', 'replace')[-400:])
         self.assertIn(b'LOADED', r.stdout)
 
-    def test_对照组_不挂补丁就是用户那个报错(self):
-        r"""🔴 **反向验证。** 证明这条测试真的在测东西 —— 拿掉补丁必须
-        复现 2026-09-03 真机上那句 `cannot be opened for loading!`。"""
-        env = paths.child_env()
-        del env['PYTHONPATH']
-        r = self._run(env)
-        self.assertNotEqual(r.returncode, 0, '没挂补丁竟然也成功了')
+    def test_对照组_不走引导脚本就是用户那个报错(self):
+        r"""🔴 **反向验证。** 证明这条测试真的在测东西 —— 绕开引导脚本
+        必须复现 2026-09-03 真机上那句 `cannot be opened for loading!`。"""
+        r = subprocess.run(
+            [sys.executable, self.probe, self.zhmodel],   # 直接跑，不经引导
+            capture_output=True, env=paths.child_env())
+        self.assertNotEqual(r.returncode, 0, '没走引导脚本竟然也成功了')
         self.assertIn('cannot be opened',
                       r.stderr.decode('utf-8', 'replace'),
                       '失败了，但不是我们要修的那个原因')
+
+    def test_引导脚本会把模块名之后的参数原样转交(self):
+        r"""转交错了的话，MinerU 会拿不到 -p / -o，报的却是它自己的
+        用法错误 —— 跟中文路径毫无关系，极难往这边想。"""
+        r = subprocess.run(
+            [sys.executable, paths.BOOT, '_e2e_probe', self.zhmodel],
+            capture_output=True, env=paths.child_env())
+        self.assertIn(b'LOADED', r.stdout,
+                      '模块没拿到它的参数：%s'
+                      % r.stderr.decode('utf-8', 'replace')[-200:])
 
 
 class Test补丁目录只暴露这一个文件(unittest.TestCase):
@@ -241,11 +258,17 @@ class Test补丁目录只暴露这一个文件(unittest.TestCase):
     单开一个只放补丁的目录，是为了把这个风险降到零。
     """
 
-    def test_sitepatch里只有sitecustomize(self):
+    def test_sitepatch里只有该有的那两个(self):
+        r"""补丁本体 + 引导器，就这两个。
+
+        引导器用脚本路径启动，Python 会把**这个目录**放进 sys.path[0]，
+        所以这里每多一个 .py，MinerU 子进程的搜索路径里就多一个可能
+        盖掉它自己或它依赖的同名模块的东西。
+        """
         d = os.path.join(ROOT, 'pipeline', 'sitepatch')
         got = sorted(f for f in os.listdir(d)
                      if not f.startswith('__') and f != '__pycache__')
-        self.assertEqual(got, ['sitecustomize.py'],
+        self.assertEqual(got, ['run_mineru.py', 'sitecustomize.py'],
                          'sitepatch/ 里多了别的模块，会污染子进程的 sys.path：%s' % got)
 
     def test_补丁目录在安装目录内(self):
