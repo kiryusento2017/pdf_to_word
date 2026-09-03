@@ -144,8 +144,15 @@ claim('四条降级路径都判失败（DESIGN 第四节）',
 print()
 print('更新')
 up = read('pipeline/update.py')
-claim('查版本会试多条路（README/DESIGN 都写了镜像会变）',
-      'API_PREFIXES' in up and up.count("'https://") >= 4)
+claim('查版本会并发试多条路（README/DESIGN 都写了镜像会变）',
+      'API_MIRRORS' in up and 'def api_race' in up
+      and 'ThreadPoolExecutor' in up and up.count("'https://") >= 4)
+claim('API 名单和下载名单是两份（api.github.com 限速，镜像多半 403）',
+      'API_MIRRORS = [' in up and 'GH_MIRRORS = [' in up)
+claim('线路明细交给界面，失败时也给（README「不给黑盒」）',
+      'e.lines = lines' in up and "'lines': []" in up)
+claim('手动指定的线路真的生效，不是个假开关',
+      'prefer=' in up and "prefer='ghp-cdn'" in read('tests/test_update.py'))
 claim('**禁止**拿版本号判断能不能自动装（小蔡 2026-09-02 的指令）',
       'rv[:2] != lv[:2]' not in up.split('#')[0] or
       up.count('rv[:2] != lv[:2]') == up.count('#    这里原来是'),

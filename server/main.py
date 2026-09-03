@@ -180,11 +180,14 @@ class UpdateDlReq(BaseModel):
     # （见 _upd_work 的说明）。
     url: str = ''
     name: str = ''
+    # 界面上手动指定的线路 id（空 = 自动挑最快的）。**这个是看的** ——
+    # 它不是地址，只是一个在 GH_MIRRORS 里查表的键，查不到就回到自动。
+    line: str = ''
     # 用户已经知道「拿不到官方校验值」并且选择继续。这是唯一会被读的字段。
     allow_unverified: bool = False
 
 
-def _upd_work(allow_unverified=False):
+def _upd_work(allow_unverified=False, prefer=''):
     r"""下载 → 校验 → 解压覆盖 → 报「装好了，重启生效」。
 
     **一口气做完**，不让用户在中间再点一次。小蔡的原话：
@@ -224,7 +227,8 @@ def _upd_work(allow_unverified=False):
     ok, err, via = update.download(asset['url'], dest, on_progress=on_prog,
                                    digest=asset.get('digest', ''),
                                    size=asset.get('size', 0),
-                                   allow_unverified=allow_unverified)
+                                   allow_unverified=allow_unverified,
+                                   prefer=prefer)
     if not ok and err.startswith('NEED_CONFIRM:'):
         # 拿不到校验值 —— **报警但不阻拦**，把情况透给界面让用户自己决定。
         # 跟显卡那条规矩一样（小蔡：「要报警，但是并不要阻拦用户使用」）。
@@ -259,6 +263,44 @@ def _upd_work(allow_unverified=False):
                          'files': n})
 
 
+@app.post('/api/update/probe')
+def probe_update_mirrors():
+    r"""实测各下载镜像的真实带宽。**只有用户点了「测下载速度」才走到这儿。**
+
+    为什么单独一个动作：查更新时顺手拿到的是**响应快慢**（哪条先答话），
+    那是延迟；下载要的是**带宽**。两者不是一回事，延迟低的完全可能下得慢。
+    但为了后者让每个人每次查更新都多等几秒不划算，所以做成主动触发。
+
+    🔴 **不接受前端传 URL，自己去查。** 跟 `_upd_work` 一个道理：服务虽然
+    只绑 127.0.0.1，可本机任意进程都能 POST 过来；接受外部 URL 等于把
+    「让这个程序去访问任意地址」的能力递出去。多花 check 那一秒多，换掉这个口子。
+
+    写成 def 不是 async def：里面是同步网络请求，会卡住事件循环。
+    """
+    info = update.check()
+    asset = (info.get('asset') or {}) if info.get('ok') else {}
+    url = asset.get('url') or ''
+    if not url:
+        return {'ok': False, 'lines': [],
+                'error': '现在没有可下载的更新包，没什么可测的'}
+
+    # size 不传 —— probe_mirrors 对小包有条「不值得测」的捷径，那是给
+    # 自动流程设的；这里是用户明确要求实测，就得真测。
+    rows = update.probe_mirrors(url, seconds=2.0)
+    best = 0.0
+    for r in rows:
+        if not r.get('error') and (r.get('bps') or 0) > best:
+            best = r['bps']
+    lines = [{'id': r['id'], 'name': r['name'],
+              'ok': not r.get('error') and (r.get('bps') or 0) > 0,
+              'ms': 0, 'bps': r.get('bps') or 0,
+              'error': r.get('error') or '',
+              'used': bool(best) and r.get('bps') == best}
+             for r in rows]
+    lines.sort(key=lambda x: (not x['ok'], -x['bps']))
+    return {'ok': True, 'lines': lines}
+
+
 @app.post('/api/update/download')
 async def start_update_download(req: UpdateDlReq = UpdateDlReq()):
     r"""开始更新。**不看 req 里的任何东西** —— 见 _upd_work 的说明。
@@ -272,7 +314,8 @@ async def start_update_download(req: UpdateDlReq = UpdateDlReq()):
         _UPD.update({'state': 'running', 'got': 0, 'total': 0,
                      'error': '', 'file': '', 'via': ''})
     threading.Thread(target=_upd_work, daemon=True,
-                     args=(bool(req.allow_unverified),)).start()
+                     args=(bool(req.allow_unverified),
+                           (req.line or '')[:40])).start()
     return {'ok': True}
 
 

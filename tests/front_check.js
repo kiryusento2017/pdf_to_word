@@ -850,6 +850,30 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!fn(st).includes('data-act="checkUpdate"')) throw new Error('有文件时没有入口');
   });
 
+  ck('转换进行中，检查更新按钮禁用但不消失', () => {
+    // 🔴 小蔡 2026-09-03 定的。更新包覆盖的正是 pipeline/*.py，而转换
+    //    每处理一份 PDF 就新起一次 MinerU 子进程 —— 转到一半换掉代码，
+    //    后面几份读到的是新代码；装完还要重启，一重启这批全废。
+    //
+    //    **但不能把按钮拿掉**：上面那条注释写着「卡在安装任何一步的
+    //    用户，唯一的自救手段就是更新到修好的版本」。禁用 ≠ 移除。
+    const st = ready(sb);
+    st.task = { state: 'running', items: [] };
+    const h = fn(st);
+    if (!h.includes('data-act="checkUpdate"')) throw new Error('按钮被拿掉了');
+    const i = h.indexOf('data-act="checkUpdate"');
+    const tag = h.slice(i, h.indexOf('>', i));
+    if (!tag.includes('disabled')) throw new Error('转换中却还能点更新');
+  });
+
+  ck('没在转换时检查更新是能点的', () => {
+    const st = ready(sb);
+    const h = fn(st);
+    const i = h.indexOf('data-act="checkUpdate"');
+    const tag = h.slice(i, h.indexOf('>', i));
+    if (tag.includes('disabled')) throw new Error('空闲时反而点不了');
+  });
+
   ck('已是最新时说清楚，别让人以为没查', () => {
     const st = ready(sb);
     st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
@@ -890,6 +914,148 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     const h = fn(st);
     if (!h.includes('连不上 GitHub')) throw new Error('没显示原因');
     if (!h.includes('data-act="checkUpdate"')) throw new Error('没法重试');
+  });
+
+  // ── 线路表（2026-09-03）。检查更新原来是个黑盒：前端发一个请求然后干等，
+  //    看不到试了哪些镜像、谁通谁不通。下载面板早就把命令和日志摆出来了，
+  //    检查更新这条路一直是例外。
+  const LINES = [
+    { id: 'direct', name: 'GitHub 官方', ok: true, ms: 895, error: '', used: true },
+    { id: 'gh-proxy', name: 'gh-proxy.com', ok: true, ms: 1080, error: '', used: false },
+    { id: 'ghfast', name: 'ghfast.top', ok: false, ms: 1224,
+      error: '403 不代理 API', used: false }
+  ];
+
+  ck('线路表默认折叠，只占一行', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES };
+    const h = fn(st);
+    if (!h.includes('经 GitHub 官方')) throw new Error('没说这次走的哪条');
+    if (!h.includes('2/3 条可用')) throw new Error('没说几条通');
+    if (h.includes('data-act="pickUpdLine"')) {
+      throw new Error('默认就展开了，440 的高度装不下');
+    }
+  });
+
+  ck('没测速就不许显示任何速度数字', () => {
+    // 🔴 小蔡 2026-09-03 定的：**数据必须真实，没有就留空**。
+    //    原来这一列默认填的是查版本的响应延迟 —— 那是另一件事，
+    //    填进来等于暗示一个我们根本没测过的结论（延迟低 ≠ 下得快）。
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES };   // LINES 里只有 ms，没有 bps
+    const h = fn(st);
+    if (/\d\.\d 秒/.test(h)) throw new Error('把响应延迟当速度显示了');
+    if (/KB\/s|MB\/s|GB\/s/.test(h)) throw new Error('没测速却有速度数字');
+    if (!h.includes('—')) throw new Error('空值没画出来');
+    if (!h.includes('没测过，所以是空的')) throw new Error('没解释这列为什么空');
+  });
+
+  ck('测速之后显示实测字节率', () => {
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: [
+                 { id: 'gh-proxy', name: 'gh-proxy.com', ok: true, ms: 0,
+                   bps: 249907, error: '', used: true },
+                 { id: 'direct', name: 'GitHub 官方', ok: true, ms: 0,
+                   bps: 190946, error: '', used: false }] };
+    const h = fn(st);
+    if (!h.includes('KB/s')) throw new Error('测了却不显示速度');
+    if (!h.includes('数字是刚才实测的')) throw new Error('没说明数字的来源');
+  });
+
+  ck('展开就能测速，不用等到有新版本', () => {
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES };
+    const h = fn(st);
+    if (!h.includes('data-act="probeUpdSpeed"')) throw new Error('没有测速按钮');
+  });
+
+  ck('默认状态下有且只有一个选中项', () => {
+    // 🔴 2026-09-03：渲染出来才看见「自动」和「本次采用的那条」两个
+    //    圆点同时亮着 —— 「你选了谁」和「这次用了谁」被混成了一个状态。
+    //    上面那几条断言全绿也没抓到，因为它们查的是「有没有」不是「对不对」。
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES };
+    const h = fn(st);
+    const n = (h.match(/ checked/g) || []).length;
+    if (n !== 1) throw new Error('选中了 ' + n + ' 个，radio 只该亮一个');
+    // 没手动选时，亮的那个必须是「自动」
+    if (h.split('自动（用最快的）')[0].lastIndexOf('checked') < 0) {
+      throw new Error('默认亮的不是「自动」');
+    }
+  });
+
+  ck('展开后每条线路都在，挂了的写明原因', () => {
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES };
+    const h = fn(st);
+    if (!h.includes('gh-proxy.com')) throw new Error('少了线路');
+    if (!h.includes('403 不代理 API')) throw new Error('挂了却不说为什么');
+    if (!h.includes('自动（用最快的）')) throw new Error('没有回到自动的入口');
+  });
+
+  ck('查更新失败那屏更要有线路表', () => {
+    // 「连不上 GitHub」这句没有任何可操作性；「三条里两条超时、一条 403」
+    // 才能让人判断到底是断网还是被墙。
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: false, has_update: false, local: 'v1', latest: '',
+               error: '连不上 GitHub（直连和几个镜像都试过了）',
+               lines: LINES.map(function (x) {
+                 return { id: x.id, name: x.name, ok: false, ms: x.ms,
+                          error: x.error || '超时', used: false };
+               }) };
+    const h = fn(st);
+    if (!h.includes('3 条线路全部失败')) throw new Error('没汇总失败情况');
+    if (!h.includes('超时')) throw new Error('没逐条说原因');
+  });
+
+  ck('手动指定线路后选中状态跟着走', () => {
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.updPick = 'gh-proxy';
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES };
+    const h = fn(st);
+    const seg = h.split('gh-proxy.com')[0];
+    if (seg.lastIndexOf('class="it on"') < seg.lastIndexOf('class="it"')) {
+      throw new Error('选了 gh-proxy 却没高亮它');
+    }
+    if (h.split('自动（用最快的）')[0].indexOf('class="it on"') >
+        h.indexOf('gh-proxy.com')) {
+      throw new Error('「自动」还占着选中态');
+    }
+  });
+
+  ck('线路名要转义，别被镜像名注入', () => {
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1', latest: 'v1', error: '',
+               lines: [{ id: 'x', name: '<img src=x onerror=alert(1)>', ok: true,
+                         ms: 100, error: '', used: true }] };
+    const h = fn(st);
+    if (h.includes('<img src=x')) throw new Error('线路名没转义，能注入');
+  });
+
+  ck('没有线路数据时不画空表', () => {
+    // 老前端拿到的旧结构里没有 lines —— 更新包只覆盖 .py 和 .js，
+    // 用户手上那份 index.html 是旧是新取决于他更新过几次。
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '' };
+    const h = fn(st);
+    if (h.includes('线路 ')) throw new Error('没数据却画了折叠行');
+    if (!h.includes('已经是最新版本')) throw new Error('把正文也搞没了');
   });
 
   ck('仓库还没发布过版本时说人话', () => {

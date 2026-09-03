@@ -73,12 +73,12 @@ class Test版本比较看方向(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self._orig_vf = update.VERSION_FILE
-        self._orig_api = update._api
+        self._orig_api = update.api_race
         update.VERSION_FILE = os.path.join(self.tmp, 'version.json')
 
     def tearDown(self):
         update.VERSION_FILE = self._orig_vf
-        update._api = self._orig_api
+        update.api_race = self._orig_api
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -87,7 +87,7 @@ class Test版本比较看方向(unittest.TestCase):
             f.write(json.dumps({'tag': tag, 'published_at': published}))
 
     def _remote(self, rel):
-        update._api = lambda url: rel
+        update.api_race = lambda url: (rel, [])
 
     def test_远端更新时报有更新(self):
         # 用修订号更新（v1.0.0 → v1.0.1）—— 那是典型场景，
@@ -223,7 +223,7 @@ class Test版本比较看方向(unittest.TestCase):
 
         def boom(url):
             raise Exception('timed out')
-        update._api = boom
+        update.api_race = boom
         orig_web = update._latest_tag_via_web
         update._latest_tag_via_web = lambda: 'v1.2.0'
         self.addCleanup(setattr, update, '_latest_tag_via_web', orig_web)
@@ -240,7 +240,7 @@ class Test版本比较看方向(unittest.TestCase):
 
         def boom(url):
             raise Exception('timed out')
-        update._api = boom
+        update.api_race = boom
         orig_web = update._latest_tag_via_web
         update._latest_tag_via_web = lambda: 'v1.2.0'
         self.addCleanup(setattr, update, '_latest_tag_via_web', orig_web)
@@ -288,7 +288,7 @@ class Test版本比较看方向(unittest.TestCase):
 
         def boom(url):
             raise Exception('HTTP Error 404: Not Found')
-        update._api = boom
+        update.api_race = boom
         r = update.check()
         self.assertTrue(r['ok'])
         self.assertFalse(r['has_update'])
@@ -299,7 +299,7 @@ class Test版本比较看方向(unittest.TestCase):
 
         def boom(url):
             raise Exception('timed out')
-        update._api = boom
+        update.api_race = boom
         # 🔴 网页退路也要挡掉 —— 不挡的话这条测试会真的去连 github，
         #    单元测试打真网络等于把 CI 绑在别人的服务器上。
         orig_web = update._latest_tag_via_web
@@ -393,6 +393,159 @@ class Test镜像(unittest.TestCase):
     def test_镜像不止一个(self):
         r"""实测六个候选当场坏三个，只留一个等于把命押在它不挂上。"""
         self.assertGreaterEqual(len(update.GH_MIRRORS), 3)
+
+    def test_挂掉的moeyy已经清出去了(self):
+        r"""2026-09-03 实测 moeyy.xyz 的 API 和下载双双 SSL 握手失败。
+        留着不是「多一条兜底」，是每次都白等它一条超时。"""
+        for which, rows in (('下载', update.GH_MIRRORS),
+                            ('API', update.API_MIRRORS)):
+            self.assertFalse(any('moeyy' in m['prefix'] for m in rows),
+                             '%s 名单里还留着已经挂掉的 moeyy' % which)
+
+    def test_API名单和下载名单是两份(self):
+        r"""🔴 **这两份名单不一样，是故意的，别哪天「顺手」合并了。**
+
+        `api.github.com` 对未认证请求限速 60 次/小时/IP，镜像代理 API
+        等于让全世界共用它那点配额，所以不少镜像直接 403 拒绝；而文件
+        下载走 CDN 没这问题。2026-09-03 实测 ghfast.top 和 ghproxy.net
+        正是「下载能用、API 403」的，所以它俩只该出现在下载名单里。
+        """
+        api_ids = {m['id'] for m in update.API_MIRRORS}
+        dl_ids = {m['id'] for m in update.GH_MIRRORS}
+        for i in ('ghfast', 'ghproxy-net'):
+            self.assertIn(i, dl_ids, '%s 的下载是好的，不该删' % i)
+            self.assertNotIn(i, api_ids, '%s 现在 403，不该留在 API 名单' % i)
+
+    def test_两份名单都得留直连(self):
+        self.assertTrue(any(m['prefix'] == '' for m in update.API_MIRRORS))
+
+    def test_查版本是并发的不是一条条试(self):
+        r"""🔴 **钉住这条，别改回串行。**
+
+        原来是依次试，而名单第一条是直连 —— 用户网络封了 GitHub 的话，
+        得先干等满 6 秒超时才轮到第二条，五条全试一遍最坏 30 秒，
+        界面上却只有一个转圈。
+
+        这里让每条路都慢 0.3 秒：并发的话总耗时 ≈ 0.3 秒，串行是 0.3×条数。
+        """
+        import time as _t
+        delay = 0.3
+
+        class _Resp:
+            def read(self):
+                return b'{"tag_name": "v9.9.9"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def slow_open(req, timeout=None):
+            _t.sleep(delay)
+            return _Resp()
+
+        real = update.urllib.request.urlopen
+        update.urllib.request.urlopen = slow_open
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real)
+
+        t0 = _t.time()
+        data, lines = update.api_race('https://api.github.com/x')
+        el = _t.time() - t0
+
+        n = len(update.API_MIRRORS)
+        self.assertEqual(data['tag_name'], 'v9.9.9')
+        self.assertEqual(len(lines), n, '没把每条路的结果都带回来')
+        self.assertLess(el, delay * n * 0.6,
+                        '耗时 %.2fs，%d 条路 —— 看着像串行' % (el, n))
+
+    def test_线路明细里要标出这次用了谁(self):
+        r"""界面靠它显示「经 xxx · 1.4 秒」。"""
+        class _Resp:
+            def read(self):
+                return b'{"tag_name": "v9.9.9"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real = update.urllib.request.urlopen
+        update.urllib.request.urlopen = lambda req, timeout=None: _Resp()
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real)
+
+        _data, lines = update.api_race('https://api.github.com/x')
+        used = [x for x in lines if x['used']]
+        self.assertEqual(len(used), 1, '「本次采用」必须且只能标一条')
+        self.assertTrue(used[0]['ok'])
+        # 标的是**实际用了哪条**（名单顺序里第一个成功的），
+        # 不是「哪条最快」—— 后者要测速才知道
+        self.assertEqual(used[0]['id'], update.API_MIRRORS[0]['id'])
+
+    def test_可用线路保持名单原序不按延迟排(self):
+        r"""🔴 **排序依据只能是速度，没测速就别排**（小蔡 2026-09-03）。
+
+        按响应延迟排等于在暗示「排前面的下得快」，而 09-03 实测正好
+        反过来：延迟最快的直连（903ms）下载只排第 4（663 KB/s），
+        延迟垫底的 gh-proxy.org（1077ms）下载第一（723 KB/s）。
+        两个排名几乎是反的 —— 照着延迟排的表选，会选错。
+        """
+        import time as _t
+
+        class _Resp:
+            def read(self):
+                return b'{"tag_name": "v9.9.9"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        # 让名单里**越靠前的越慢**：按延迟排的话顺序会整个倒过来
+        order = [m['id'] for m in update.API_MIRRORS]
+        delays = {mid: (len(order) - i) * 0.05 for i, mid in enumerate(order)}
+
+        def slow(req, timeout=None):
+            url = getattr(req, 'full_url', '')
+            for m in update.API_MIRRORS:
+                if m['prefix'] and url.startswith(m['prefix']):
+                    _t.sleep(delays[m['id']])
+                    return _Resp()
+            _t.sleep(delays[order[0]])      # 直连
+            return _Resp()
+
+        real = update.urllib.request.urlopen
+        update.urllib.request.urlopen = slow
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real)
+
+        _data, lines = update.api_race('https://api.github.com/x')
+        got = [x['id'] for x in lines if x['ok']]
+        self.assertEqual(got, order,
+                         '可用线路没按名单原序排，像是拿延迟排的：%s' % got)
+
+    def test_全都失败时明细也要带出来(self):
+        r"""🔴 **失败时更需要这张表。**
+
+        「连不上 GitHub」这句话没有任何可操作性；「五条里三条超时、
+        两条 403」才能让人判断是断网还是被墙。
+        """
+        def boom(req, timeout=None):
+            raise Exception('timed out')
+
+        real = update.urllib.request.urlopen
+        update.urllib.request.urlopen = boom
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real)
+
+        with self.assertRaises(Exception) as cm:
+            update.api_race('https://api.github.com/x')
+        lines = getattr(cm.exception, 'lines', None)
+        self.assertIsNotNone(lines, '异常上没挂线路明细，界面拿不到')
+        self.assertEqual(len(lines), len(update.API_MIRRORS))
+        self.assertTrue(all(not x['ok'] for x in lines))
+        self.assertTrue(all(x['error'] for x in lines),
+                        '没说清每条各是为什么失败的')
 
     def test_下载空url时不发请求(self):
         ok, err, via = update.download('', os.path.join(self.__class__.__name__))
@@ -544,8 +697,9 @@ class Test安装失败要回滚(unittest.TestCase):
 
 
 class Test下载必须校验(unittest.TestCase):
-    r"""更新包走的是第三方镜像（ghfast / gh-proxy / ghproxy.net / moeyy），
-    下回来直接解压覆盖安装目录里的 .py 和 .js，下次启动就执行。
+    r"""更新包走的是第三方镜像（ghfast / gh-proxy.com / ghproxy.net /
+    gh-proxy.org 系那三个），下回来直接解压覆盖安装目录里的 .py 和 .js，
+    下次启动就执行。
 
     镜像不可信这件事，原来的文档只把它定义成「可能挂」—— 但镜像同样
     可以**返回假内容**。没有校验的话，任何一个镜像（或中间人）都能把
@@ -655,6 +809,57 @@ class Test下载必须校验(unittest.TestCase):
                                        self.dest, digest='00' * 32)
         self.assertFalse(ok, '陌生地址却下了')
         self.assertIn('地址', err)
+
+    def _record_urls(self, body):
+        """记下真正请求了哪个 URL。"""
+        urls = []
+        self._serve(body)
+        inner = update.urllib.request.urlopen
+
+        def spy(req, timeout=None):
+            urls.append(getattr(req, 'full_url', str(req)))
+            return inner(req, timeout=timeout)
+
+        update.urllib.request.urlopen = spy
+        return urls
+
+    def test_手动指定线路时就走那条并且不再测速(self):
+        r"""🔴 **界面上那个选择必须真的生效。**
+
+        线路表让用户能手动挑一条（因为最快的未必最稳，别人的网络跟
+        开发机可能完全不同）。要是选了不算数，那比黑盒更糟 —— 黑盒
+        只是不告诉你，假开关是骗你。
+
+        指定之后连测速都该省掉：用户已经替我们做完选择了。
+        """
+        probed = []
+        update.probe_mirrors = lambda url, seconds=2.0, size=0: (
+            probed.append(url) or [{'id': 'direct'}])
+
+        body = b'PK\x03\x04 pretend this is a zip'
+        urls = self._record_urls(body)
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256(body).hexdigest(), prefer='ghp-cdn')
+
+        self.assertTrue(ok, err)
+        self.assertEqual(probed, [], '指定了线路却还去测速，白等好几秒')
+        self.assertTrue(urls, '压根没发请求')
+        self.assertTrue(urls[0].startswith('https://cdn.gh-proxy.org/'),
+                        '没走指定的那条线路：%s' % urls[0])
+
+    def test_指定了不认识的线路就回到自动(self):
+        r"""前端传进来的 id 万一对不上（老前端、拼错、恶意 POST），
+        最坏也只该回到默认行为，不能整个更新流程罢工。"""
+        body = b'PK\x03\x04 pretend this is a zip'
+        urls = self._record_urls(body)
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256(body).hexdigest(), prefer='不存在的线路')
+        self.assertTrue(ok, err)
+        # setUp 里把测速固定成了「直连」，所以回到自动就是不带任何前缀
+        self.assertTrue(urls[0].startswith(update.ASSET_PREFIX),
+                        '没回到自动：%s' % urls[0])
 
 
 class 测速结果的字段契约(unittest.TestCase):

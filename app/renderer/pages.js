@@ -83,9 +83,17 @@ function envLine(st, compact) {
 // 唯一的自救手段就是更新到修好的版本；按钮不在，人就只能重下安装包。
 // （v0.0.1 那次正是如此：模型下不成 → 停在下载屏 → 那屏底部没有这个按钮。）
 // extra 是各屏自己的东西，放右边；compact 见 envLine。
+// 🔴 **转换进行中禁用它**（小蔡 2026-09-03 定）。更新包覆盖的正是
+//    `pipeline/*.py`，而转换每处理一份 PDF 就新起一次 MinerU 子进程 ——
+//    转到一半换掉代码，后面几份读到的是新代码，前后不一致；装完还要
+//    重启，一重启这批就全废了（老师那边可能已经等了几分钟）。
+//    禁用比事后解释便宜得多。转完自己会亮回来。
 function botBar(st, extra, compact) {
+  var busy = isRunning(st);
   return envLine(st, compact)
-    + btn('checkUpdate', '检查更新', { cls: 'link' })
+    + btn('checkUpdate', '检查更新',
+          { cls: 'link', off: busy,
+            title: busy ? '正在转换，转完再更新' : '' })
     + '<span class="grow"></span>'
     + (extra || '');
 }
@@ -333,6 +341,108 @@ function gateView(st, kind) {
 }
 
 // ── 更新面板 ───────────────────────────────────────────────────────────
+// 查更新走了哪几条线路。**每一屏都挂它，包括失败那屏** ——
+// 「连不上 GitHub」这句话没有任何可操作性，而「五条里三条超时、两条
+// 403」是能让人判断到底断网还是被墙的。这是「不给黑盒」那条规矩在
+// 更新这条路上的落实（下载面板早就这么做，检查更新一直是个例外）。
+//
+// 平时只占一行，点开才是表。**不做成底栏按钮**：620x440 的底栏已经
+// 挤满了，而且用户平时不需要「选」，只在出事时想知道「为什么」。
+function updLines(st, u) {
+  var ls = (u && u.lines) || [];
+  if (!ls.length) return '';
+
+  var used = null, okN = 0, i;
+  for (i = 0; i < ls.length; i++) {
+    if (ls[i].used && !used) used = ls[i];
+    if (ls[i].ok) okN++;
+  }
+  var open = !!st.updLinesOpen;
+
+  // 折叠那一行：只说走了谁、几条通。
+  // 🔴 **不在这儿报秒数。** 那个数是查版本的响应延迟，而用户看到一个
+  //    跟在线路名后面的数字，只会理解成「这条线路多快」——
+  //    延迟低不代表下得快。给一个语义模糊的数字，跟给假数据一样坏。
+  //    真实速度只有点了「测速」才有（小蔡 2026-09-03 定的规矩）。
+  var head = used
+    ? '经 ' + esc(used.name) + '　·　' + okN + '/' + ls.length + ' 条可用'
+    : (okN ? okN + '/' + ls.length + ' 条线路可用'
+           : ls.length + ' 条线路全部失败');
+
+  var toggle = '<div data-act="toggleUpdLines" style="cursor:pointer;'
+    + 'display:flex;gap:6px;align-items:center;justify-content:center;'
+    + 'font-size:11px;opacity:.75;margin-top:2px"'
+    + ' title="点开看每条线路的实测情况">'
+    + '<span>' + head + '</span><span>线路 ' + (open ? '▴' : '▾')
+    + '</span></div>';
+
+  if (!open) return toggle;
+
+  // 展开态。样式跟选源屏那张表一致 —— 同一个软件里同一件事
+  // （挑一条网络线路）不该长成两个样子。
+  var rows = ls.map(function (x) {
+    // 🔴 **「你选了谁」和「这次用了谁」是两件事，别混。**
+    //    混起来的后果：默认状态下「自动」和「本次采用的那条」两个圆点
+    //    同时亮着，看上去像选了两个（2026-09-03 渲染出来才看见，
+    //    六条前端断言全绿也没抓到 —— 断言查的是有没有，不是好不好看）。
+    //    选中态只跟手动选择走；这次实际走了谁，右边那个 ✓ 负责。
+    var on = st.updPick === x.id;
+    // 🔴 **速度这一列只放实测出来的字节率。没测过就是空的（—）。**
+    //    绝不拿响应延迟去顶替：那是另一件事，填进来就是在暗示一个
+    //    我们并没有测过的结论。
+    var right = x.ok
+      ? (x.bps ? F.gb(x.bps) + '/s' : '—')
+      : esc(x.error || '连不上');
+    return '<div class="it' + (on ? ' on' : '') + '"'
+      + (x.ok ? ' data-act="pickUpdLine" data-arg="' + esc(x.id) + '"'
+              : ' style="opacity:.5"')
+      + ' title="' + esc(x.ok ? x.name : (x.error || '连不上')) + '">'
+      + '<input type="radio" style="pointer-events:none;width:12px;height:12px;'
+      + 'flex:none;margin:0"' + (on ? ' checked' : '')
+      + (x.ok ? '' : ' disabled') + '>'
+      + '<span class="grow ell">' + esc(x.name) + '</span>'
+      + '<span class="rt" style="width:104px;text-align:right">' + right
+      + (x.used ? '　✓' : '') + '</span></div>';
+  }).join('');
+
+  // 「自动」在最上面且是默认 —— 手动选是给网络环境特殊的人留的后门，
+  // 不该变成常态。
+  var auto = '<div class="it' + (st.updPick ? '' : ' on') + '"'
+    + ' data-act="pickUpdLine" data-arg="" title="每次都挑最快的那条">'
+    + '<input type="radio" style="pointer-events:none;width:12px;height:12px;'
+    + 'flex:none;margin:0"' + (st.updPick ? '' : ' checked') + '>'
+    + '<span class="grow ell">自动（用最快的）</span>'
+    + '<span class="rt" style="width:104px;text-align:right">推荐</span></div>';
+
+  // 表头。存在的理由是那一列的「—」要有个解释 —— 没有表头的话，
+  // 用户看到一排横杠只会以为是坏了，而不是「还没测」。
+  var hd = '<div class="hd"><span style="width:12px"></span>'
+    + '<span class="grow">线路</span>'
+    + '<span style="width:104px;text-align:right">下载速度</span></div>';
+
+  var anyBps = false;
+  for (i = 0; i < ls.length; i++) { if (ls[i].bps) { anyBps = true; break; } }
+
+  var probe = '<div style="display:flex;gap:8px;align-items:center;'
+    + 'justify-content:center;margin-top:4px">'
+    + btn('probeUpdSpeed', st.updProbing ? '正在实测…' : '测下载速度',
+          { off: !!st.updProbing })
+    + '<span class="f-dim" style="font-size:11px">'
+    + (st.updProbing ? '每条各下 2 秒'
+       : (anyBps ? '数字是刚才实测的' : '没测过，所以是空的'))
+    + '</span></div>';
+
+  // 高度按 .it 的 24px 行高算，取 6.5 行 = 156px：
+  //   · 查版本是 5 条线路 + 「自动」= 6 行，正好全显示，不出滚动条
+  //   · 测速后是 7 条 + 「自动」= 8 行，露出半行 —— 那半行就是「下面还有」
+  // 卡成整行反而糟：第 7 行一点不露，用户根本不知道能滚。
+  return toggle
+    + '<div style="width:100%;max-width:430px;max-height:156px;overflow:auto;'
+    + 'text-align:left;margin-top:4px">' + hd + auto + rows + '</div>'
+    + probe;
+}
+
+
 // 用户主动点「检查更新」才出现，盖住主区；关掉就回到原来的地方。
 // 放主区而不是弹窗：620x440 的窗口里，更新说明有好几行，弹窗放不下。
 function updateView(st) {
@@ -396,6 +506,7 @@ function updateView(st) {
       + '<div style="font-size:14px;font-weight:600">暂时没法检查更新</div>'
       + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
       + esc(u.error || '不知道为什么') + '</div>'
+      + updLines(st, u)
       + '<div style="display:flex;gap:8px">'
       + btn('checkUpdate', '再试一次') + close + '</div></div>';
   }
@@ -431,6 +542,7 @@ function updateView(st) {
       + (u.has_update ? '有新版本，但拿不到更新包' : '没有可用的更新') + '</div>'
       + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
       + esc(u.error) + '</div>'
+      + updLines(st, u)
       + '<div style="display:flex;gap:8px">' + close + '</div></div>';
   }
 
@@ -439,6 +551,7 @@ function updateView(st) {
     return '<div class="fill">'
       + '<div style="font-size:14px;font-weight:600">已经是最新版本</div>'
       + '<div class="f-dim">' + esc(u.local || '') + '</div>'
+      + updLines(st, u)
       + '<div>' + close + '</div></div>';
   }
 
@@ -451,7 +564,8 @@ function updateView(st) {
     + (u.published ? '　·　发布于 ' + esc(u.published) : '')
     + (u.asset && u.asset.size ? '　·　' + F.gb(u.asset.size) : '') + '</div>'
     + (notes ? '<div class="f-dim" style="max-width:90%;text-align:left;'
-        + 'line-height:1.6;max-height:150px;overflow:auto">' + notes + '</div>' : '')
+        + 'line-height:1.6;max-height:110px;overflow:auto">' + notes + '</div>' : '')
+    + updLines(st, u)
     + '<div style="display:flex;gap:8px;margin-top:4px">'
     + btn('downloadUpdate', '更新', { cls: 'primary' })
     + btn('closeUpdate', '暂不更新') + '</div></div>';

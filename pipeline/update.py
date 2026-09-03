@@ -34,9 +34,44 @@ torch 4.2 GB、模型 4.6 GB 都不动。改的部分只占万分之一，
     api + moeyy                 SSL EOF
     网页 /releases/latest 的 302  直连和 ghfast 都拿得到 tag
 
-**镜像的行为会变，而且是双向的变。** 所以查版本也依次试多条路，
-谁先通用谁；全都不通时退到网页版的 302 —— 那条只能拿到版本号
-（没有 asset 列表和校验值），只够告诉用户「有新版本，去页面手动下」。
+**镜像的行为会变，而且是双向的变。** 所以查版本也多试几条路，
+全都不通时退到网页版的 302 —— 那条只能拿到版本号（没有 asset 列表和
+校验值），只够告诉用户「有新版本，去页面手动下」。
+
+**2026-09-03 第三次实测**（小蔡的机器，十条候选一起测）：
+
+    api + gh-proxy.com          200            api + gh-proxy.org      200
+    api + cdn.gh-proxy.org      200            api + axisnow.…org      200
+    api + v4/v6.gh-proxy.org    200            api 直连                200
+    api + ghfast                403            api + ghproxy.net       403
+    api + moeyy                 SSL 握手失败（下载也一起挂了）
+
+这次做了三件事：
+
+  · **改成并发，不再依次试。** 原来名单第一条是直连，用户网络封了
+    GitHub 的话要先干等满 6 秒超时才轮到第二条，全试一遍最坏 30 秒 ——
+    而界面上只有一个转圈。并发之后典型 1.2 秒（实测），最坏就是单条超时。
+  · **顺手把每条路的成败和耗时交给界面**（`api_race` 返回的 lines）。
+    既然每条都跑了，这份明细是白捡的。「连不上 GitHub」这句话没有任何
+    可操作性，「五条里三条超时、两条 403」才能让人判断是断网还是被墙。
+  · moeyy 清出两份名单；ghfast / ghproxy.net 只从 API 名单拿掉，
+    它们的文件下载还是好的。
+
+**同日又把网上推荐的 12 个候选挨个打了一遍，只活下来 1 个：**
+
+    ghproxy.vip                              200  1.86s  ← 收
+    gh.zwy.one / gh.llkk.cc                  403
+    ghp.ci / mirror.ghproxy.com /
+      github.moeyy.cn / hub.gitmirror.com    SSL 握手失败
+    ghproxy.cxkpro.top                       200 但返回 HTML，不是 JSON
+    ghproxy.cc                               证书验证失败
+    api.kkgithub.com                         证书验证失败    ← 换域名型
+    api.bgithub.xyz                          403            ← 换域名型
+
+**能代理 API 的是稀缺品**，多数镜像只做文件下载（走 CDN，没有配额问题）。
+收下 ghproxy.vip 不是因为它快（可用的里最慢），而是因为它是**第二家**：
+gh-proxy.com 和 gh-proxy.org/cdn/axisnow 看着四条，其实同属一个家族，
+真挂起来是一起挂。冗余要跨供应商才算冗余。
 
 ## 镜像不可信，所以并发测速
 
@@ -46,9 +81,11 @@ torch 4.2 GB、模型 4.6 GB 都不动。改的部分只占万分之一，
 「镜像会挂」，等于把问题换个地方。所以：候选写一串、并发实测、谁快用谁，
 复用 `sources.probe_all`。
 """
+import concurrent.futures as futures
 import io
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -68,9 +105,31 @@ GH_MIRRORS = [
     {'id': 'ghfast', 'name': 'ghfast.top', 'prefix': 'https://ghfast.top/'},
     {'id': 'gh-proxy', 'name': 'gh-proxy.com', 'prefix': 'https://gh-proxy.com/'},
     {'id': 'ghproxy-net', 'name': 'ghproxy.net', 'prefix': 'https://ghproxy.net/'},
-    {'id': 'moeyy', 'name': 'moeyy.xyz', 'prefix': 'https://github.moeyy.xyz/'},
+    {'id': 'ghp-org', 'name': 'gh-proxy.org',
+     'prefix': 'https://gh-proxy.org/'},
+    {'id': 'ghp-cdn', 'name': 'cdn.gh-proxy.org',
+     'prefix': 'https://cdn.gh-proxy.org/'},
+    {'id': 'ghp-axisnow', 'name': 'axisnow.gh-proxy.org',
+     'prefix': 'https://axisnow.gh-proxy.org/'},
+    {'id': 'ghproxy-vip', 'name': 'ghproxy.vip',
+     'prefix': 'https://ghproxy.vip/'},
     {'id': 'direct', 'name': 'GitHub 官方', 'prefix': ''},
 ]
+
+# 2026-09-03 实测（小蔡的机器，10 条候选并发采样，只看排名不看绝对值）：
+#
+#   gh-proxy.com    244 KB/s  API ✓     gh-proxy.org      222 KB/s  API ✓
+#   axisnow         223 KB/s  API ✓     cdn.gh-proxy.org  212 KB/s  API ✓
+#   v6.gh-proxy.org 199 KB/s  API ✓     直连              186 KB/s  API ✓
+#   ghproxy.net     159 KB/s  API ✗403  ghfast.top        152 KB/s  API ✗403
+#   v4.gh-proxy.org 152 KB/s  API ✓     moeyy.xyz         全挂（SSL 握手失败）
+#
+# 这一版的取舍：
+#   · **moeyy.xyz 删掉** —— API 和下载双双 SSL 失败，留着只是每次多等一条超时
+#   · v4 / v6 不收：v4 垫底；v6 要 IPv6，别人机器上不一定有
+#   · ghfast / ghproxy.net **留在这份名单**（下载还是好的），但从下面的
+#     API 名单里拿掉 —— 它俩现在 403。09-02 时 ghfast 的 API 还是通的，
+#     又一次印证「镜像的行为会变，而且是双向的变」
 
 VERSION_FILE = os.path.join(paths.ROOT, 'version.json')
 
@@ -98,36 +157,117 @@ def write_version(tag, published_at=''):
 
 
 # ── 查远端 ──────────────────────────────────────────────────────────────
-# 查版本依次试这些前缀，谁先通用谁。空串 = 直连。
-# 顺序按 2026-09-02 的实测排：直连最快，gh-proxy 次之，剩下的当兜底。
-API_PREFIXES = ['', 'https://gh-proxy.com/', 'https://ghfast.top/',
-                'https://ghproxy.net/', 'https://github.moeyy.xyz/']
+# 查版本走哪些路。空串 = 直连。
+#
+# 🔴 **这份名单和 GH_MIRRORS 不一样，是故意的。**
+#    `api.github.com` 对未认证请求限速 60 次/小时/IP。镜像要是代理 API，
+#    全世界用户共用它服务器的那 60 次配额，几分钟就爆，还会连累它被 GitHub
+#    封 IP —— 所以不少镜像明确拒绝代理 API（直接 403），但文件下载走 CDN
+#    没这问题，乐意代理。
+#    2026-09-03 实测：ghfast.top 和 ghproxy.net 现在都是 403（09-02 时
+#    ghfast 还是通的），所以它俩只留在 GH_MIRRORS 里下文件。
+API_MIRRORS = [
+    {'id': 'direct', 'name': 'GitHub 官方', 'prefix': ''},
+    {'id': 'gh-proxy', 'name': 'gh-proxy.com',
+     'prefix': 'https://gh-proxy.com/'},
+    {'id': 'ghp-org', 'name': 'gh-proxy.org',
+     'prefix': 'https://gh-proxy.org/'},
+    {'id': 'ghp-cdn', 'name': 'cdn.gh-proxy.org',
+     'prefix': 'https://cdn.gh-proxy.org/'},
+    {'id': 'ghp-axisnow', 'name': 'axisnow.gh-proxy.org',
+     'prefix': 'https://axisnow.gh-proxy.org/'},
+    # 🔴 留它不是因为快（1.9 秒，可用的里最慢），是因为**它是第二家**。
+    #    上面 gh-proxy.com 和 gh-proxy.org/cdn/axisnow 看着四条，其实是
+    #    一个家族的几个域名，一起挂的概率很高。ghproxy.vip 是另一个项目
+    #    （WJQSERVER-STUDIO/ghproxy），才算真正的冗余。
+    {'id': 'ghproxy-vip', 'name': 'ghproxy.vip',
+     'prefix': 'https://ghproxy.vip/'},
+]
 
-# 单条路的超时。比原来的 10 秒短 —— 要试好几条，每条都等 10 秒的话
-# 用户要盯着转圈将近一分钟。
+# 单条路的超时。因为是并发，这也就是**整体**的最坏耗时。
 API_TRY_TIMEOUT = 6
 
 
-def _api(url):
-    r"""查 GitHub API。**依次试直连和各镜像**，第一个成功的就用。
+def api_race(url):
+    r"""并发查 GitHub API，返回 (数据, 线路明细)。
 
-    绑死一条路的下场：2026-09-02 小蔡在外面一直「连不上 github」，
-    而那条路（api 直连）在开发机上一直是通的 —— 又一个「在我这儿好好的」。
+    🔴 **原来是串行依次试，这是个隐蔽的坑。** 名单第一条是直连，
+       用户网络封了 GitHub 的话，要先干等满 6 秒超时才轮到第二条；
+       五条都试一遍最坏 30 秒，而界面上只有一个转圈。
+       并发之后，最坏耗时 = 最慢那条的超时，典型情况约 1.5 秒。
 
+    顺带解决另一件事：**线路明细是白捡的**。既然每条都跑了，把各自的
+    成败和耗时一起交给界面，用户就能看见「这次走的谁、谁挂了」，
+    不用再对着一个转圈猜。这是「不给黑盒」那条规矩在更新这条路上的落实。
+
+    返回的 lines 每项：{id, name, ok, ms, error}，按耗时排序。
     全都失败时抛最后一个异常，让上层报出人话。
     """
-    last = None
-    for pre in API_PREFIXES:
+    lines, data, err = [], None, None
+
+    def one(m):
+        t0 = time.time()
+        full = m['prefix'] + url if m['prefix'] else url
         try:
-            req = urllib.request.Request(pre + url if pre else url, headers=UA)
+            req = urllib.request.Request(full, headers=UA)
             with urllib.request.urlopen(req, timeout=API_TRY_TIMEOUT) as r:
-                return json.loads(r.read().decode('utf-8'))
+                return m, json.loads(r.read().decode('utf-8')), None, \
+                    int((time.time() - t0) * 1000)
         except Exception as e:
-            last = e
-            # 404 是「仓库还没发过版本」，换条路也是一样的结果，不用再试
-            if '404' in str(e):
-                raise
-            continue
+            return m, None, e, int((time.time() - t0) * 1000)
+
+    with futures.ThreadPoolExecutor(max_workers=len(API_MIRRORS)) as ex:
+        for i, (m, d, e, ms) in enumerate(ex.map(one, API_MIRRORS)):
+            lines.append({'id': m['id'], 'name': m['name'], 'ok': d is not None,
+                          'ms': ms, 'error': _api_err(e) if e else '',
+                          'used': False, 'seq': i})
+            if d is not None and data is None:
+                data = d
+            elif e is not None:
+                err = e
+
+    # 挂了的沉底，可用的**保持名单原序**。
+    #
+    # 🔴 **不按 ms 排。** 这里的 ms 是查版本的响应延迟，拿它排序等于在
+    #    暗示「排前面的下得快」—— 而 2026-09-03 实测正好反过来：
+    #    延迟最快的直连（903ms）下载只排第 4（663 KB/s），延迟垫底的
+    #    gh-proxy.org（1077ms）下载第一（723 KB/s）。两个排名几乎是反的。
+    #    排序依据只能是速度，没测速就别排（小蔡定的规矩）。
+    lines.sort(key=lambda x: (not x['ok'], x['seq']))
+    if data is None:
+        # 404 = 仓库还没发过版本，换哪条路都一样，照原样抛出去
+        e = err if err else RuntimeError('查不到版本')
+        # 🔴 **失败时更要把明细带出去** —— 「连不上 GitHub」这句话本身
+        #    没有任何可操作性，而「五条路里三条超时、两条 403」是能拿去
+        #    判断到底是断网还是被墙的。异常对象上挂一下，让 check() 取。
+        try:
+            e.lines = lines
+        except Exception:
+            pass
+        raise e
+    # 排完之后 lines[0] 正是 data 的来源：两边都是「名单顺序里第一个成功的」。
+    # 「本次采用」标的是**实际用了哪条**，不是「哪条最快」—— 后者要测速才知道。
+    lines[0]['used'] = True
+    return data, lines
+
+
+def _api_err(e):
+    """把异常压成界面能直接显示的一句话。"""
+    s = str(e)
+    if '403' in s:
+        return '403 不代理 API'
+    if '404' in s:
+        return '404 没找到'
+    if 'SSL' in s or 'CERTIFICATE' in s.upper():
+        return 'SSL 握手失败'
+    if 'timed out' in s or 'timeout' in s.lower():
+        return '超时'
+    return s[:40]
+
+
+def _api(url):
+    """只要数据、不关心线路明细时的写法。"""
+    return api_race(url)[0]
     raise last if last else RuntimeError('查不到版本')
 
 
@@ -261,14 +401,18 @@ def check():
     out = {'ok': False, 'has_update': False, 'local': '', 'latest': '',
            'notes': '', 'published': '', 'asset': None, 'error': '',
            # 跨了主/次版本：更新包补不上依赖，得重下完整安装包
-           'need_full': False}
+           'need_full': False,
+           # 各条线路的实测明细，给界面展开看。成功失败都有。
+           'lines': []}
     loc = local_version()
     out['local'] = loc['tag'] or '(未知)'
 
     try:
-        rel = _api('https://api.github.com/repos/%s/%s/releases/latest'
-                   % (OWNER, REPO))
+        rel, out['lines'] = api_race(
+            'https://api.github.com/repos/%s/%s/releases/latest'
+            % (OWNER, REPO))
     except Exception as e:
+        out['lines'] = getattr(e, 'lines', [])
         if '404' in str(e):
             out['ok'] = True
             out['error'] = '仓库里还没有发布任何版本'
@@ -580,11 +724,16 @@ ASSET_PREFIX = 'https://github.com/%s/%s/releases/download/' % (OWNER, REPO)
 
 
 def download(asset_url, dest, on_progress=None, seconds=2.0,
-             digest='', size=0, allow_unverified=False):
+             digest='', size=0, allow_unverified=False, prefer=''):
     r"""下更新包。返回 (ok, error, 用了哪个源)。
 
     先并发测速挑最快的再下 —— 候选里当场坏掉的不在少数（实测六个坏三个），
     不测速就可能卡在一个吐不出数据的源上。
+
+    `prefer` 是界面上手动指定的线路 id（空 = 自动挑最快的）。留这个后门是
+    因为**最快的未必最稳**：别人的网络跟开发机可能完全不同，测速赢的那条
+    也可能下到一半就断。只认 GH_MIRRORS 里的 id，认不出来就照常自动挑 ——
+    所以即便前端传进来个乱七八糟的值，最坏也只是回到默认行为。
 
     ## 下回来的东西必须校验（2026-09-02 加）
 
@@ -630,16 +779,23 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
         #    用户点了「仍然安装」之后走 allow_unverified=True 这条路：
         #    校验值没有，但长度和 zip 完整性还是会查（见下面）。
         return (False, 'NEED_CONFIRM:拿不到 GitHub 给的校验值', '')
-    rows = probe_mirrors(asset_url, seconds=seconds, size=size)
-    best = sources.pick_best(rows) or (rows[0] if rows else None)
-    if not best:
-        return False, '所有下载源都连不上，检查一下网络', ''
+    # 手动指定了线路就直接用，连测速都省了 —— 用户已经替我们做了选择。
+    prefix, best = '', None
+    if prefer:
+        for m in GH_MIRRORS:
+            if m['id'] == prefer:
+                prefix, best = m['prefix'], {'id': m['id'], 'name': m['name']}
+                break
 
-    prefix = ''
-    for m in GH_MIRRORS:
-        if m['id'] == best['id']:
-            prefix = m['prefix']
-            break
+    if best is None:
+        rows = probe_mirrors(asset_url, seconds=seconds, size=size)
+        best = sources.pick_best(rows) or (rows[0] if rows else None)
+        if not best:
+            return False, '所有下载源都连不上，检查一下网络', ''
+        for m in GH_MIRRORS:
+            if m['id'] == best['id']:
+                prefix = m['prefix']
+                break
 
     h = hashlib.sha256()
     try:

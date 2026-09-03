@@ -370,7 +370,44 @@
     closeUpdate: function () {
       st.upd = null;
       st.updAllowUnverified = false;
+      st.updLinesOpen = false;
       render();
+    },
+
+    // 展开/收起线路表。折叠是默认 —— 平时没人关心走的哪条路，
+    // 只有连不上的时候才想知道为什么。
+    toggleUpdLines: function () {
+      st.updLinesOpen = !st.updLinesOpen;
+      render();
+    },
+
+    // 手动指定走哪条线路。空串 = 回到「自动挑最快的」。
+    // 留这个后门是因为**最快的未必最稳**：别人的网络环境跟这台机器
+    // 可能完全不同，测速赢的那条也可能下到一半就断。
+    pickUpdLine: function (id) {
+      st.updPick = id || '';
+      render();
+    },
+
+    // 实测下载速度。**只有用户主动点才跑** —— 查更新顺手拿到的是
+    // 响应快慢（谁先答话），跟下载快慢是两回事；但为了后者让每个人
+    // 都多等几秒不划算，想精确知道的人自己点。
+    probeUpdSpeed: function () {
+      if (st.updProbing) return;
+      var asset = st.upd && st.upd.asset;
+      if (!asset || !asset.url) return;   // 没东西要下，就没什么好测的
+      st.updProbing = true;
+      render();
+      // 不传地址：后端自己去查该测哪个文件（本机任意进程都能 POST 到
+      // 这个端口，接受外部 URL 等于把「去访问任意地址」的能力递出去）
+      HTTP.post('/api/update/probe', {}).then(function (d) {
+        st.updProbing = false;
+        if (st.upd && d && d.lines && d.lines.length) st.upd.lines = d.lines;
+        render();
+      }).catch(function () {
+        st.updProbing = false;
+        render();
+      });
     },
 
     // 跨大版本时去 Release 页面下完整安装包
@@ -442,8 +479,11 @@
       if (!a || !a.url) return;
       st.updBusy = true;
       render();
+      // line 是唯一另一个后端会看的字段。它不是地址，只是一个在
+      // GH_MIRRORS 里查表的键，查不到就回到「自动挑最快的」。
       HTTP.post('/api/update/download',
-                st.updAllowUnverified ? { allow_unverified: true } : {})
+                { allow_unverified: !!st.updAllowUnverified,
+                  line: st.updPick || '' })
         .then(function () {
           stopUpdPolling();
           updPoller = setInterval(pollUpd, 800);
