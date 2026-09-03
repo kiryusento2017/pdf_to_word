@@ -779,30 +779,91 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
         #    用户点了「仍然安装」之后走 allow_unverified=True 这条路：
         #    校验值没有，但长度和 zip 完整性还是会查（见下面）。
         return (False, 'NEED_CONFIRM:拿不到 GitHub 给的校验值', '')
-    # 手动指定了线路就直接用，连测速都省了 —— 用户已经替我们做了选择。
-    prefix, best = '', None
-    if prefer:
-        for m in GH_MIRRORS:
-            if m['id'] == prefer:
-                prefix, best = m['prefix'], {'id': m['id'], 'name': m['name']}
-                break
+    # ── 按顺序试，**一条挂了就换下一条** ────────────────────────────
+    #
+    # 🔴 原来只试一条，挂了整个更新就失败，而错误信息还写着「再点一次会
+    #    换个源重试」—— 那句话根本不成立：更新包只有 0.5 MB，走的是
+    #    probe_mirrors 的「小包不测速」捷径，所有 bps 都是 0，pick_best
+    #    返回 None，于是每次都落到名单第一条。实测连挑三次全是同一条。
+    #
+    #    2026-09-03 发 v0.1.1 当天就撞上了：ghfast.top 的 SSL 挂掉，
+    #    自动更新链路当场断掉 —— 而旁边六条是通的。0.5 MB 的东西，
+    #    换一条重下的代价近乎为零，没有理由不试。
+    order = _download_order(asset_url, prefer, seconds, size)
+    if not order:
+        return False, '所有下载源都连不上，检查一下网络', ''
 
-    if best is None:
-        rows = probe_mirrors(asset_url, seconds=seconds, size=size)
-        best = sources.pick_best(rows) or (rows[0] if rows else None)
-        if not best:
-            return False, '所有下载源都连不上，检查一下网络', ''
+    tried = []
+    for m in order:
+        ok, err, fatal = _fetch_one(asset_url, m['prefix'], dest,
+                                    on_progress, digest)
+        if ok:
+            return True, '', m['name']
+        tried.append((m['name'], err))
+        if fatal:
+            # 🔴 校验没过**不换源**。内容和原件对不上是安全事件，不是
+            #    网络抖动；拿「多试几个源」去碰运气，等于在一堆不可信的
+            #    源里找一个碰巧对得上的。停在这儿，让用户自己去 Release 页。
+            break
+
+    name, err = tried[0]
+    if len(tried) == 1:
+        return False, err, name
+    return (False, '%d 条下载线路都试过了，都没成功。第一条（%s）：%s'
+            % (len(tried), name, err), name)
+
+
+def _download_order(asset_url, prefer, seconds, size):
+    r"""按什么顺序试各条下载线路。
+
+    手动指定的排最前（用户已经替我们做了选择），其余按测速快慢；
+    小包测不出速度时就按名单顺序 —— 那正是 probe_mirrors 的小包捷径
+    要的行为，只是现在不再「只试第一条」了。
+
+    测速时明确报错的那几条排到最后当退路，不直接剔除：测速用的是
+    HEAD/短读，跟真正下载不完全是一回事，留着比丢掉稳。
+    """
+    by_id = {m['id']: m for m in GH_MIRRORS}
+    order = []
+    if prefer and prefer in by_id:
+        # 🔴 指定了就**不测速** —— 用户已经替我们做完选择，再花几秒去测
+        #    一个用不上的排名是白等。其余线路按名单顺序留作退路即可。
+        order.append(by_id[prefer])
         for m in GH_MIRRORS:
-            if m['id'] == best['id']:
-                prefix = m['prefix']
-                break
+            if m not in order:
+                order.append(m)
+        return order
+    try:
+        rows = probe_mirrors(asset_url, seconds=seconds, size=size)
+    except Exception:
+        rows = []
+    for r in sorted(rows, key=lambda x: -(x.get('bps') or 0)):
+        m = by_id.get(r.get('id'))
+        if m is not None and m not in order and not r.get('error'):
+            order.append(m)
+    for m in GH_MIRRORS:
+        if m not in order:
+            order.append(m)
+    return order
+
+
+def _fetch_one(asset_url, prefix, dest, on_progress, digest):
+    r"""从**一条**线路下回来并验。返回 (成功, 错误, 要不要就此打住)。
+
+    第三个值只有校验没过时才是 True —— 那种情况换源没有意义，见调用处。
+    三道验证（长度 / zip 完整性 / SHA256）跟改造前一字不差，只是把
+    「返回给调用方」换成了「告诉调用方要不要再试下一条」。
+    """
+    import hashlib
+    import zipfile
 
     h = hashlib.sha256()
+    total = 0
+    got = 0
     try:
         req = urllib.request.Request(_mirrored(asset_url, prefix), headers=UA)
         with urllib.request.urlopen(req, timeout=30) as r:
             total = int(r.headers.get('Content-Length') or 0)
-            got = 0
             paths.ensure(os.path.dirname(dest) or paths.ROOT)
             with io.open(dest, 'wb') as f:
                 while True:
@@ -815,8 +876,7 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
                     if on_progress:
                         on_progress(got, total)
     except Exception as e:
-        return (False, '下载失败：%s。再点一次「检查更新」会换个源重试。'
-                % str(e)[:120], best['name'])
+        return False, '下载失败：%s' % str(e)[:120], False
 
     def _drop():
         try:
@@ -826,37 +886,31 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
 
     if total and got != total:
         _drop()
-        return (False, '没下完（只到了 %d / %d 字节），网络中断了，可以重试'
-                % (got, total), best['name'])
+        return (False, '没下完（只到了 %d / %d 字节），网络中断了'
+                % (got, total), False)
 
     if not digest:
         # 没有官方校验值时能做的：确认它至少是个**完整的、能打开的 zip**。
         # 这挡不住蓄意篡改（那要靠 digest），但挡得住截断、挡得住镜像
         # 返回一个 HTML 错误页 —— 后者在实测里出现过。
-        import zipfile
         try:
             with zipfile.ZipFile(dest) as z:
                 bad = z.testzip()
             if bad:
                 _drop()
-                return (False, '下回来的包内部损坏（%s），换个时间再试' % bad,
-                        best['name'])
+                return False, '下回来的包内部损坏（%s）' % bad, False
         except Exception as e:
             _drop()
-            return (False,
-                    '下回来的不是一个完整的更新包（%s）—— 多半是这个下载源'
-                    '返回了别的东西。换个时间再试。' % str(e)[:60],
-                    best['name'])
-        return True, '', best['name']
+            return (False, '下回来的不是一个完整的更新包（%s）—— 多半是这条'
+                    '线路返回了别的东西' % str(e)[:60], False)
+        return True, '', False
 
     if h.hexdigest().lower() != digest.lower():
-        # 换源重试没有意义 —— 内容对不上说明这个源给的就不是原件。
         # 坏包必须删掉：留在硬盘上，下次有人手滑双击就装了。
         _drop()
         return (False,
-                '更新包校验没通过 —— 从「%s」下回来的内容和 GitHub 上的原件'
-                '对不上，可能是这个下载源不干净。出于安全没有安装，'
-                '换个时间再试，或到项目的 Release 页面手动下载。'
-                % best['name'], best['name'])
+                '更新包校验没通过 —— 下回来的内容和 GitHub 上的原件对不上，'
+                '可能是这条线路不干净。出于安全没有安装，'
+                '到项目的 Release 页面手动下载。', True)
 
-    return True, '', best['name']
+    return True, '', False

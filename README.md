@@ -93,6 +93,13 @@
 （725 KB/s），而下载最快的 `ghproxy.net`（795 KB/s）连 API 都代理不了。
 **响应快和下载快几乎无关**，拿延迟排序会让人选错。
 
+**下载更新包时一条线路挂了会自动换下一条。** 以前只试一条，挂了整个更新
+就失败——而且那句「再点一次会换个源重试」是不成立的：更新包只有 0.5 MB，
+走的是「小包不值当测速」的捷径，每次都落到名单第一条，重试还是它。
+2026-09-03 发这一版当天就撞上：`ghfast.top` 的 SSL 挂了，自动更新当场断掉，
+而旁边六条是通的。**唯一不换源的情况是校验没过**——内容跟 GitHub 上的原件
+对不上属于安全事件，换源等于在一堆不可信的源里找一个碰巧对得上的。
+
 **转换进行中，「检查更新」是禁用的**（按钮还在，只是点不动）。更新包覆盖
 的正是 `pipeline/*.py`，而转换每处理一份 PDF 就新起一次 MinerU 子进程——
 转到一半换掉代码，后面几份读到的就是新代码；装完还要重启，一重启这批
@@ -331,14 +338,14 @@ app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源�
             icon.ico / icon_source.png（GitHub 头像做的图标）
 runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      299 条 Python + 122 条前端检查 + 四个真实数据验证脚本
+tests/      302 条 Python + 122 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 299 条，9 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 302 条，9 秒
 node tests\front_check.js                                   # 122 条，真渲染
 ```
 

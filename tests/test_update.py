@@ -810,6 +810,104 @@ class Test下载必须校验(unittest.TestCase):
         self.assertFalse(ok, '陌生地址却下了')
         self.assertIn('地址', err)
 
+    def _serve_per_url(self, plan, default_body=None):
+        r"""按 URL 决定给什么：plan 里 key 是 URL 里的特征串，
+        值是 body（bytes）或一个要抛的异常。"""
+        def open_(req, timeout=None):
+            url = getattr(req, 'full_url', str(req))
+            body = default_body
+            for k, v in plan.items():
+                if k in url:
+                    body = v
+                    break
+            if isinstance(body, Exception):
+                raise body
+
+            class _Resp(object):
+                def __init__(self):
+                    self.headers = {'Content-Length': str(len(body))}
+                    self._pos = 0
+
+                def read(self, n=-1):
+                    if n is None or n < 0:
+                        b = body[self._pos:]
+                        self._pos = len(body)
+                        return b
+                    b = body[self._pos:self._pos + n]
+                    self._pos += n
+                    return b
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return _Resp()
+
+        update.urllib.request.urlopen = open_
+
+    def test_一条线路挂了会自动换下一条(self):
+        r"""🔴 **2026-09-03 发 v0.1.1 当天就撞上了这个。**
+
+        原来只试一条，挂了整个更新就失败，而错误信息还写着「再点一次会
+        换个源重试」—— 那句话根本不成立：更新包只有 0.5 MB，走的是
+        probe_mirrors 的「小包不测速」捷径，所有 bps 都是 0，pick_best
+        返回 None，于是每次都落到名单第一条。实测连挑三次全是同一条。
+
+        那天 ghfast.top 的 SSL 挂了，自动更新链路当场断掉 —— 而旁边
+        六条是通的。0.5 MB 的东西，换一条重下的代价近乎为零。
+        """
+        body = b'PK\x03\x04 pretend this is a zip'
+        # 第一条（setUp 里测速固定挑「直连」，prefix 为空）挂掉，
+        # 第二条 ghfast 正常
+        self._serve_per_url(
+            {'ghfast.top': body},
+            default_body=Exception('SSL: UNEXPECTED_EOF_WHILE_READING'))
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256(body).hexdigest())
+        self.assertTrue(ok, '第一条挂了就放弃了：%s' % err)
+        self.assertEqual(via, 'ghfast.top', '没换到下一条线路：%s' % via)
+        self.assertTrue(os.path.isfile(self.dest))
+
+    def test_校验没过时不许换源碰运气(self):
+        r"""🔴 **这条跟上一条是一对，方向相反。**
+
+        网络挂了换一条是对的；内容跟原件对不上是**安全事件**，
+        换源等于在一堆不可信的源里找一个碰巧对得上的。必须当场停。
+        """
+        opened = []
+        real_serve = self._serve_per_url
+
+        def counting(plan, default_body=None):
+            real_serve(plan, default_body)
+            inner = update.urllib.request.urlopen
+
+            def spy(req, timeout=None):
+                opened.append(getattr(req, 'full_url', ''))
+                return inner(req, timeout=timeout)
+            update.urllib.request.urlopen = spy
+
+        counting({}, default_body='这不是原件，是被换掉的内容'.encode('utf-8'))
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest,
+            digest=hashlib.sha256(b'real content').hexdigest())
+        self.assertFalse(ok, '校验没过却装了')
+        self.assertIn('校验', err)
+        self.assertEqual(len(opened), 1,
+                         '校验失败后还试了别的源（试了 %d 条）——'
+                         '那是拿安全去碰运气' % len(opened))
+        self.assertFalse(os.path.isfile(self.dest), '坏包留在硬盘上了')
+
+    def test_全部线路都挂时说清楚试过几条(self):
+        self._serve_per_url({}, default_body=Exception('timed out'))
+        ok, err, via = update.download(
+            update.ASSET_PREFIX + 'v1/u.zip', self.dest, digest='00' * 32)
+        self.assertFalse(ok)
+        self.assertIn('条下载线路都试过了', err,
+                      '没说试了几条，用户会以为只试了一条：%s' % err)
+
     def _record_urls(self, body):
         """记下真正请求了哪个 URL。"""
         urls = []
