@@ -371,6 +371,15 @@
       st.upd = null;
       st.updAllowUnverified = false;
       st.updLinesOpen = false;
+      st.updNotesOpen = false;
+      render();
+    },
+
+    // 展开/收起完整的更新说明。默认只给摘要那几行 —— 620x440 的
+    // 窗口塞不下长文，而摘要（Release 正文里分隔线之前那段）已经
+    // 够判断「这次更新值不值得现在装」。
+    toggleUpdNotes: function () {
+      st.updNotesOpen = !st.updNotesOpen;
       render();
     },
 

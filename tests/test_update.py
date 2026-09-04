@@ -985,5 +985,111 @@ class 测速结果的字段契约(unittest.TestCase):
         self.assertTrue(all(r.get('why') for r in small), '小包应该走捷径')
 
 
+class Test更新说明拆成摘要和全文(unittest.TestCase):
+    r"""Release 的正文是给人看的长篇散文，直接摆进 620x440 的小窗口
+    只能看到一个残缺的开头。
+
+    2026-09-05 之前是「截断 600 字符 + 前端只显示前 6 行」，v0.1.1 那版
+    用户看到的是：
+
+        ## 修了两件事
+        ### 1. 装在中文路径里转换必失败
+        （空行）
+        有用户把软件放在桌面的「新建文件夹 (2)」里，转换跑满一分钟然后失败：
+
+    —— 一条实质信息都没有。
+
+    现在约定 Release 正文以摘要开头，用一条 `---` 分隔线隔开正文：
+
+        - 新增 关于页面
+        - 修复 中文路径转换失败
+
+        ---
+
+        ## 详细说明
+        ……
+
+    用可见的分隔线而不是 HTML 注释，是因为注释在 GitHub 网页上是隐藏的，
+    用户在 Release 页面看不到摘要。用 `---` 两边都好看。
+    """
+
+    def test_有分隔线时摘要只取前面那段(self):
+        body = ('- 新增 关于页面\n- 修复 中文路径\n\n---\n\n'
+                '## 详细说明\n\n很长的正文……\n')
+        brief, full = update.split_notes(body)
+        self.assertIn('- 新增 关于页面', brief)
+        self.assertIn('- 修复 中文路径', brief)
+        self.assertNotIn('详细说明', brief, '摘要里混进了正文')
+        self.assertIn('详细说明', full, '全文里应该有正文')
+
+    def test_没有分隔线时全文当摘要(self):
+        r"""老 Release 的正文里没有分隔线 —— 找不到就退回原来的行为，
+        不能崩，也不能显示成空的。"""
+        body = '## 修了两件事\n\n### 1. 装在中文路径里转换必失败\n\n正文……\n'
+        brief, full = update.split_notes(body)
+        self.assertEqual(brief.strip(), body.strip())
+        self.assertEqual(full.strip(), body.strip())
+
+    def test_空正文不炸(self):
+        for body in ('', None, '   \n\n  '):
+            brief, full = update.split_notes(body)
+            self.assertEqual(brief, '')
+            self.assertEqual(full, '')
+
+    def test_分隔线要独占一行(self):
+        r"""正文里出现的 `---`（比如表格分隔行 `|---|---|`）不能被
+        当成分隔线，否则摘要会被腰斩在一个莫名其妙的地方。"""
+        body = '- 新增 表格支持\n\n| 列 |\n|---|\n| 值 |\n'
+        brief, _full = update.split_notes(body)
+        self.assertIn('表格支持', brief)
+        self.assertIn('| 值 |', brief, '被表格里的 --- 误切了')
+
+    def test_check返回摘要和全文两个字段(self):
+        r"""前端要拿摘要默认显示、拿全文备展开。"""
+        body = '- 新增 甲\n\n---\n\n详细说明在这里\n'
+        rel = {'tag_name': 'v9.9.9', 'published_at': '2026-01-01T00:00:00Z',
+               'body': body, 'assets': []}
+
+        def fake_race(url):
+            return rel, []
+
+        old_race = update.api_race
+        old_local = update.local_version
+        update.api_race = fake_race
+        update.local_version = lambda: {'tag': 'v0.0.1', 'published_at': ''}
+        try:
+            out = update.check()
+        finally:
+            update.api_race = old_race
+            update.local_version = old_local
+
+        self.assertIn('notes_brief', out)
+        self.assertIn('notes_full', out)
+        self.assertIn('新增 甲', out['notes_brief'])
+        self.assertNotIn('详细说明', out['notes_brief'])
+        self.assertIn('详细说明', out['notes_full'])
+        # 老字段留着，免得旧前端读不到东西
+        self.assertIn('notes', out)
+
+    def test_全文不再被600字符截断(self):
+        r"""原来 notes 截断到 600 字符，那样「展开全文」也没东西可看。"""
+        body = '- 摘要一行\n\n---\n\n' + ('详细说明。' * 400)
+        rel = {'tag_name': 'v9.9.9', 'published_at': '', 'body': body,
+               'assets': []}
+
+        old_race = update.api_race
+        old_local = update.local_version
+        update.api_race = lambda url: (rel, [])
+        update.local_version = lambda: {'tag': 'v0.0.1', 'published_at': ''}
+        try:
+            out = update.check()
+        finally:
+            update.api_race = old_race
+            update.local_version = old_local
+
+        self.assertGreater(len(out['notes_full']), 1000,
+                           '全文被截断了，展开也看不到东西')
+
+
 if __name__ == '__main__':
     unittest.main()

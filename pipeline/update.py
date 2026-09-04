@@ -393,13 +393,74 @@ def _requires_gap(rel):
     return []
 
 
+def _is_hr(line):
+    """这一行是不是 Markdown 的分隔线（三个以上连字符，独占一行）。
+
+    **必须整行判断**，不能只看「含不含 ---」—— Markdown 表格的分隔行
+    长得像它（`|---|---|`），撞上就把摘要腰斩在一个莫名其妙的地方。
+    """
+    t = line.strip()
+    return len(t) >= 3 and set(t) == {'-'}
+
+
+def split_notes(body):
+    """把 Release 正文拆成 (摘要, 全文)。
+
+    ## 为什么要拆
+
+    正文是给人看的长篇散文，直接摆进 620x440 的小窗口只能看到一个残缺
+    的开头。2026-09-05 之前是「后端截断 600 字符 + 前端只显示前 6 行」，
+    v0.1.1 那版用户看到的是：
+
+        ## 修了两件事
+        ### 1. 装在中文路径里转换必失败
+        （空行）
+        有用户把软件放在桌面的「新建文件夹 (2)」里，转换跑满一分钟然后失败：
+
+    —— 一条实质信息都没有。
+
+    ## 约定
+
+    Release 正文以摘要开头，用一条独占一行的 `---` 隔开正文：
+
+        - 新增 关于页面，里面有环境检测和缓存清理
+        - 修改 Word 正文字体改成宋体 + Times New Roman
+        - 修复 装在中文路径里转换失败
+
+        ---
+
+        ## 详细说明
+        ……
+
+    用**可见的分隔线**而不是 HTML 注释：注释在 GitHub 网页上是隐藏的，
+    用户在 Release 页面看不到摘要。用 `---` 网页和软件里都好看。
+
+    ## 兼容老版本
+
+    老 Release 的正文里没有分隔线 —— 找不到就**把全文当摘要**，跟改之前
+    的行为一样。不能崩，也不能显示成空的。
+    """
+    body = (body or '').strip()
+    if not body:
+        return '', ''
+    lines = body.split('\n')
+    for i, ln in enumerate(lines):
+        if _is_hr(ln):
+            return '\n'.join(lines[:i]).strip(), body
+    return body, body
+
+
 def check():
     r"""查有没有新版本。返回 dict，**不抛异常**。
 
-    {ok, has_update, local, latest, notes, published, asset, error}
+    {ok, has_update, local, latest, notes, notes_brief, notes_full,
+     published, asset, error}
     """
     out = {'ok': False, 'has_update': False, 'local': '', 'latest': '',
-           'notes': '', 'published': '', 'asset': None, 'error': '',
+           # notes 是老字段（截断版），留着免得别处读它读到 None；
+           # 界面用下面两个：brief 默认显示，full 点「完整说明」才展开。
+           'notes': '', 'notes_brief': '', 'notes_full': '',
+           'published': '', 'asset': None, 'error': '',
            # 跨了主/次版本：更新包补不上依赖，得重下完整安装包
            'need_full': False,
            # 各条线路的实测明细，给界面展开看。成功失败都有。
@@ -441,6 +502,9 @@ def check():
     out['ok'] = True
     out['latest'] = rel.get('tag_name') or ''
     out['published'] = (rel.get('published_at') or '')[:10]
+    # 🔴 **全文不能截断** —— 截了的话「展开完整说明」也没东西可看。
+    #    老的 notes 字段保持截断版不动（可能有别处在读）。
+    out['notes_brief'], out['notes_full'] = split_notes(rel.get('body'))
     out['notes'] = (rel.get('body') or '').strip()[:600]
     out['asset'] = _pick_asset(rel)
 

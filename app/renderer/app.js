@@ -33,6 +33,7 @@ var state = {
   upd: null,            // 检查更新的结果：null=没查过
   updBusy: false,       // 正在查 / 正在下
   updLinesOpen: false,  // 线路表展开了没（默认折叠，只占一行）
+  updNotesOpen: false,  // 更新说明展开了没（默认只显示摘要那几行）
   updPick: '',          // 手动指定的线路 id，空 = 自动挑最快的
   updProbing: false,    // 正在实测下载速度（用户主动点的）
   sources: null,

@@ -555,8 +555,22 @@ function updateView(st) {
       + '<div>' + close + '</div></div>';
   }
 
-  // 有更新
-  var notes = (u.notes || '').split('\n').slice(0, 6)
+  // 有更新。
+  //
+  // 🔴 **默认只给摘要**（Release 正文里分隔线之前那段）。原来是拿
+  //    全文砍前 6 行，而正文是长篇散文，砍出来的是个残缺的开头 ——
+  //    v0.1.1 那版用户看到的头 4 行是「## 修了两件事 / ### 1. 装在
+  //    中文路径里转换必失败 / 空行 / 有用户把软件放在桌面的…」，
+  //    一条实质信息都没有。
+  //
+  //    老 Release 的正文里没有分隔线，后端会把全文当摘要返回 ——
+  //    那种情况下这里的行为跟改之前一样，只是不再硬砍 6 行。
+  var notesOpen = !!st.updNotesOpen;
+  var brief = u.notes_brief || u.notes || '';
+  var full = u.notes_full || u.notes || '';
+  var hasMore = full && full !== brief;
+  var shown = notesOpen ? full : brief;
+  var notes = shown.split('\n')
     .map(function (x) { return esc(x); }).join('<br>');
   return '<div class="fill" style="justify-content:flex-start;padding-top:14px">'
     + '<div style="font-size:14px;font-weight:600">有新版本 ' + esc(u.latest) + '</div>'
@@ -564,7 +578,11 @@ function updateView(st) {
     + (u.published ? '　·　发布于 ' + esc(u.published) : '')
     + (u.asset && u.asset.size ? '　·　' + F.gb(u.asset.size) : '') + '</div>'
     + (notes ? '<div class="f-dim" style="max-width:90%;text-align:left;'
-        + 'line-height:1.6;max-height:110px;overflow:auto">' + notes + '</div>' : '')
+        + 'line-height:1.6;max-height:' + (notesOpen ? '150' : '110')
+        + 'px;overflow:auto">' + notes + '</div>' : '')
+    + (hasMore ? '<div data-act="toggleUpdNotes" class="f-dim" '
+        + 'style="cursor:pointer;user-select:none;font-size:11px">'
+        + (notesOpen ? '收起 ▴' : '完整说明 ▾') + '</div>' : '')
     + updLines(st, u)
     + '<div style="display:flex;gap:8px;margin-top:4px">'
     + btn('downloadUpdate', '更新', { cls: 'primary' })
