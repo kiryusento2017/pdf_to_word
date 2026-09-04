@@ -23,9 +23,9 @@ GPL can be found in `/usr/share/common-licenses/GPL`.
 
 [GPL]: https://www.gnu.org/copyleft/gpl.html
 
-The complete source code for pandoc version X.Y.Z is available at
-<https://hackage.haskell.org/package/pandoc-X.Y.Z/pandoc-X.Y.Z.tar.gz>
-and at <https://github.com/jgm/pandoc/tree/X.Y.Z>.
+The complete source code for pandoc version 3.11 is available at
+<https://hackage.haskell.org/package/pandoc-3.11/pandoc-3.11.tar.gz>
+and at <https://github.com/jgm/pandoc/tree/3.11>.
 
 Pandoc includes some code with different copyrights, or subject to different
 licenses.  The copyright and license statements for these sources are included
