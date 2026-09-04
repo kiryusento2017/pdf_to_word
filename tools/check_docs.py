@@ -54,7 +54,6 @@ NOT_PROJECT_FILES = {
     'vc_redist.x64.exe', 'c10.dll', 'index.html',
     'runtime/pandoc/pandoc.exe',          # README 明说不在版本库里
     'model_download.log', 'torch_install.log', 'convert.log',
-    'pdf_to_word_progress.md',            # 在 _scratch，不在项目里
     '安装依赖.cmd', '首次安装.cmd', '启动.cmd', '使用说明.txt',
     'mineru.json', 'MML2OMML.XSL', 'COPYRIGHT.txt', 'LICENSE',
     'python312.zip',                      # Python embeddable 包内部的 stdlib
@@ -78,6 +77,18 @@ def is_release_asset(name):
             or (name.startswith('pdf_to_word-v')
                 and name.endswith('-update.zip'))
             or (name.startswith('requires-v') and name.endswith('.json')))
+
+
+def is_scratch_note(name):
+    r"""是不是 `_scratch` 里的工作进度档。
+
+    那些在工作区的 `_scratch/` 下，不在项目里，文档互相引用是正常的。
+    **同样按模式认**：原来白名单里硬编码着 `pdf_to_word_progress.md`，
+    于是每开一份新的进度档（比如某次发版单独记一份）就得回来改一次
+    白名单，否则这条检查就报「缺文件」—— 跟上面那个硬编码版本号
+    是同一类毛病。
+    """
+    return name.startswith('pdf_to_word_') and name.endswith('.md')
 
 
 PATH_RE = re.compile(
@@ -104,7 +115,7 @@ def check_files():
             plain = h.replace('\\', '/')
             base = os.path.basename(plain)
             if (plain in NOT_PROJECT_FILES or base in NOT_PROJECT_FILES
-                    or is_release_asset(base)):
+                    or is_release_asset(base) or is_scratch_note(base)):
                 continue
             cands = [plain] + [os.path.join(d, plain) for d in
                                ('app', 'app/renderer', 'pipeline',
