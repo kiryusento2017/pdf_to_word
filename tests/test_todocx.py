@@ -46,6 +46,33 @@ def _tbl_count(docx_path):
     return xml.count('<w:tbl>')
 
 
+def _theme_fonts(docx_path):
+    """读出产物主题里的字体。返回 {'major_latin', 'major_hans',
+    'minor_latin', 'minor_hans'}，取不到的键就没有。"""
+    import re as _re
+    z = zipfile.ZipFile(docx_path)
+    try:
+        names = [n for n in z.namelist() if n.startswith('word/theme/')]
+        if not names:
+            return {}
+        xml = z.read(names[0]).decode('utf-8')
+    finally:
+        z.close()
+    out = {}
+    for kind in ('major', 'minor'):
+        m = _re.search(r'<a:%sFont>(.*?)</a:%sFont>' % (kind, kind), xml, _re.S)
+        if not m:
+            continue
+        blk = m.group(1)
+        lat = _re.search(r'<a:latin typeface="([^"]*)"', blk)
+        if lat:
+            out[kind + '_latin'] = lat.group(1)
+        hans = _re.search(r'<a:font script="Hans" typeface="([^"]*)"', blk)
+        if hans:
+            out[kind + '_hans'] = hans.group(1)
+    return out
+
+
 class Test找Pandoc(unittest.TestCase):
 
     def test_内置的pandoc在runtime里(self):
@@ -118,6 +145,110 @@ class Test基本转换(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PANDOC, '没有 pandoc')
+class Test字体(unittest.TestCase):
+    r"""转出来的 Word 用什么字体。
+
+    2026-09-05 之前是 pandoc 内置 reference.docx 的主题字体：
+    西文 Aptos、简体中文「等线 Light」。两个都不合适 ——
+
+      · Aptos 是无衬线，而公式是 Word 强制的 Cambria Math（衬线），
+        一行字里插个公式风格打架
+      · 等线只有 Win10 才自带，Win7/8 上会回退成别的字体
+      · 讲义要打印，宋体是为印刷设计的
+
+    正文和标题**用同一套字体**，不给标题单独设 —— MinerU 认标题会认错，
+    字体一跳就出现半页宋体半页黑体的花脸。标题靠字号加粗区分就够了。
+    """
+
+    def setUp(self):
+        if os.path.isdir(WORK):
+            shutil.rmtree(WORK, ignore_errors=True)
+        os.makedirs(WORK)
+
+    def tearDown(self):
+        shutil.rmtree(WORK, ignore_errors=True)
+
+    def _out(self, text):
+        md = os.path.join(WORK, 'in.md')
+        io.open(md, 'w', encoding='utf-8').write(text)
+        out = os.path.join(WORK, 'out.docx')
+        r = todocx.md_to_docx(md, out)
+        self.assertTrue(r['ok'], r.get('error'))
+        return out
+
+    def test_西文用TimesNewRoman不是Aptos(self):
+        f = _theme_fonts(self._out('# 标题\n\n正文 abc 123。\n'))
+        self.assertEqual(f.get('minor_latin'), 'Times New Roman')
+        self.assertNotIn('Aptos', f.get('minor_latin', ''))
+
+    def test_简体中文用宋体(self):
+        f = _theme_fonts(self._out('# 标题\n\n这是一段中文正文。\n'))
+        self.assertEqual(f.get('minor_hans'), '宋体')
+
+    def test_标题和正文同一套字体(self):
+        r"""不给标题单独设字体：MinerU 认标题会认错，认错的地方字体
+        就会跳。统一之后最多是字号不对，不会花脸。"""
+        f = _theme_fonts(self._out('# 标题\n\n正文。\n'))
+        self.assertEqual(f.get('major_latin'), f.get('minor_latin'))
+        self.assertEqual(f.get('major_hans'), f.get('minor_hans'))
+
+    def test_产物仍然是能打开的docx(self):
+        r"""改的是 docx 内部的 XML，改坏了 Word 会报「文件已损坏」，
+        而这是**每一份产物**都会经过的路径。"""
+        out = self._out('# 标题\n\n正文 $x^2$ 和表格。\n')
+        self.assertTrue(zipfile.is_zipfile(out), '产物不是合法的 docx')
+        z = zipfile.ZipFile(out)
+        try:
+            self.assertIsNone(z.testzip(), 'zip 内部有损坏的成员')
+            self.assertIn('word/document.xml', z.namelist())
+        finally:
+            z.close()
+
+    def test_字体改失败也不能毁掉整份转换(self):
+        r"""走到改字体那一步时，公式、表格、图片都已经转好了 ——
+        字体只是锦上添花。磁盘满了、文件被杀软锁了这类意外，宁可让
+        用户拿到一份 Aptos 字体的 Word，也不能让他一无所有。"""
+        md = os.path.join(WORK, 'in.md')
+        io.open(md, 'w', encoding='utf-8').write('正文一段。' + chr(10))
+        out = os.path.join(WORK, 'out.docx')
+
+        real = todocx._set_theme_fonts
+
+        def boom(_path):
+            raise OSError('磁盘满了')
+
+        todocx._set_theme_fonts = boom
+        try:
+            r = todocx.md_to_docx(md, out)
+        finally:
+            todocx._set_theme_fonts = real
+
+        self.assertTrue(r['ok'], '字体那一步炸了不该让整份转换失败')
+        self.assertTrue(os.path.isfile(out), '产物应该还在')
+        self.assertEqual(r.get('theme_fonts'), 0)
+        self.assertIn('磁盘满了', r.get('theme_fonts_error', ''),
+                      '失败原因要记在报告里，不能静默吞掉')
+
+    def test_改字体不影响公式和表格(self):
+        r"""改主题字体跟 _add_table_borders 是两道独立的后处理，
+        谁也不能把对方的成果覆盖掉。"""
+        md = os.path.join(WORK, 'in.md')
+        io.open(md, 'w', encoding='utf-8').write(
+            '设 $x^2 + y^2 = z^2$。\n\n'
+            '<table><tr><td>年份</td><td>分值</td></tr></table>\n')
+        out = os.path.join(WORK, 'out.docx')
+        r = todocx.md_to_docx(md, out)
+        self.assertTrue(r['ok'], r.get('error'))
+        self.assertEqual(_omath_count(out), 1, '公式丢了')
+        self.assertEqual(_tbl_count(out), 1, '表格丢了')
+        z = zipfile.ZipFile(out)
+        try:
+            xml = z.read('word/document.xml').decode('utf-8')
+        finally:
+            z.close()
+        self.assertIn('tblBorders', xml, '表格边框被字体那一步覆盖掉了')
+
+
 class Test两条路的优先级(unittest.TestCase):
     r"""小蔡定的：有 XSL 先用 XSL，没有才用 Pandoc。"""
 

@@ -68,6 +68,25 @@ _TBL_BORDERS = (
     '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="808080"/>'
     '</w:tblBorders>')
 
+# 正文字体。**正文和标题用同一套**，不给标题单独设 —— MinerU 认标题
+# 会认错，字体一跳就出现「半页宋体半页黑体」的花脸；统一之后最多是
+# 字号不对，那个不难看。标题的区分交给 Word 的 Heading 样式（字号 + 加粗）。
+#
+# 为什么是这两个（2026-09-05 小蔡定）：
+#
+#   · **任何 Windows 都有。** simsun.ttc / times.ttf 从 Win95 就在。
+#     Cambria、Calibri 是**随 Office 装的不是系统自带** —— 本软件要求
+#     装 Office，但收 Word 文件的学生家长不需要装。等线是 Win10 才有。
+#   · **跟公式协调。** 公式是 Word 强制的 Cambria Math（衬线），正文用
+#     宋体 + Times New Roman 同为衬线，段落里插公式不突兀；用微软雅黑
+#     那种无衬线会打架。
+#   · **打印清晰。** 讲义要打印，宋体本来就是为印刷设计的。
+#
+# 改之前是 pandoc 内置 reference.docx 的主题字体：西文 Aptos、简体中文
+# 等线。跟 MinerU、跟本机 Office 版本都无关 —— 换台机器打开也是 Aptos。
+LATIN_FONT = 'Times New Roman'
+HANS_FONT = '宋体'
+
 _BS_DOLLAR = chr(92) + chr(36)          # 反斜杠 + 美元号
 _DOLLAR = chr(36)
 
@@ -348,6 +367,70 @@ def _add_table_borders(docx_path):
     return n
 
 
+def _set_theme_fonts(docx_path):
+    """把产物主题里的字体换成 LATIN_FONT / HANS_FONT。返回改了几处。
+
+    跟 _add_table_borders 一个路数：解 zip、改 XML、塞回去。同样不用
+    自定义 reference.docx —— 那要维护一个二进制文件，没法审查没法 diff。
+
+    改的是 `word/theme/theme1.xml` 里的两组字体：
+
+        <a:majorFont>   标题
+          <a:latin typeface="Aptos Display"/>        ← 西文
+          <a:font script="Hans" typeface="等线 Light"/>  ← 简体中文
+        <a:minorFont>   正文
+          <a:latin typeface="Aptos"/>
+          <a:font script="Hans" typeface="等线"/>
+
+    🔴 **中文不在 `<a:ea>` 里。** 那个标签在 pandoc 的模板里是空的
+       （`<a:ea typeface=""/>`），真正管简体中文的是 `script="Hans"`
+       那一行。只改 `<a:ea>` 的话中文字体纹丝不动。
+
+    两组都改成同一套字体，理由见 LATIN_FONT 上面那段。
+
+    没有 theme 文件就原样返回 0 —— pandoc 一直都生成它，但别为一个
+    可选文件让整份转换失败。
+    """
+    with zipfile.ZipFile(docx_path) as z:
+        names = z.namelist()
+        blobs = {n: z.read(n) for n in names}
+
+    theme = None
+    for name in names:
+        if name.startswith('word/theme/') and name.endswith('.xml'):
+            theme = name
+            break
+    if theme is None:
+        return 0
+
+    xml = blobs[theme].decode('utf-8')
+
+    def one_scheme(m):
+        blk = m.group(0)
+        blk = re.sub(r'(<a:latin\b[^>]*?\btypeface=")[^"]*(")',
+                     lambda x: x.group(1) + LATIN_FONT + x.group(2), blk, count=1)
+        blk = re.sub(r'(<a:font script="Hans"[^>]*?\btypeface=")[^"]*(")',
+                     lambda x: x.group(1) + HANS_FONT + x.group(2), blk, count=1)
+        return blk
+
+    n = 0
+    for kind in ('major', 'minor'):
+        xml, c = re.subn(r'<a:%sFont>.*?</a:%sFont>' % (kind, kind),
+                         one_scheme, xml, flags=re.S)
+        n += c
+    if n == 0:
+        return 0
+
+    blobs[theme] = xml.encode('utf-8')
+
+    tmp = docx_path + '.tmp'
+    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+        for name in names:
+            z.writestr(name, blobs[name])
+    os.replace(tmp, docx_path)
+    return n
+
+
 EMU_PER_INCH = 914400
 
 
@@ -587,6 +670,15 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
         rep['math_note'] = '按调用方要求跳过 XSL，公式由 Pandoc 转换'
 
     rep['tables_bordered'] = _add_table_borders(out_path)
+    # 🔴 **字体改失败不能毁掉整份转换。** 走到这里公式、表格、图片都已经
+    #    转好了，字体只是锦上添花 —— 磁盘满了、文件被杀软锁了这类意外，
+    #    宁可让用户拿到一份 Aptos 字体的 Word，也不能让他一无所有。
+    #    （上面 _add_table_borders 是既有代码，没动它。）
+    try:
+        rep['theme_fonts'] = _set_theme_fonts(out_path)
+    except Exception as e:
+        rep['theme_fonts'] = 0
+        rep['theme_fonts_error'] = '%s: %s' % (type(e).__name__, str(e)[:120])
 
     try:
         with zipfile.ZipFile(out_path) as z:
