@@ -231,7 +231,53 @@ const ROOT = path.basename(path.dirname(__dirname)) === 'resources'
 
 ## 四、Release 上传
 
-一个 Release 挂**两个**附件 —— **首版（v0.0.1）例外，只挂安装包**：
+### 🔴🔴 第一条：**没有百分之百确认过的，一律先发预发行版**
+
+小蔡 2026-09-03 定的规矩，起因见下面「覆盖已发布的 Release」那两次事故。
+
+```
+# 发的时候加 --prerelease
+gh release create v0.1.2 ^
+  "dist\PDF2Word-Setup-v0.1.2.exe" ^
+  "dist\pdf_to_word-v0.1.2-update.zip" ^
+  "dist\requires-v0.1.2.json" ^
+  --title "v0.1.2" --notes-file 发布说明.md --prerelease
+
+# 自己里里外外验完，确认没问题了，再转正
+gh release edit v0.1.2 --prerelease=false
+```
+
+**为什么这条能真正防住事故** —— 不是靠自觉，是靠机制。GitHub 官方文档
+对 `/repos/{owner}/{repo}/releases/latest` 的定义是：
+
+> The latest release is the most recent **non-prerelease, non-draft**
+> release, sorted by the created_at attribute.
+
+而 `update.py` 查版本走的正是这个端点。所以**只要还挂着预发行版标记，
+它就不是 latest，任何用户的「检查更新」都拿不到它** —— 附件传错了、
+传到一半断了、内容不对，全都砸不到用户身上。转正那一下是原子的：
+一条 `--prerelease=false`，立刻对所有人可见。
+
+对照这次的事故：安装包消失的那一个多小时，正好落在 v0.1.1 是 latest 的
+窗口里，所以新用户直接装不了。**如果它当时挂着预发行版标记，这段时间
+对所有人都是不存在的。**
+
+**转正之前必须自己走完这几步**（也就是「完全确认」的含义）：
+
+  1. 三个附件都在，字节数跟本地产物**逐个对得上**
+  2. 真下载下来，`SHA256` 跟本地那份**字节级相同**（别只看大小）
+  3. 解开安装包，`version.json` 里的 sha == 你要发的那个 commit
+  4. tag 指向的 commit == `version.json` 里的 sha
+  5. 用**旧版本的身份**跑一次 `check()`：能查到、`need_full=False`、
+     能下下来、校验通过
+  6. 源码包（GitHub 按 tag 实时生成的那两个）解开看一眼，内容是对的 commit
+
+任何一步不过，就**留在预发行版状态**修，别转正。
+
+---
+
+一个 Release 挂**三个**附件 —— **首版（v0.0.1）例外，只挂安装包**
+（那时还没有更新包和依赖清单这两样东西）：
 
 ```
 PDF2Word-Setup-vX.exe       287 MB    新用户下这个
@@ -239,28 +285,34 @@ pdf_to_word-vX-update.zip   0.5 MB    软件「检查更新」自动下这个
 requires-vX.json            几百字节  依赖清单，客户端下载前拿它判断能不能装
 ```
 
-首版（只有安装包）：
+**每一版都带 `--prerelease` 发**（理由见上面第一条），三个附件一次传齐：
 
 ```
-gh release create v0.0.1 "dist\PDF2Word-Setup-v0.0.1.exe" ^
-  --title "v0.0.1" --notes-file 发布说明.md
+gh release create v0.1.2 ^
+  "dist\PDF2Word-Setup-v0.1.2.exe" ^
+  "dist\pdf_to_word-v0.1.2-update.zip" ^
+  "dist\requires-v0.1.2.json" ^
+  --title "v0.1.2" --notes-file 发布说明.md --prerelease
 ```
 
-之后每一版（两个都要）：
+验完六步再转正：
 
 ```
-gh release create v0.0.2 ^
-  "dist\PDF2Word-Setup-v0.0.2.exe" ^
-  "dist\pdf_to_word-v0.0.2-update.zip" ^
-  --title "v0.0.2" --notes-file 发布说明.md
+gh release edit v0.1.2 --prerelease=false
 ```
 
 三个附件都要传：安装包、更新包、**依赖清单**（`requires-vX.json`）。
 清单漏了的话，客户端只能等下完 0.5 MB 更新包才知道装不装得了 ——
 它存在的意义就是「下载前就知道」。
 
-覆盖已发布的附件用 `gh release upload <tag> <文件> --clobber`；
-删掉某个附件用 `gh release delete-asset <tag> <文件名> --yes`。
+（首版 v0.0.1 只挂了安装包，因为那时还没做更新机制，不存在「从旧版
+更新上来」的人。见下面「首版为什么不用挂更新包」。）
+
+⚠️ **`gh release upload --clobber` 和 `delete-asset` 这两条，
+非到万不得已不要用** —— 它们改的是**已经发出去的东西**。
+`--clobber` 是先删后传，中断就少一个附件；`delete-asset` 更是直接删。
+2026-09-03 就是这么把安装包弄丢一个多小时的。
+需要改内容时，正确做法是**发新的修订号**，不是回头改旧的。
 
 ### 🔴 先 `git push`，再 `gh release create`
 
@@ -278,15 +330,28 @@ gh api repos/<owner>/<repo>/git/ref/tags/v0.0.3 --jq '.object.sha'
 python -c "import json,io;print(json.load(io.open('dist/PDF2Word/version.json',encoding='utf-8'))['sha'])"
 ```
 
-对不上就改 tag 指向（**只在还没人下载的时候**，`downloadCount` 都是 0）：
+对不上就改 tag 指向：
 
 ```
 gh api -X PATCH repos/<owner>/<repo>/git/refs/tags/v0.0.3 \
   -f sha=<正确的 commit> -F force=true
 ```
 
-已经有人下过就别改了 —— 那时候「同一个 tag 对应过两份代码」比
-「tag 指错」更难查。发一个新的修订号，把旧的标成不要用。
+**这条命令什么时候能用，界线很清楚：**
+
+| 状态 | 能不能改 tag |
+|---|---|
+| **还挂着 `--prerelease`** | **能**。它不是 latest，没有任何用户拿得到，怎么改都不外溢 |
+| 已经转正（`--prerelease=false`） | **不能**。发新的修订号，把旧的在发布说明里标成不要用 |
+
+已经转正还去改，后果是「同一个 tag 对应过两份代码」—— 那比「tag 指错」
+难查得多：日后有人报「我用的 v0.0.3 有问题」，你 `git checkout v0.0.3`
+拿到的可能根本不是他手里那份。
+
+**2026-09-03 就是转正之后改的**：tag 从 `f56ef6c` 被移到 `333bcf8`，
+连带 GitHub 按 tag 实时生成的两个源码包内容也跟着变了一个多小时。
+按上面那条「一律先发预发行版」走，这一整类问题都不会发生 ——
+所有需要反悔的操作，都发生在没人看得见的窗口里。
 
 ### 🔴 覆盖已发布的 Release：只在没有真实用户时
 

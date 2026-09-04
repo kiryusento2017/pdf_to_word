@@ -117,7 +117,13 @@ def main():
         if not cands:
             print('dist 里没有安装包，先打一个')
             return 1
-        cands.sort()
+        # 🔴 **按修改时间取最新，不按文件名排序。**
+        #    原来是 `cands.sort()` 拿字符串排 —— 那样 `v0.0.10` 会排在
+        #    `v0.0.9` **前面**（字符串比较逐位看，'1' < '9'），于是版本号
+        #    进到两位数的那天，这个脚本会安静地去查一个旧包，还报「干净」。
+        #    现在没到两位数，属于「还没炸但一定会炸」，顺手改掉。
+        #    影响面：只有不带 `--version` 跑时才走这里；发版流程都带参数。
+        cands.sort(key=lambda f: os.path.getmtime(os.path.join(DIST, f)))
         ver = re.search(r'-(v[\d.]+)\.exe$', cands[-1]).group(1)
 
     exe = os.path.join(DIST, 'PDF2Word-Setup-%s.exe' % ver)
