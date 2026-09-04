@@ -522,21 +522,44 @@ def make_sfx(version):
         raise SystemExit('压缩失败：%s' % r.stdout.decode('utf-8', 'replace')[-400:])
     say('压缩完 %.2f GB' % (os.path.getsize(archive) / 1024 ** 3))
 
-    # SFX 配置。GUIMode=2 是「问用户解压到哪」，正是普通安装包的体验。
-    # 解压完自动打开那个文件夹，省得老师找不到。
+    # SFX 配置。**官方 7z.sfx 只认这几个字段**：Title / BeginPrompt /
+    # Progress / RunProgram / Directory / ExecuteFile / ExecuteParameters。
+    #
+    # 🔴 2026-09-05 实测发现：这里原来还写着 InstallPath、GUIMode、
+    #    OverwriteMode、ExtractPathText、ExtractTitle、ExtractDialogText
+    #    六个字段，**官方 7z.sfx 一个都不认，全部静默忽略**。那六个是
+    #    第三方修改版 7zSD.sfx（7zsfxmm 那类项目）的扩展，而 find_7z()
+    #    拿的是系统装的 7-Zip 自带的 7z.sfx。
+    #
+    #    后果：InstallPath 从 v0.0.1 起就没生效过 —— 六个安装包的配置段
+    #    都从 exe 里解出来核对过，全写着 D:\\PDF2Word，而实际默认路径
+    #    一直是**安装包自己所在的目录**。小蔡从浏览器下载后双击，默认
+    #    填的就是下载文件夹 —— 那种目录很多人定期清理，一清就把软件
+    #    连同 4.6 GB 模型一起删了。
+    #
+    #    配置里留着不生效的字段比不写更糟：它让人以为设过默认路径了。
+    #    所以删掉，改成在 BeginPrompt 里把这件事直接讲给用户。
+    #
+    #    ⚠️ 原来这里的注释写着「GUIMode=2 是问用户解压到哪」—— **写反了**。
+    #    在支持它的安装器模块里，GUIMode=2 的意思是完全隐藏解压对话框
+    #    （静默模式）。幸好这个字段在 7z.sfx 上本来就被忽略，没造成实际
+    #    后果，但注释会误导下一个改这里的人。
+    #
+    #    想真正设默认路径得换第三方 sfx 模块，2026-09-05 评估过不划算：
+    #    7zsfxmm 最新发布停在 2017 年、cosmomill/7zsfx 连 LICENSE 都没有，
+    #    而且第三方 sfx 会抬高杀软误报率 —— 我们的 exe 本来就没有代码
+    #    签名，已经会触发 SmartScreen。详见 docs/PLAN_NEXT.md。
     cfg = (
         ';!@Install@!UTF-8!\n'
         'Title="PDF 转 Word __VER__"\n'
         'BeginPrompt="要把「PDF 转 Word」安装到哪里？\\n\\n'
+        '⚠ 下面默认填的是「这个安装包所在的文件夹」。如果你是从浏览器'
+        '下载的，那就是「下载」文件夹 —— 请改掉，否则哪天清理下载'
+        '文件夹，会把整个软件连同 4.6 GB 模型一起删掉。\\n\\n'
+        '建议填：D:\\\\PDF2Word\\n\\n'
         '请不要选 C:\\\\Program Files —— 那个位置写不了文件。\\n'
         '路径里可以有中文、空格和括号。\\n\\n'
         '所有文件都会留在这个文件夹里，不想用了直接删掉即可。"\n'
-        'ExtractDialogText="正在解压，大约 1-3 分钟…"\n'
-        'ExtractTitle="正在安装 PDF 转 Word"\n'
-        'GUIMode="2"\n'
-        'OverwriteMode="2"\n'
-        'ExtractPathText="安装到："\n'
-        'InstallPath="D:\\\\PDF2Word"\n'
         'RunProgram="explorer.exe ."\n'
         ';!@InstallEnd@!\n'
     ).replace('__VER__', version)
