@@ -3,6 +3,10 @@
 把 PDF 讲义转成 Word，**文字、公式、表格、图片都是原生对象**，不是截图。
 公式转出来是 Word 原生公式，可以直接编辑、可以被搜索。
 
+正文用**宋体 + Times New Roman**，标题靠字号加粗区分。选这两个是因为
+任何 Windows 都自带（Calibri 那些要装 Office 才有，而收文件的学生家长
+不一定装），而且跟公式的 Cambria Math 同为衬线体，一行里插公式不打架。
+
 终末诗篇工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
 这边只做「PDF → Word」这一段。
 
@@ -32,7 +36,13 @@
    最快的默认选中。
 
 装完连同下载的东西一共占硬盘约 10 GB。不想用了直接删掉整个文件夹，
-不留注册表、不留 AppData。转好的 Word 不受影响。
+模型、日志、缓存跟着一起走，不写注册表。转好的 Word 不受影响。
+
+删不掉的只有两样，都是系统级的公共组件，不是这个软件私有的：
+**微软 C++ 运行库**（装在系统里，控制面板可卸载）和 **pip 的下载缓存**
+（在 `%LOCALAPPDATA%\pip\cache`，别的 Python 程序也在用同一个）。
+软件里「关于 → 环境检测」能看到缓存有多大、里面都是什么，
+想清就清。
 
 更新：软件里点「检查更新」→ 自动下载安装（约 0.5 MB）→ 点「立即重启」。
 不用再来 GitHub。
@@ -338,14 +348,14 @@ app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源�
             icon.ico / icon_source.png（GitHub 头像做的图标）
 runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      302 条 Python + 122 条前端检查 + 四个真实数据验证脚本
+tests/      314 条 Python + 122 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 302 条，9 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 314 条，9 秒
 node tests\front_check.js                                   # 122 条，真渲染
 ```
 
@@ -422,6 +432,11 @@ console_scripts 生成的 launcher，尾部硬编码着生成它那一刻的 pyt
 这上面：模型下载和转换全废，而开发机上永远是好的，因为包就是在那个路径下打的。
 
 ## 许可证
+
+**本软件采用 GPL-3.0-or-later**，全文见根目录 `LICENSE`。
+作者：终末诗篇。你可以自由使用、修改、分发，但分发修改版时必须同样开源。
+
+用到的第三方组件：
 
 | | 协议 | 约束 |
 |---|---|---|
