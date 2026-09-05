@@ -10,13 +10,13 @@
 终末诗篇工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
 这边只做「PDF → Word」这一段。
 
-**最新发行版**：[v0.1.1](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.1.1)
+**最新发行版**：[v0.2.1](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.2.1)
 
 ---
 
 ## 给使用者
 
-下载 `PDF2Word-Setup-v0.1.1.exe`（287 MB），双击 → 选文件夹 → 解压完成 →
+下载 `PDF2Word-Setup-v0.2.1.exe`（287 MB），双击 → 选文件夹 → 解压完成 →
 双击里面的 `PDF转Word.exe`。
 
 **四件事得先知道**：
