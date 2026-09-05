@@ -259,8 +259,9 @@ gh release create v0.1.2 ^
   "dist\requires-v0.1.2.json" ^
   --title "v0.1.2" --notes-file 发布说明.md --prerelease
 
-# 自己里里外外验完，确认没问题了，再转正
+# 自己里里外外验完，确认没问题了，再转正 —— 🔴 两条，缺一不可
 gh release edit v0.1.2 --prerelease=false
+gh release edit v0.1.2 --latest
 ```
 
 **为什么这条能真正防住事故** —— 不是靠自觉，是靠机制。GitHub 官方文档
@@ -271,8 +272,31 @@ gh release edit v0.1.2 --prerelease=false
 
 而 `update.py` 查版本走的正是这个端点。所以**只要还挂着预发行版标记，
 它就不是 latest，任何用户的「检查更新」都拿不到它** —— 附件传错了、
-传到一半断了、内容不对，全都砸不到用户身上。转正那一下是原子的：
-一条 `--prerelease=false`，立刻对所有人可见。
+传到一半断了、内容不对，全都砸不到用户身上。
+
+### 🔴 但转正**不是一条命令** —— `--prerelease=false` 不重算 latest
+
+2026-09-05 发 v0.2.2 时实测到的：摘掉预发行版标记之后，
+`releases/latest` 返回的**仍然是 v0.2.1**。
+
+原因是「谁是 latest」是 Release 自己的一个属性（`make_latest`），
+**不是按上面那句定义实时算出来的**。以 `--prerelease` 发布时它压根
+没被设过，后来摘掉预发行版标记也不会回头重算。所以必须再补一条：
+
+```
+gh release edit vX.Y.Z --latest
+```
+
+**漏了这条，后果正好是本节最怕的那种**：Release 页面上看着一切正常
+（预发行版标记没了、三个附件齐全、tag 也对），而 `update.py` 读的
+`releases/latest` 还指着上一版 —— 所有用户的「检查更新」都拿不到新版本，
+**并且不报任何错**，界面上显示的是「已是最新」。
+
+改完必须当场验一眼，返回的得是新版本号：
+
+```
+gh api repos/<owner>/<repo>/releases/latest --jq '.tag_name'
+```
 
 对照这次的事故：安装包消失的那一个多小时，正好落在 v0.1.1 是 latest 的
 窗口里，所以新用户直接装不了。**如果它当时挂着预发行版标记，这段时间
@@ -286,6 +310,15 @@ gh release edit v0.1.2 --prerelease=false
   4. tag 指向的 commit == `version.json` 里的 sha
   5. 用**旧版本的身份**跑一次 `check()`：能查到、`need_full=False`、
      能下下来、校验通过
+     ⚠️ **这一步转正前做不了** —— `check()` 走的就是 `releases/latest`，
+     而预发行版按定义不在里面，跑出来必然是「已是最新」。只能转正
+     （含 `--latest`）之后立刻补做。做法是把 `local_version` 换成
+     上一个版本号，不必去改 `dist` 里的 `version.json`：
+     ```
+     sys.path.insert(0, 'pipeline'); import update
+     update.local_version = lambda: {'tag': 'v0.2.1', 'sha': '', 'published_at': ''}
+     update.check()
+     ```
   6. 源码包（GitHub 按 tag 实时生成的那两个）解开看一眼，内容是对的 commit
 
 任何一步不过，就**留在预发行版状态**修，别转正。
@@ -311,10 +344,12 @@ gh release create v0.1.2 ^
   --title "v0.1.2" --notes-file 发布说明.md --prerelease
 ```
 
-验完六步再转正：
+验完六步再转正（**两条都要**，理由见上面那节）：
 
 ```
 gh release edit v0.1.2 --prerelease=false
+gh release edit v0.1.2 --latest
+gh api repos/<owner>/<repo>/releases/latest --jq '.tag_name'   # 必须回新版本号
 ```
 
 三个附件都要传：安装包、更新包、**依赖清单**（`requires-vX.json`）。
