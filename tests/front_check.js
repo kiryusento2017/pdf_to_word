@@ -965,6 +965,60 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     }
   });
 
+  // 🔴 pending 不等于不可用（2026-09-05）。查版本改成并发赛跑之后，
+  //    第一条成功就返回，剩下几条根本没跑完，后端把它们标成 pending。
+  //    前端原来只数 ok，于是六条里五条没测的被算成「不通」，界面显示
+  //    「1/6 条可用」—— 小蔡升到 v0.2.1 后报「怎么只剩一条线路能用」，
+  //    实际网络没变，是显示在骗人。
+  //    后端当时的注释写着「界面上显示检测中」，而前端一直没读这个字段：
+  //    典型的「后端加了字段、前端没接」，跟 note_run 那个 bug 同一类。
+  const LINES_PENDING = [
+    { id: 'direct', name: 'GitHub 官方', ok: true, ms: 1011, error: '',
+      used: true, pending: false },
+    { id: 'gh-proxy', name: 'gh-proxy.com', ok: false, ms: 0, error: '',
+      used: false, pending: true },
+    { id: 'ghfast', name: 'ghfast.top', ok: false, ms: 0, error: '',
+      used: false, pending: true }
+  ];
+
+  ck('没测完的线路不算成不可用', () => {
+    const st = ready(sb);
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES_PENDING };
+    const h = fn(st);
+    if (h.includes('1/3 条可用')) {
+      throw new Error('把没测完的当成了不可用 —— 用户会以为网络坏了');
+    }
+    if (!h.includes('2 条未测')) throw new Error('没说清楚那两条只是还没测');
+  });
+
+  ck('展开后没测完的写「未测」，不写「连不上」', () => {
+    const st = ready(sb);
+    st.updLinesOpen = true;
+    st.upd = { ok: true, has_update: false, local: 'v1.0.0', latest: 'v1.0.0',
+               error: '', lines: LINES_PENDING };
+    const h = fn(st);
+    if (h.includes('连不上')) {
+      throw new Error('把没测完的写成「连不上」—— 那是没验证过的结论');
+    }
+    if (!h.includes('未测')) throw new Error('没标出「未测」');
+  });
+
+  ck('点更新正在挑线路时，界面要说明在干什么', () => {
+    // 🔴 这一段以前是纯黑盒：点完更新界面毫无反应，而底下可能正在等一条
+    //    连不上的线路超时（urlopen timeout=30，六条最坏 180 秒）。
+    //    用户只能理解成卡死 —— 小蔡从 v0.1.1 升级时就是这个体验。
+    const st = ready(sb);
+    st.updPickingForDl = true;
+    st.upd = { ok: true, has_update: true, local: 'v1.0.0', latest: 'v1.1.0',
+               error: '', lines: LINES_PENDING,
+               asset: { name: 'x-update.zip', size: 500000, url: 'https://x/y' } };
+    const h = fn(st);
+    if (!h.includes('正在挑最快的线路')) {
+      throw new Error('挑线路那几秒界面什么都不说，跟卡死没区别');
+    }
+  });
+
   ck('没测速就不许显示任何速度数字', () => {
     // 🔴 小蔡 2026-09-03 定的：**数据必须真实，没有就留空**。
     //    原来这一列默认填的是查版本的响应延迟 —— 那是另一件事，

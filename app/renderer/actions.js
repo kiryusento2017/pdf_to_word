@@ -619,7 +619,20 @@
       // 这个端口，接受外部 URL 等于把「去访问任意地址」的能力递出去）
       HTTP.post('/api/update/probe', {}).then(function (d) {
         st.updProbing = false;
-        if (st.upd && d && d.lines && d.lines.length) st.upd.lines = d.lines;
+        if (st.upd && d && d.lines && d.lines.length) {
+          st.upd.lines = d.lines;
+          // 🔴 **测出来的结果要真的生效。**
+          //    原来这里只更新显示，而下载走的是 st.updPick（用户手动
+          //    点选的那条）—— 没手动点就是空串，后端 prefer='' 落到
+          //    名单第一条。等于测了个寂寞：数字重排了，下的还是老那条。
+          //    （2026-09-05 小蔡问「自动真的是实时用最快的吗」才查出来）
+          //    现在自动选中最快的，用户仍可手动改回「自动」或别的线路。
+          var best = null;
+          d.lines.forEach(function (x) {
+            if (x.ok && x.bps && (!best || x.bps > best.bps)) best = x;
+          });
+          if (best) st.updPick = best.id;
+        }
         render();
       }).catch(function () {
         st.updProbing = false;
@@ -696,22 +709,58 @@
     downloadUpdate: function () {
       var a = (st.upd || {}).asset;
       if (!a || !a.url) return;
-      st.updBusy = true;
+
+      function go() {
+        st.updBusy = true;
+        render();
+        // line 是唯一另一个后端会看的字段。它不是地址，只是一个在
+        // GH_MIRRORS 里查表的键，查不到就回到按名单顺序试。
+        HTTP.post('/api/update/download',
+                  { allow_unverified: !!st.updAllowUnverified,
+                    line: st.updPick || '' })
+          .then(function () {
+            stopUpdPolling();
+            updPoller = setInterval(pollUpd, 800);
+            pollUpd();
+          }).catch(function (e) {
+            st.updBusy = false;
+            if (st.upd) st.upd.error = String(e && e.message || e);
+            render();
+          });
+      }
+
+      // 🔴 **没测过速就先测一次，再下。**
+      //
+      //    不测的话 line 是空串，后端 prefer='' —— 而更新包只有 0.5MB，
+      //    低于测速阈值，probe_mirrors 直接返回 bps 全 0，排序后就是
+      //    名单原顺序，每次都落到第一条。那条要是连不上，_fetch_one 的
+      //    urlopen(timeout=30) 得干等满 30 秒才换下一条，六条最坏 180 秒。
+      //    用户看到的就是「点了更新，半天不出进度条」（2026-09-05 小蔡
+      //    从 v0.1.1 升上来时撞到的）。
+      //
+      //    测速是并发的，一两秒就能同时探明哪条通、哪条不通，正好把
+      //    「第一条不通干等 30 秒」这件事整个绕开。多花两秒，省掉半分钟。
+      if (st.updPick) { go(); return; }
+      // 用独立状态，不复用 updProbing —— 那个是「用户手动点测速」的态，
+      // 界面上它只让线路表里的按钮变字；这里要盖住主区说明在干什么。
+      st.updPickingForDl = true;
       render();
-      // line 是唯一另一个后端会看的字段。它不是地址，只是一个在
-      // GH_MIRRORS 里查表的键，查不到就回到「自动挑最快的」。
-      HTTP.post('/api/update/download',
-                { allow_unverified: !!st.updAllowUnverified,
-                  line: st.updPick || '' })
-        .then(function () {
-          stopUpdPolling();
-          updPoller = setInterval(pollUpd, 800);
-          pollUpd();
-        }).catch(function (e) {
-          st.updBusy = false;
-          if (st.upd) st.upd.error = String(e && e.message || e);
-          render();
-        });
+      HTTP.post('/api/update/probe', {}).then(function (d) {
+        st.updPickingForDl = false;
+        if (st.upd && d && d.lines && d.lines.length) {
+          st.upd.lines = d.lines;
+          var best = null;
+          d.lines.forEach(function (x) {
+            if (x.ok && x.bps && (!best || x.bps > best.bps)) best = x;
+          });
+          if (best) st.updPick = best.id;
+        }
+        go();
+      }).catch(function () {
+        // 测速失败不拦着更新 —— 退回原来的行为（按名单顺序试）。
+        st.updPickingForDl = false;
+        go();
+      });
     },
 
     cancelDownload: function () {

@@ -358,10 +358,11 @@ function updLines(st, u) {
   var ls = (u && u.lines) || [];
   if (!ls.length) return '';
 
-  var used = null, okN = 0, i;
+  var used = null, okN = 0, pendN = 0, i;
   for (i = 0; i < ls.length; i++) {
     if (ls[i].used && !used) used = ls[i];
     if (ls[i].ok) okN++;
+    else if (ls[i].pending) pendN++;
   }
   var open = !!st.updLinesOpen;
 
@@ -370,10 +371,20 @@ function updLines(st, u) {
   //    跟在线路名后面的数字，只会理解成「这条线路多快」——
   //    延迟低不代表下得快。给一个语义模糊的数字，跟给假数据一样坏。
   //    真实速度只有点了「测速」才有（小蔡 2026-09-03 定的规矩）。
+  //
+  // 🔴 **pending 不等于不可用。** 查版本是并发赛跑，第一条成功就返回，
+  //    剩下几条根本没测完，后端把它们标成 pending。这里原来只数 ok，
+  //    于是六条里五条没测的被算成「不通」，界面显示「1/6 条可用」——
+  //    用户看了以为网络坏了，实际上是查得更快了（2026-09-05 小蔡报的）。
+  //    后端注释当时写着「界面上显示检测中」，而前端一直没读这个字段：
+  //    又一次「后端加了字段、前端没接」。
   var head = used
-    ? '经 ' + esc(used.name) + '　·　' + okN + '/' + ls.length + ' 条可用'
+    ? '经 ' + esc(used.name)
+      + (pendN ? '　·　' + okN + ' 条已通过，' + pendN + ' 条未测'
+               : '　·　' + okN + '/' + ls.length + ' 条可用')
     : (okN ? okN + '/' + ls.length + ' 条线路可用'
-           : ls.length + ' 条线路全部失败');
+           : (pendN ? pendN + ' 条线路检测中'
+                    : ls.length + ' 条线路全部失败'));
 
   var toggle = '<div data-act="toggleUpdLines" style="cursor:pointer;'
     + 'display:flex;gap:6px;align-items:center;justify-content:center;'
@@ -396,13 +407,19 @@ function updLines(st, u) {
     // 🔴 **速度这一列只放实测出来的字节率。没测过就是空的（—）。**
     //    绝不拿响应延迟去顶替：那是另一件事，填进来就是在暗示一个
     //    我们并没有测过的结论。
+    // 🔴 pending 是「还没测」，不是「连不上」。查版本并发赛跑，第一条
+    //    成功就返回，剩下的没跑完 —— 显示成「连不上」是在报一个我们
+    //    根本没验证过的结论（2026-09-05 小蔡报的：界面说只剩一条可用，
+    //    实际是五条压根没测）。
     var right = x.ok
       ? (x.bps ? F.gb(x.bps) + '/s' : '—')
-      : esc(x.error || '连不上');
+      : (x.pending ? '未测' : esc(x.error || '连不上'));
     return '<div class="it' + (on ? ' on' : '') + '"'
       + (x.ok ? ' data-act="pickUpdLine" data-arg="' + esc(x.id) + '"'
               : ' style="opacity:.5"')
-      + ' title="' + esc(x.ok ? x.name : (x.error || '连不上')) + '">'
+      + ' title="' + esc(x.ok ? x.name
+                              : (x.pending ? '这条还没测 —— 查版本时已经有更快的先通了'
+                                           : (x.error || '连不上'))) + '">'
       + '<input type="radio" style="pointer-events:none;width:12px;height:12px;'
       + 'flex:none;margin:0"' + (on ? ' checked' : '')
       + (x.ok ? '' : ' disabled') + '>'
@@ -414,7 +431,8 @@ function updLines(st, u) {
   // 「自动」在最上面且是默认 —— 手动选是给网络环境特殊的人留的后门，
   // 不该变成常态。
   var auto = '<div class="it' + (st.updPick ? '' : ' on') + '"'
-    + ' data-act="pickUpdLine" data-arg="" title="每次都挑最快的那条">'
+    + ' data-act="pickUpdLine" data-arg=""'
+    + ' title="点更新时实测各条线路，挑最快的那条（要一两秒）">'
     + '<input type="radio" style="pointer-events:none;width:12px;height:12px;'
     + 'flex:none;margin:0"' + (st.updPick ? '' : ' checked') + '>'
     + '<span class="grow ell">自动（用最快的）</span>'
@@ -487,6 +505,17 @@ function updateView(st) {
       + '<div style="display:flex;gap:8px;margin-top:2px">'
       + btn('installAnyway', '仍然安装', { cls: 'primary' })
       + close + '</div></div>';
+  }
+
+  // 点了更新、还没开下的那两秒：在并发测各条线路。
+  // 🔴 **这一段以前是纯黑盒** —— 点完更新界面毫无反应，而底下可能正在
+  //    等一条连不上的线路超时（urlopen timeout=30，六条最坏 180 秒）。
+  //    用户只能理解成卡死。这个项目的规矩是「任何耗时操作都不给黑盒」，
+  //    挑线路也是耗时操作。（2026-09-05 小蔡报的）
+  if (st.updPickingForDl && u.asset) {
+    return '<div class="fill">'
+      + '<div style="font-size:13px;font-weight:600">正在挑最快的线路…</div>'
+      + '<div class="f-dim">几条同时测，一两秒</div></div>';
   }
 
   // 正在下载 / 正在安装
