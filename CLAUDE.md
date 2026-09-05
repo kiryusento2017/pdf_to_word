@@ -112,14 +112,20 @@ rep 里叫 `formulas` / `formulas_xsl` —— 诊断报告那一格**永远是 `
 
 ---
 
-## 四个自动检查（发版前都要绿）
+## 五个自动检查（前四个发版前，第五个转正后）
 
 ```
 .venv\Scripts\python.exe tools\check_docs.py       文档里的数字跟代码对不对得上
 .venv\Scripts\python.exe tools\check_claims.py     文档说的功能代码里有没有
 .venv\Scripts\python.exe tools\check_package.py    打出来的包干不干净
 .venv\Scripts\python.exe tools\check_upstream.py   依赖上游有没有新版（会拦打包）
+.venv\Scripts\python.exe tools\check_release.py    发出去之后 GitHub 上的状态对不对
 ```
+
+前四个在发版**之前**跑，`check_release` 在**转正之后**跑 —— 它查的是
+GitHub 侧那些「页面上看着正常、用户直接受害、还不报错」的状态
+（latest 没指过来、tag 指错 commit、附件缺一个或传残了、发布说明没有
+分隔线）。2026-09-05 发 v0.2.2 时就栽在第一条上。
 
 这个项目遇到「靠人记得」的问题，一律的解法是**把它变成一条能跑的命令**。
 加规矩之前先想想能不能变成检查。

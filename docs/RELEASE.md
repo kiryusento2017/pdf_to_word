@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 408 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 428 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
 node tests\front_check.js                                   # 138 条
 ```
@@ -33,15 +33,17 @@ node tests\front_check.js                                   # 138 条
 .venv\Scripts\python.exe tools\check_docs.py      # 硬事实
 .venv\Scripts\python.exe tools\check_claims.py    # 行为断言
 .venv\Scripts\python.exe tools\check_package.py   # 打完包之后跑
+.venv\Scripts\python.exe tools\check_release.py   # 转正之后跑（第四节）
 ```
 
-三个查的是不同的东西：
+四个查的是不同的东西：
 
 | | 查什么 | 抓得到的那类错 |
 |---|---|---|
 | `check_docs` | 数字对不对、提到的文件在不在 | 「README 写 208 条，实际 240 条」 |
 | `check_claims` | 文档说的行为跟代码一不一致 | 「注释写『不用 ping 判优』，实现算的就是延迟」 |
 | `check_package` | 安装包里有没有不该有的东西 | 「包里 80 个 `_tmp`/`appdata` 条目」「`使用说明.txt` 还是上一版」 |
+| `check_release` | **发出去之后** GitHub 上的状态对不对 | 「latest 还指着上一版」「tag 指向的 commit 不是 version.json 里那个」「三个附件少一个」「发布说明没有分隔线」 |
 
 `check_package` 要在**打完包之后**跑，前两个随时能跑。它的存在是因为
 v0.0.2 就带着开发机的运行时垃圾发出去了 —— 而「在 dist 里真跑一次」
@@ -292,11 +294,17 @@ gh release edit vX.Y.Z --latest
 `releases/latest` 还指着上一版 —— 所有用户的「检查更新」都拿不到新版本，
 **并且不报任何错**，界面上显示的是「已是最新」。
 
-改完必须当场验一眼，返回的得是新版本号：
+改完必须当场验一眼。**别用眼睛看 Release 页面** —— 那一页上这个错
+长得跟正常的一模一样。跑这条：
 
 ```
-gh api repos/<owner>/<repo>/releases/latest --jq '.tag_name'
+.venv\Scripts\python.exe tools\check_release.py
 ```
+
+它把本节这些「不报错的失败」一次查完：latest 指的是不是这一版、
+预发行版标记摘没摘、tag 指向的 commit 跟本地 `version.json` 对不对得上、
+三个附件齐不齐、字节数跟本地产物一不一样、发布说明有没有独占一行的
+`---`。加 `--full` 会把附件真下下来比 SHA256（要几分钟）。
 
 对照这次的事故：安装包消失的那一个多小时，正好落在 v0.1.1 是 latest 的
 窗口里，所以新用户直接装不了。**如果它当时挂着预发行版标记，这段时间
@@ -349,7 +357,7 @@ gh release create v0.1.2 ^
 ```
 gh release edit v0.1.2 --prerelease=false
 gh release edit v0.1.2 --latest
-gh api repos/<owner>/<repo>/releases/latest --jq '.tag_name'   # 必须回新版本号
+.venv\Scripts\python.exe tools\check_release.py v0.1.2       # 必须报「状态是对的」
 ```
 
 三个附件都要传：安装包、更新包、**依赖清单**（`requires-vX.json`）。
