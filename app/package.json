@@ -1,6 +1,6 @@
 {
   "name": "pdf2word",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "PDF 转 Word · Electron 外壳",
   "main": "main.js",
   "private": true,
