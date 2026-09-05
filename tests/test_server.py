@@ -398,7 +398,18 @@ class Test更新的接缝(unittest.TestCase):
 
         self.assertIn('digest', seen, 'server 没把 digest 传给 download')
         self.assertEqual(seen['digest'], 'a' * 64)
-        self.assertEqual(seen.get('size'), 123, 'size 也该传（长度校验要用）')
+        # 🔴 **size 故意不传。** 它在 download() 里唯一的用途是喂给
+        #    _download_order -> probe_mirrors 的「小包不测速」捷径判断，
+        #    跟长度校验毫无关系 —— 那个用的是 HTTP 响应头的 Content-Length
+        #    （见 _fetch_one）。更新包 0.55 MB 会触发捷径，让 bps 全变 0、
+        #    排序作废，「自动（用最快的）」当场退化成「按名单顺序试第一条」。
+        #
+        #    这条断言原来是反的，理由写着「长度校验要用」—— **理由是错的**，
+        #    2026-09-05 把测速收回后端一处时才发现。又一次「测试和实现
+        #    一起错，于是一起绿」（CLAUDE.md 第 4 条）。
+        self.assertIsNone(seen.get('size'),
+                          'size 传给了 download —— 会触发小包捷径，'
+                          '自动挑最快的线路作废')
 
     def test_后端不看前端传的url(self):
         r"""服务只绑 127.0.0.1，但本机任意进程都能 POST 一个自己的地址，

@@ -1016,11 +1016,16 @@ ASSET_PREFIX = 'https://github.com/%s/%s/releases/download/' % (OWNER, REPO)
 
 
 def download(asset_url, dest, on_progress=None, seconds=2.0,
-             digest='', size=0, allow_unverified=False, prefer=''):
+             digest='', size=0, allow_unverified=False, prefer='',
+             on_phase=None):
     r"""下更新包。返回 (ok, error, 用了哪个源)。
 
     先并发测速挑最快的再下 —— 候选里当场坏掉的不在少数（实测六个坏三个），
     不测速就可能卡在一个吐不出数据的源上。
+
+    `on_phase` 是给界面用的回调：挑线路要花两秒测速，那期间界面得说清楚
+    在干什么，不能顶着「正在下载 0%」装死（项目规矩：任何耗时操作都不给
+    黑盒）。取值 'probing'（在测速挑线路）/ 'running'（真在下了）。
 
     `prefer` 是界面上手动指定的线路 id（空 = 自动挑最快的）。留这个后门是
     因为**最快的未必最稳**：别人的网络跟开发机可能完全不同，测速赢的那条
@@ -1081,9 +1086,13 @@ def download(asset_url, dest, on_progress=None, seconds=2.0,
     #    2026-09-03 发 v0.1.1 当天就撞上了：ghfast.top 的 SSL 挂掉，
     #    自动更新链路当场断掉 —— 而旁边六条是通的。0.5 MB 的东西，
     #    换一条重下的代价近乎为零，没有理由不试。
+    if on_phase:
+        on_phase('probing')
     order = _download_order(asset_url, prefer, seconds, size)
     if not order:
         return False, '所有下载源都连不上，检查一下网络', ''
+    if on_phase:
+        on_phase('running')
 
     tried = []
     for m in order:

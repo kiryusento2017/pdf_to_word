@@ -164,8 +164,14 @@ def list_sources():
 
 # ── 检查更新 ────────────────────────────────────────────────────────────
 # 单例，跟模型下载同理：一台机器同时只可能下一个更新包。
+# 'step' 是 state='running' 内部的细分，给界面说清楚「现在到底在等什么」：
+#   'checking'  正在跟 GitHub 确认最新版本（最坏 3.8 秒）
+#   'probing'   正在并发测各条线路，挑最快的（约 2 秒）
+#   'running'   真的在下了，这时候 got/total 才有意义
+# 🔴 不叫 phase —— 前端的 u.phase 存的是后端的 state（见 actions.pollUpd），
+#    重名会撞车。
 _UPD = {'state': 'idle', 'got': 0, 'total': 0, 'error': '',
-        'file': '', 'via': '', 'files': 0}
+        'file': '', 'via': '', 'files': 0, 'step': ''}
 
 
 @app.get('/api/update/check')
@@ -230,11 +236,26 @@ def _upd_work(allow_unverified=False, prefer=''):
     #   改成 PDF2Word 就是为了避开中文路径，两处不能各走各的。）
     dest = os.path.join(paths.ensure(os.path.join(paths.TMP, 'update')),
                         asset.get('name') or 'update.zip')
+    def on_phase(p):
+        with _LOCK:
+            _UPD['step'] = p
+
+    # 🔴 **故意不传 size。**
+    #
+    #    probe_mirrors 有条「小包不值得测速」的捷径（size < 5 MB 就直接
+    #    返回 bps 全 0）。更新包只有 0.55 MB，正好落在捷径里 —— 于是
+    #    _download_order 的测速排序拿到一堆 0，排了个寂寞，每次都落到
+    #    名单第一条。那条要是连不上，_fetch_one 的 urlopen(timeout=30)
+    #    得干等满 30 秒才换下一条。
+    #
+    #    捷径的账在 2026-09-05 已经算翻过一次：代价不是「多等 2 秒测速」，
+    #    而是「第一条不通就干等 30 秒」。所以更新包这条路必须真测。
+    #    （在这之前是前端点更新时自己先打一次 /api/update/probe 来绕开，
+    #      那等于把同一件事拆到前后端两处，删掉一处另一处就静默退化。）
     ok, err, via = update.download(asset['url'], dest, on_progress=on_prog,
                                    digest=asset.get('digest', ''),
-                                   size=asset.get('size', 0),
                                    allow_unverified=allow_unverified,
-                                   prefer=prefer)
+                                   prefer=prefer, on_phase=on_phase)
     if not ok and err.startswith('NEED_CONFIRM:'):
         # 拿不到校验值 —— **报警但不阻拦**，把情况透给界面让用户自己决定。
         # 跟显卡那条规矩一样（小蔡：「要报警，但是并不要阻拦用户使用」）。
@@ -318,7 +339,8 @@ async def start_update_download(req: UpdateDlReq = UpdateDlReq()):
         if _UPD['state'] == 'running':
             return {'ok': True, 'already': True}
         _UPD.update({'state': 'running', 'got': 0, 'total': 0,
-                     'error': '', 'file': '', 'via': ''})
+                     'error': '', 'file': '', 'via': '',
+                     'step': 'checking'})
     threading.Thread(target=_upd_work, daemon=True,
                      args=(bool(req.allow_unverified),
                            (req.line or '')[:40])).start()

@@ -514,23 +514,28 @@ function updateView(st) {
       + close + '</div></div>';
   }
 
-  // 点了更新、还没开下的那两秒：在并发测各条线路。
-  // 🔴 **这一段以前是纯黑盒** —— 点完更新界面毫无反应，而底下可能正在
-  //    等一条连不上的线路超时（urlopen timeout=30，六条最坏 180 秒）。
-  //    用户只能理解成卡死。这个项目的规矩是「任何耗时操作都不给黑盒」，
-  //    挑线路也是耗时操作。（2026-09-05 小蔡报的）
-  if (st.updPickingForDl && u.asset) {
-    return '<div class="fill">'
-      + '<div style="font-size:13px;font-weight:600">正在挑最快的线路…</div>'
-      + '<div class="f-dim">几条同时测，一两秒</div></div>';
-  }
-
   // 正在下载 / 正在安装
   if (st.updBusy && u.asset) {
     if (u.phase === 'installing') {
       return '<div class="fill">'
         + '<div style="font-size:13px;font-weight:600">正在安装…</div>'
         + '<div class="f-dim">马上就好</div></div>';
+    }
+    // 🔴 **真开始下之前那几秒不是黑盒。** 点完更新，后端还要先跟 GitHub
+    //    确认一次最新版本（最坏 3.8 秒），再并发测各条线路挑最快的
+    //    （约 2 秒）。这段时间顶着「正在下载 0%」是在说假话 —— 项目规矩
+    //    是「任何耗时操作都不给黑盒」，而挑线路和确认版本都是耗时操作。
+    //    （2026-09-05 小蔡报「点了更新半天不出进度条」，第一版只给挑线路
+    //      加了提示，确认版本那几秒漏了。）
+    if (u.step === 'checking') {
+      return '<div class="fill">'
+        + '<div style="font-size:13px;font-weight:600">正在确认最新版本…</div>'
+        + '<div class="f-dim">跟 GitHub 核对一下，别下到旧包</div></div>';
+    }
+    if (u.step === 'probing') {
+      return '<div class="fill">'
+        + '<div style="font-size:13px;font-weight:600">正在挑最快的线路…</div>'
+        + '<div class="f-dim">几条同时测，一两秒</div></div>';
     }
     var pct = u.dlTotal ? Math.min(100, Math.round(100 * (u.dlGot || 0) / u.dlTotal)) : 0;
     return '<div class="fill">'

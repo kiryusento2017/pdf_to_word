@@ -1004,18 +1004,46 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('未测')) throw new Error('没标出「未测」');
   });
 
-  ck('点更新正在挑线路时，界面要说明在干什么', () => {
+  ck('点更新之后真开始下之前，每一步都要说明在干什么', () => {
     // 🔴 这一段以前是纯黑盒：点完更新界面毫无反应，而底下可能正在等一条
     //    连不上的线路超时（urlopen timeout=30，六条最坏 180 秒）。
     //    用户只能理解成卡死 —— 小蔡从 v0.1.1 升级时就是这个体验。
-    const st = ready(sb);
-    st.updPickingForDl = true;
-    st.upd = { ok: true, has_update: true, local: 'v1.0.0', latest: 'v1.1.0',
-               error: '', lines: LINES_PENDING,
-               asset: { name: 'x-update.zip', size: 500000, url: 'https://x/y' } };
-    const h = fn(st);
-    if (!h.includes('正在挑最快的线路')) {
+    //
+    //    后端把 running 细分成 checking / probing / running（_UPD['step']），
+    //    这里逐个钉住：**没有哪一步是顶着「正在下载 0%」装死的**。
+    const base = { ok: true, has_update: true, local: 'v1.0.0', latest: 'v1.1.0',
+                   error: '', lines: LINES_PENDING,
+                   asset: { name: 'x-update.zip', size: 500000, url: 'https://x/y' } };
+
+    const st1 = ready(sb);
+    st1.updBusy = true;
+    st1.upd = Object.assign({}, base, { phase: 'running', step: 'checking' });
+    const h1 = fn(st1);
+    if (!h1.includes('正在确认最新版本')) {
+      throw new Error('确认版本那几秒界面什么都不说');
+    }
+    if (h1.includes('正在下载')) {
+      throw new Error('还没开始下就说在下载，是假状态');
+    }
+
+    const st2 = ready(sb);
+    st2.updBusy = true;
+    st2.upd = Object.assign({}, base, { phase: 'running', step: 'probing' });
+    const h2 = fn(st2);
+    if (!h2.includes('正在挑最快的线路')) {
       throw new Error('挑线路那几秒界面什么都不说，跟卡死没区别');
+    }
+    if (h2.includes('正在下载')) {
+      throw new Error('还在测速就说在下载，是假状态');
+    }
+
+    const st3 = ready(sb);
+    st3.updBusy = true;
+    st3.upd = Object.assign({}, base, { phase: 'running', step: 'running',
+                                        dlGot: 250000, dlTotal: 500000 });
+    const h3 = fn(st3);
+    if (!h3.includes('正在下载') || !h3.includes('50%')) {
+      throw new Error('真在下的时候反而没有进度');
     }
   });
 

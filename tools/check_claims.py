@@ -176,8 +176,15 @@ claim('zip slip 防护还在',
 srv = read('server/main.py')
 claim('后端自己查 Release，不看前端传的 url',
       'update.check()' in srv and 'req.url' not in srv)
-claim('digest 和 size 都传给了 download',
-      "digest=asset.get('digest'" in srv and "size=asset.get('size'" in srv)
+claim('digest 传给了 download（校验值走直连，文件走镜像）',
+      "digest=asset.get('digest'" in srv)
+# 🔴 反过来断言：size **不许**传。
+#    它在 download() 里唯一的用途是喂给 probe_mirrors 的「小包不测速」
+#    捷径判断（跟长度校验无关，那个用 Content-Length）。更新包 0.55 MB
+#    会触发捷径，让「自动（用最快的）」静默退化成「按名单顺序试第一条」。
+#    2026-09-05 把测速收回后端一处时改的。
+claim('size 不传给 download（否则自动挑最快的线路会静默失效）',
+      "size=asset.get('size'" not in srv)
 
 # ── 更新包路径 ───────────────────────────────────────────────────────
 print()

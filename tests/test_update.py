@@ -1474,5 +1474,42 @@ class Test三个时间数的大小关系(unittest.TestCase):
             % (raw, update.API_DETAIL_BUDGET))
 
 
+class Test自动挑线路必须真测速(unittest.TestCase):
+    r"""「自动（用最快的）」这句话得站得住。
+
+    2026-09-05 之前它是靠前端补丁成立的：前端点更新时先打一次
+    /api/update/probe 测速、把最快的塞进 line 再发下载请求。而后端自己
+    那条测速排序**静默失效** —— probe_mirrors 有「小包不值得测速」的
+    捷径（size < 5 MB 直接返回 bps 全 0），更新包 0.55 MB 正好落在里面，
+    于是排序拿到一堆 0，每次都落到名单第一条。
+
+    这么一来同一件事被拆到前后端两处，删掉前端那段，后端会**静默**
+    退回按名单顺序，而界面上那句「用最快的」还挂着 —— 撞项目铁律
+    「不承诺不存在的行为」。现在测速收回后端一处，用这两条钉住。
+    """
+
+    def test_不传size时要真去测速(self):
+        """size=0 就不该走小包捷径 —— 那正是更新包这条路要的行为。"""
+        seen = []
+        real = update.probe_mirrors
+
+        def fake(asset_url, seconds=2.0, size=0):
+            seen.append(size)
+            return [{'id': m['id'], 'name': m['name'], 'bps': 100, 'error': ''}
+                    for m in update.GH_MIRRORS]
+
+        update.probe_mirrors = fake
+        self.addCleanup(setattr, update, 'probe_mirrors', real)
+
+        update._download_order('https://x/y.zip', '', 2.0, 0)
+        self.assertEqual(seen, [0],
+                         '自动挑线路时没去测速，或者把 size 传下去了'
+                         '（会触发小包捷径，排序作废）')
+
+    # （「server 调 download 时不许传 size」这条断言放在
+    #   tests/test_server.py 的 Test更新的接缝 里 —— 那边测的是真实调用，
+    #   比在这儿扫源码文本可靠。）
+
+
 if __name__ == '__main__':
     unittest.main()
