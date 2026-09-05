@@ -1311,4 +1311,7 @@ function pageModel(st) {
   return shell(top, head + rows, bot);
 }
 
-window.P2W_PAGES = { main: pageMain, model: pageModel };
+// upgradeBox 也导出 —— 它的分支（策略说不能升就不给勾选框）在主屏
+// 路由下测不到（upd 一有值就跳去更新面板了），单独导出才验得了。
+window.P2W_PAGES = { main: pageMain, model: pageModel,
+                     upgradeBox: upgradeBox };

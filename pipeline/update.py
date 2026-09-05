@@ -362,8 +362,11 @@ def _pick_asset(rel):
             'size': pick.get('size', 0), 'digest': dg}
 
 
-def _requires_gap(rel):
+def _requires_gap(rel, out=None):
     r"""拉 Release 里那份依赖清单，跟本地比。返回缺了什么（空 = 能装）。
+
+    顺手把 upgrade 段解出来塞进 out（那是同一份 json，不额外发请求）——
+    界面上「这个版本准不准升」要用它。
 
     清单是打包时从**实际装的包**里读出来的（`importlib.metadata.version`），
     不是手写的。所以它是事实，不是「我记得改版本号」。
@@ -387,7 +390,10 @@ def _requires_gap(rel):
         try:
             req = urllib.request.Request(pre + url if pre else url, headers=UA)
             with urllib.request.urlopen(req, timeout=API_TRY_TIMEOUT) as r:
-                return check_requires(r.read().decode('utf-8'))
+                raw = r.read().decode('utf-8')
+            if out is not None:
+                out['upgrade'] = read_upgrade(raw)
+            return check_requires(raw)
         except Exception:
             continue
     return []
@@ -460,6 +466,9 @@ def check():
            # notes 是老字段（截断版），留着免得别处读它读到 None；
            # 界面用下面两个：brief 默认显示，full 点「完整说明」才展开。
            'notes': '', 'notes_brief': '', 'notes_full': '',
+           # requires.json 里的 upgrade 段（准不准升的策略）。
+           # 老 Release 没有这一段，读不到就是空字典 = 全都「没测过」。
+           'upgrade': {},
            'published': '', 'asset': None, 'error': '',
            # 跨了主/次版本：更新包补不上依赖，得重下完整安装包
            'need_full': False,
@@ -548,7 +557,7 @@ def check():
     #
     #    版本号还留着干一件事：判断**有没有**新版本。那件事没有别的
     #    办法，也不涉及「能不能装」的推断。
-    miss = _requires_gap(rel)
+    miss = _requires_gap(rel, out)
     if miss:
         out['need_full'] = True
         out['has_update'] = False

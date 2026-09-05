@@ -151,7 +151,8 @@ class Test版本比较看方向(unittest.TestCase):
         self._remote(rel)
 
         orig = update._requires_gap
-        update._requires_gap = lambda _rel: ['某个包（没装）']
+        # 签名多了个 out（用来把 upgrade 段带出来），mock 要跟上
+        update._requires_gap = lambda _rel, _out=None: ['某个包（没装）']
         self.addCleanup(setattr, update, '_requires_gap', orig)
 
         r = update.check()
@@ -1160,6 +1161,71 @@ class Test升级策略(unittest.TestCase):
                           'upgrade': {'torch': {'cu128': {'ok': False}}}})
         miss = update.check_requires(raw)
         self.assertEqual(miss, [], '新格式不该让老逻辑报缺依赖')
+
+
+class Test升级策略要真的送到前端(unittest.TestCase):
+    r"""🔴 2026-09-05 渲染验证抓到过一次断线：read_upgrade() 定义了
+    但没人调用，前端那段「策略说不能升就显示理由」永远拿到空对象，
+    界面上什么都不显示。
+
+    这一条锁住整条链路：requires.json → _requires_gap → check() → 前端。
+    """
+
+    def _fake_check(self, upgrade_seg):
+        """让 check() 走完整流程，但网络层是假的。"""
+        rel = {'tag_name': 'v9.9.9', 'published_at': '', 'body': 'x',
+               'assets': [{'name': 'requires-v9.9.9.json',
+                           'browser_download_url': 'https://x/requires.json'}]}
+        payload = json.dumps({'version': 'v9.9.9', 'requires': {},
+                              'upgrade': upgrade_seg})
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return payload.encode('utf-8')
+
+        import urllib.request
+        old_race = update.api_race
+        old_local = update.local_version
+        old_open = urllib.request.urlopen
+        update.api_race = lambda url: (rel, [])
+        update.local_version = lambda: {'tag': 'v0.0.1', 'published_at': ''}
+        urllib.request.urlopen = lambda *a, **k: FakeResp()
+        try:
+            return update.check()
+        finally:
+            update.api_race = old_race
+            update.local_version = old_local
+            urllib.request.urlopen = old_open
+
+    def test_check返回里带着upgrade段(self):
+        out = self._fake_check({'mineru': {'ok': False, 'note': '识别率掉了'}})
+        self.assertIn('upgrade', out)
+        self.assertIn('mineru', out['upgrade'])
+        self.assertIs(out['upgrade']['mineru']['ok'], False)
+        self.assertIn('识别率', out['upgrade']['mineru']['note'])
+
+    def test_老Release没这一段时是空字典而不是缺键(self):
+        r"""缺键的话前端读 st.upd.upgrade 会拿到 undefined，
+        虽然 JS 那边有 || {} 兜底，但后端该给个明确的空值。"""
+        rel = {'tag_name': 'v9.9.9', 'published_at': '', 'body': 'x',
+               'assets': []}
+        old_race = update.api_race
+        old_local = update.local_version
+        update.api_race = lambda url: (rel, [])
+        update.local_version = lambda: {'tag': 'v0.0.1', 'published_at': ''}
+        try:
+            out = update.check()
+        finally:
+            update.api_race = old_race
+            update.local_version = old_local
+        self.assertIn('upgrade', out)
+        self.assertEqual(out['upgrade'], {})
 
 
 if __name__ == '__main__':

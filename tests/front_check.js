@@ -1591,4 +1591,75 @@ if (bad) {
   console.log('\u524d\u7aef\u68c0\u67e5\u5931\u8d25 ' + bad + ' \u9879');
   process.exit(1);
 }
+
+console.log('\n升级区：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const box = sb.window.P2W_PAGES.upgradeBox;
+  const env = (e) => Object.assign(ready(sb), {
+    about: 'env', diag: { versions: { mineru: '3.4.5' }, root: 'D:/x' },
+    maint: { ok: true, items: [] },
+  }, e || {});
+  const HAS_NEW = {
+    ok: true, mineru: { local: '3.4.5', latest: '3.6.0', error: '' },
+    torch: { local: '2.11.0', latest: '2.11.0', error: '' }, models: {},
+  };
+
+  ck('没查过上游时不显示升级区', () => {
+    const h = fn(env({}));
+    if (h.includes('可以升级的')) throw new Error('没数据却摆出勾选框');
+  });
+
+  ck('已是最新时不显示升级区', () => {
+    const h = fn(env({ deps: {
+      ok: true, mineru: { local: '3.4.5', latest: '3.4.5', error: '' },
+      torch: { local: '2.11.0', latest: '2.11.0', error: '' }, models: {} } }));
+    if (h.includes('可以升级的')) throw new Error('没新版本却显示升级区');
+  });
+
+  ck('有新版本且策略没写时，写明「我们没测过」', () => {
+    // 🔴 默认是 null（没测过）—— 不能当成可以升，也不能当成不能升。
+    const h = fn(env({ deps: HAS_NEW }));
+    if (!h.includes('可以升级的')) throw new Error('有新版本却不显示');
+    if (!h.includes('我们没测过')) throw new Error('没说清楚我们没测过');
+    if (!h.includes('data-act="toggleUpg"')) throw new Error('没给勾选框');
+  });
+
+  ck('策略说不能升时只给理由，不给勾选框', () => {
+    // 🔴 2026-09-05 抓到过一次断线：read_upgrade 定义了但没人调用，
+    //    前端永远拿到空对象，理由显示不出来。这条守住整条链路。
+    const st = env({ deps: HAS_NEW,
+      upd: { upgrade: { mineru: { ok: false, note: '3.6 的表格识别退步了' } } } });
+    const h = box(st);
+    if (!h.includes('表格识别退步')) throw new Error('策略的理由没显示出来');
+    if (h.indexOf('data-arg="mineru"') >= 0) throw new Error('说了不能升却还给勾选框');
+  });
+
+  ck('预演结果默认折叠，展开才看完整清单', () => {
+    // 一次升级动十几个包很正常，全摊开会吓着人。
+    const plan = { ok: true, changes: [
+      { name: 'mineru', from: '3.4.5', to: '3.6.0' },
+      { name: 'transformers', from: '4.57.6', to: '4.58.0' } ] };
+    const a = fn(env({ deps: HAS_NEW, upgPick: { mineru: true }, upgPlan: plan }));
+    if (!a.includes('会动 2 个包')) throw new Error('没说会动几个包');
+    if (a.includes('transformers')) throw new Error('默认就摊开了');
+    const b = fn(env({ deps: HAS_NEW, upgPick: { mineru: true },
+                       upgPlan: plan, upgDetail: true }));
+    if (!b.includes('transformers')) throw new Error('展开了还看不到');
+  });
+
+  ck('pip 解不出来时说清楚装不了，且不让下载', () => {
+    // 🔴 这正是约束文件要的效果：显式暴露冲突，而不是偷偷装出坏组合。
+    const h = fn(env({ deps: HAS_NEW, upgPick: { mineru: true },
+      upgPlan: { ok: false, error: 'ResolutionImpossible: 需要 torch>=2.12' } }));
+    if (!h.includes('装不了')) throw new Error('没说为什么装不了');
+    const i = h.indexOf('data-act="startUpgrade"');
+    if (i >= 0) {
+      const tag = h.slice(i, h.indexOf('>', i));
+      if (!tag.includes('disabled')) throw new Error('装不了却还能点下载');
+    }
+  });
+}
+
 console.log('\u524d\u7aef\u5168\u90e8\u901a\u8fc7');
