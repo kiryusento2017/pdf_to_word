@@ -34,6 +34,21 @@ var state = {
   updBusy: false,       // 正在查 / 正在下
   updLinesOpen: false,  // 线路表展开了没（默认折叠，只占一行）
   updNotesOpen: false,  // 更新说明展开了没（默认只显示摘要那几行）
+
+  // 关于 / 环境检测。about = null 表示没打开；打开时是
+  // 'about' 或 'env' 两种视图之一。
+  about: null,
+  diag: null,           // 诊断报告的原始数据（进环境检测时拉）
+  maint: null,          // 各项占用（同上）
+  maintBusy: false,
+  maintPick: {},        // 勾了哪几类要清理：{key: true}
+  cacheOpen: false,     // pip 缓存的明细展开了没
+  deps: null,           // 上游版本检查的结果。**默认 null =
+                        // 没查过，界面上显示破折号，不显示「已是最新」**
+  depsBusy: false,
+  copied: false,        // 诊断信息刚复制过（给个短暂反馈）
+  diagText: '',         // 拼好的诊断文本。放 state 不放 window ——
+                        // 隐式全局栽过（2026-09-02 那次点下去直接崩）
   updPick: '',          // 手动指定的线路 id，空 = 自动挑最快的
   updProbing: false,    // 正在实测下载速度（用户主动点的）
   sources: null,

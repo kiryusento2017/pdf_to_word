@@ -79,9 +79,15 @@ function envLine(st, compact) {
     + (cls ? ' class="' + cls + '"' : '') + '>' + text + '</span>';
 }
 
-// 公共底栏。**每一屏都要有「检查更新」** —— 卡在安装任何一步的用户，
-// 唯一的自救手段就是更新到修好的版本；按钮不在，人就只能重下安装包。
-// （v0.0.1 那次正是如此：模型下不成 → 停在下载屏 → 那屏底部没有这个按钮。）
+// 公共底栏。**每一屏都要有「关于」** —— 卡在安装任何一步的用户，
+// 唯一的自救手段（检查更新）就在那一屏里；按钮不在，人就只能重下
+// 安装包。（v0.0.1 那次正是如此：模型下不成 → 停在下载屏 → 那屏
+// 底部没有这个按钮。）
+//
+// 🔴 2026-09-05 从「检查更新」改成「关于」，小蔡定的：行为统一，
+//    处处都是同一个按钮。风险可控 —— 用户卡住时主区被 gateKind
+//    拦着，底栏这个按钮是当时**唯一能点的东西**，而进去第一个
+//    按钮就是「检查更新」。
 // extra 是各屏自己的东西，放右边；compact 见 envLine。
 // 🔴 **转换进行中禁用它**（小蔡 2026-09-03 定）。更新包覆盖的正是
 //    `pipeline/*.py`，而转换每处理一份 PDF 就新起一次 MinerU 子进程 ——
@@ -91,9 +97,9 @@ function envLine(st, compact) {
 function botBar(st, extra, compact) {
   var busy = isRunning(st);
   return envLine(st, compact)
-    + btn('checkUpdate', '检查更新',
+    + btn('openAbout', '关于',
           { cls: 'link', off: busy,
-            title: busy ? '正在转换，转完再更新' : '' })
+            title: busy ? '正在转换，转完再看' : '' })
     + '<span class="grow"></span>'
     + (extra || '');
 }
@@ -590,6 +596,227 @@ function updateView(st) {
 }
 
 
+// ── 关于 / 环境检测 ────────────────────────────────────────────────────
+//
+// 占主区不弹窗，跟更新面板一个路数 —— 620x440 的窗口里，弹窗放不下
+// 这些内容。
+
+// 本软件用到的开源组件。GPL 要求「分发须附协议全文」，光把文件放在
+// 硬盘上不够 —— 用户要在界面上看得到。
+var LICENSES = [
+  ['MinerU', 'Apache 2.0'],
+  ['Pandoc', 'GPL-2.0+'],
+  ['PyTorch', 'BSD-3-Clause'],
+  ['KaTeX', 'MIT'],
+  ['Node.js', 'MIT'],
+  ['Electron', 'MIT'],
+];
+
+function aboutView(st) {
+  var d = st.diag || {};
+  var ver = d.tag || (st.env && st.env.version) || '';
+  var rows = LICENSES.map(function (x) {
+    return '<span style="display:inline-block;min-width:118px">'
+      + esc(x[0]) + ' <span class="f-dim">' + esc(x[1]) + '</span></span>';
+  }).join('');
+
+  return '<div class="fill" style="justify-content:flex-start;'
+    + 'padding-top:16px;gap:10px">'
+    + '<div style="font-size:15px;font-weight:600">PDF 转 Word</div>'
+    + '<div class="f-dim">' + esc(ver)
+    + (d.sha ? '　·　' + esc(d.sha) : '') + '</div>'
+    + '<div class="f-dim" style="line-height:1.8;text-align:left">'
+    + '作者　终末诗篇<br>'
+    + '许可　GPL-3.0-or-later<br>'
+    + '项目　github.com/kiryusento2017/pdf_to_word'
+    + '</div>'
+    + '<div class="f-dim" style="max-width:92%;text-align:left;'
+    + 'line-height:1.8;font-size:11px">'
+    + '本软件使用了以下开源组件：<br>' + rows
+    + '<br>公式转换用微软 Office 的 MML2OMML.XSL，那是你本机 Office '
+    + '的文件，不随本软件分发。'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;margin-top:6px">'
+    + btn('checkUpdate', '检查更新', { cls: 'primary' })
+    + btn('openEnvCheck', '环境检测')
+    + btn('closeAbout', '关闭')
+    + '</div></div>';
+}
+
+
+// 一行「本地 / 上游」对比。
+//
+// 🔴 **没查过就是破折号，查不到就说查不到。** 绝不显示「已是最新」——
+//    那两个意思差很远，混了就是假绿灯：用户以为自己是最新的，
+//    实际是网络不通。这是 README 里那条既有规矩（「速度那一列没测过
+//    就是空的」）在这一屏的落实。
+function depRow(label, local, up) {
+  var right = '<span class="f-dim">—</span>';
+  if (up) {
+    if (up.error) {
+      right = '<span class="f-dim" title="' + esc(up.error) + '">查不到</span>';
+    } else if (up.latest) {
+      var same = up.latest === local;
+      right = esc(up.latest) + (same ? ' <span class="f-dim">已最新</span>' : '');
+    } else if (up.upstream_time) {
+      right = esc(up.upstream_time) + ' 更新';
+    }
+  }
+  return '<tr><td style="padding:1px 10px 1px 0">' + esc(label) + '</td>'
+    + '<td style="padding:1px 14px 1px 0">' + (esc(local) || '<span class="f-dim">未安装</span>') + '</td>'
+    + '<td style="padding:1px 0">' + right + '</td></tr>';
+}
+
+
+// 一行占用。cleanable 的给勾选框。
+function useRow(st, it) {
+  var on = !!st.maintPick[it.key];
+  var box = it.cleanable
+    ? '<span data-act="toggleMaint" data-arg="' + esc(it.key) + '" '
+      + 'style="cursor:pointer;user-select:none">' + (on ? '☑' : '☐') + '</span>'
+    : '<span class="f-dim">·</span>';
+  return '<tr><td style="padding:1px 8px 1px 0">' + box + '</td>'
+    + '<td style="padding:1px 10px 1px 0">' + esc(it.label) + '</td>'
+    + '<td style="padding:1px 10px 1px 0;text-align:right">' + F.gb(it.size) + '</td>'
+    + '<td class="f-dim" style="padding:1px 0;font-size:11px">' + esc(it.note || '') + '</td>'
+    + '</tr>';
+}
+
+
+function envCheckView(st) {
+  var d = st.diag || {};
+  var g = (d.gpu && d.gpu.gpu) || {};
+  var m = st.maint || {};
+  var v = d.versions || {};
+  var up = st.deps || {};
+
+  // 顶部：机器信息
+  var head = '<div class="f-dim" style="text-align:left;line-height:1.7;'
+    + 'font-size:11px;max-width:96%">'
+    + (g.name ? esc(g.name) + '　驱动 ' + esc(g.driver || '?')
+        + '　' + Math.round((g.vram_mb || 0) / 1024) + ' GB' : '读不到显卡')
+    + (up.torch && up.torch.channel ? '　通道 ' + esc(up.torch.channel) : '')
+    + '<br>' + esc(d.root || '')
+    + (d.free_gb ? '　剩余 ' + d.free_gb + ' GB' : '')
+    + '</div>';
+
+  // 版本对比表
+  var deps = '<table style="font-size:12px;text-align:left">'
+    + '<tr class="f-dim" style="font-size:11px">'
+    + '<td style="padding:1px 10px 1px 0">组件</td>'
+    + '<td style="padding:1px 14px 1px 0">你机器上</td>'
+    + '<td>上游</td></tr>'
+    + depRow('torch', v.torch || '', up.torch)
+    + depRow('mineru', v.mineru || '', up.mineru)
+    + depRow('模型', d.models_ready ? F.gb(d.models_size) : '', up.models)
+    + '</table>';
+
+  // 占用与清理
+  var items = m.items || [];
+  var use = items.length
+    ? '<table style="font-size:12px;text-align:left">'
+      + items.map(function (it) { return useRow(st, it); }).join('')
+      + '</table>'
+    : '<div class="f-dim">' + (st.maintBusy ? '正在扫描…' : (m.error || '')) + '</div>';
+
+  // pip 缓存明细。🔴 必须能展开看 —— 缓存是按 Windows 用户共用的，
+  //    里面混着别的程序下的包，只给总数会让用户误伤别人。
+  var cache = '';
+  var pip = m.pip || {};
+  if ((pip.items || []).length) {
+    var rows = pip.items.slice(0, st.cacheOpen ? 40 : 0).map(function (x) {
+      return '<tr><td style="padding:0 10px 0 0">' + esc(x.name) + '</td>'
+        + '<td style="padding:0 10px 0 0;text-align:right">' + F.gb(x.size) + '</td>'
+        + '<td class="f-dim">' + (x.ours ? '本软件' : '其他程序') + '</td></tr>';
+    }).join('');
+    cache = '<div data-act="toggleCache" class="f-dim" style="cursor:pointer;'
+      + 'user-select:none;font-size:11px">'
+      + (st.cacheOpen ? '收起缓存明细 ▴' : '缓存明细（' + pip.items.length + ' 项）▾')
+      + '</div>'
+      + (st.cacheOpen ? '<div style="max-height:96px;overflow:auto;'
+        + 'font-size:11px;text-align:left"><table>' + rows + '</table></div>' : '');
+  }
+
+  // 清理结果
+  var res = '';
+  var cr = st.cleanResult;
+  if (cr) {
+    res = '<div class="f-dim" style="font-size:11px">已清理 ' + F.gb(cr.freed || 0)
+      + ((cr.failed || []).length ? '　·　' + cr.failed.length + ' 项没删掉：'
+          + esc(cr.failed.slice(0, 2).join('；')) : '') + '</div>';
+  }
+
+  var picked = 0;
+  for (var k in st.maintPick) { if (st.maintPick[k]) picked++; }
+
+  return '<div class="fill" style="justify-content:flex-start;'
+    + 'padding-top:10px;gap:7px">'
+    + head
+    + deps
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + btn('checkDeps', st.depsBusy ? '正在查…' : '检查上游',
+          { off: st.depsBusy || isRunning(st),
+            title: isRunning(st) ? '正在转换，转完再查' : '' })
+    + (up.error ? '<span class="f-dim" style="font-size:11px">'
+        + esc(up.error) + '</span>' : '')
+    + '</div>'
+    + use
+    + cache
+    + res
+    + '<div style="display:flex;gap:8px;margin-top:2px">'
+    + btn('doClean', picked ? '清理选中的 ' + picked + ' 项' : '清理',
+          { off: !picked || st.maintBusy })
+    + btn('copyDiag', st.copied ? '已复制' : '复制诊断信息')
+    + btn('openAbout', '返回')
+    + '</div></div>';
+}
+
+
+// 诊断信息拼成一段文本。老师微信发过来，能省十几轮问答。
+//
+// 最值钱的四样：**安装路径原文**（中文路径的坑栽过好几次）、
+// **系统语言**（GBK 编码问题的来源）、**最近一次错误**、**代码 sha**
+//（确认他跑的到底是不是你以为的那版）。
+function diagText(st) {
+  var d = st.diag || {};
+  if (!d.tag && !d.root) return '';
+  var g = (d.gpu && d.gpu.gpu) || {};
+  var v = d.versions || {};
+  var m = st.maint || {};
+  var L = [];
+  L.push('PDF转Word ' + (d.tag || '?') + (d.sha ? '  (sha ' + d.sha + ')' : ''));
+  L.push(d.os || '');
+  L.push('安装目录 ' + (d.root || ''));
+  L.push('  可写 ' + (d.writable ? '是' : '否')
+    + '   剩余 ' + (d.free_gb || '?') + ' GB'
+    + (d.admin ? '   ⚠ 以管理员身份运行' : ''));
+  L.push('');
+  L.push('显卡 ' + (g.name || '读不到') + ' / 驱动 ' + (g.driver || '?')
+    + ' / ' + Math.round((g.vram_mb || 0) / 1024) + ' GB'
+    + ' / 算力 ' + (g.compute_cap || '?'));
+  L.push('torch ' + (v.torch || '未装') + '   mineru ' + (v.mineru || '未装')
+    + '   模型 ' + (d.models_ready ? F.gb(d.models_size) + ' 已就绪' : '未就绪'));
+  if ((m.items || []).length) {
+    L.push('占用: ' + m.items.map(function (x) {
+      return x.label.split('（')[0] + ' ' + F.gb(x.size);
+    }).join(' / '));
+  }
+  var r = d.last_run;
+  if (r) {
+    L.push('最近一次转换: ' + (r.time || '') + '  ' + (r.file || '')
+      + '  ' + (r.ok ? '成功' : '失败 ' + (r.error || ''))
+      + (r.formulas ? '  公式 ' + r.formulas : '')
+      + (r.took_sec ? '  ' + r.took_sec + ' 秒' : ''));
+  }
+  var e = d.last_error;
+  if (e) {
+    L.push('最近一次错误: ' + (e.time || '') + '  [' + (e.where || '') + '] '
+      + (e.msg || '') + (e.hint ? '  （' + e.hint + '）' : ''));
+  }
+  return L.join(chr10());
+}
+
+
 // ── 主屏 ───────────────────────────────────────────────────────────────
 function pageMain(st) {
   // 后端没连上是致命的，占住主区说清楚，别让人对着空列表发呆。
@@ -614,6 +841,20 @@ function pageMain(st) {
   if (st.upd || st.updBusy) {
     return shell('<span class="f-dim" style="padding:0 4px">检查更新</span>',
                  updateView(st), envLine(st));
+  }
+
+  // 关于 / 环境检测。排在更新面板后面 —— 点了「检查更新」就该
+  // 看更新，不该被关于页盖住。
+  if (st.about) {
+    if (st.about === 'env') {
+      // 诊断文本算好存进 state，copyDiag 直接读 —— 不用隐式全局，
+      // 那个前端检查专门在防（2026-09-02 栽过）。
+      st.diagText = diagText(st);
+      return shell('<span class="f-dim" style="padding:0 4px">环境检测</span>',
+                   envCheckView(st), envLine(st));
+    }
+    return shell('<span class="f-dim" style="padding:0 4px">关于</span>',
+                 aboutView(st), envLine(st));
   }
 
   return running(st) || st.task ? mainRun(st) : mainPick(st);

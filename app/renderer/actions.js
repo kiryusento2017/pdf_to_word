@@ -375,6 +375,131 @@
       render();
     },
 
+    // ── 关于 / 环境检测 ──────────────────────────────────────────
+
+    // 打开「关于」。底栏那个按钮任何时候都指到这里 —— 卡在安装
+    // 任何一步的用户，自救手段（检查更新）就在这一屏里。
+    openAbout: function () {
+      st.about = 'about';
+      render();
+    },
+
+    closeAbout: function () {
+      st.about = null;
+      st.maintPick = {};
+      st.cacheOpen = false;
+      st.copied = false;
+      render();
+    },
+
+    // 打开环境检测。**进来就拉本地信息**（不联网，很快），
+    // 上游版本要用户另点按钮 —— 见 checkDeps 的说明。
+    openEnvCheck: function () {
+      st.about = 'env';
+      st.maintBusy = true;
+      render();
+      HTTP.get('/api/maint/scan').then(function (d) {
+        st.maint = d;
+        st.maintBusy = false;
+        render();
+      }).catch(function (e) {
+        st.maintBusy = false;
+        st.maint = { ok: false, error: String(e && e.message || e) };
+        render();
+      });
+      HTTP.get('/api/diag').then(function (d) {
+        st.diag = d;
+        render();
+      }).catch(function () {});
+    },
+
+    // 查上游有没有新版本。
+    //
+    // 🔴 **不自动查。** 这是照搬 README 里那条既有规矩：「速度那一列
+    //    没测过就是空的，不拿别的数字顶替」。没查过就显示破折号，
+    //    查不到就显示「查不到」—— **绝不显示「已是最新」**，那两个
+    //    意思差很远，混了就是假绿灯。
+    //
+    //    实测约 3.6 秒（两次 pip 子进程 + 一次 HTTP）。
+    checkDeps: function () {
+      st.depsBusy = true;
+      render();
+      HTTP.get('/api/deps/check').then(function (d) {
+        st.deps = d;
+        st.depsBusy = false;
+        render();
+      }).catch(function (e) {
+        st.depsBusy = false;
+        st.deps = { ok: false, error: String(e && e.message || e) };
+        render();
+      });
+    },
+
+    // 勾选要清理的项。
+    // arg 是 data-arg 里那个 key（事件分发的签名是 fn(arg, el)）。
+    toggleMaint: function (arg) {
+      var k = arg;
+      if (!k) return;
+      st.maintPick[k] = !st.maintPick[k];
+      render();
+    },
+
+    // 展开/收起 pip 缓存的明细。
+    //
+    // 🔴 **必须能看到明细。** 缓存是按 Windows 用户共用的，里面混着
+    //    别的程序下的包（实测扫出过 pyside6、torch+cpu 那些）。
+    //    只给一个总数加清理按钮的话，用户一点就误伤别人。
+    toggleCache: function () {
+      st.cacheOpen = !st.cacheOpen;
+      render();
+    },
+
+    // 清理。
+    doClean: function () {
+      var keys = [];
+      for (var k in st.maintPick) {
+        if (st.maintPick[k]) keys.push(k);
+      }
+      if (!keys.length) return;
+      st.maintBusy = true;
+      render();
+      HTTP.post('/api/maint/clean', { keys: keys, paths: [] })
+        .then(function (d) {
+          st.maintPick = {};
+          st.cleanResult = d;
+          return HTTP.get('/api/maint/scan');
+        }).then(function (d) {
+          st.maint = d;
+          st.maintBusy = false;
+          render();
+        }).catch(function (e) {
+          st.maintBusy = false;
+          st.cleanResult = { ok: false, failed: [String(e && e.message || e)] };
+          render();
+        });
+    },
+
+    // 把诊断信息复制到剪贴板。老师微信发过来，能省十几轮问答。
+    copyDiag: function () {
+      var text = st.diagText || '';
+      if (!text) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text);
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        st.copied = true;
+        render();
+        setTimeout(function () { st.copied = false; render(); }, 2000);
+      } catch (e) { /* 复制失败就算了，文本还在屏幕上 */ }
+    },
+
     // 展开/收起完整的更新说明。默认只给摘要那几行 —— 620x440 的
     // 窗口塞不下长文，而摘要（Release 正文里分隔线之前那段）已经
     // 够判断「这次更新值不值得现在装」。

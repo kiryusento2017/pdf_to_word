@@ -143,7 +143,10 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'probeSources', 'pickSource', 'startDownload', 'pickLocal',
                      'openFile', 'openPath', 'openOffice', 'openNode',
                      'cancelDownload', 'checkUpdate', 'closeUpdate',
-                     'downloadUpdate', 'restartApp']) {
+                     'downloadUpdate', 'restartApp',
+                     'openAbout', 'closeAbout', 'openEnvCheck',
+                     'checkDeps', 'toggleMaint', 'toggleCache',
+                     'doClean', 'copyDiag', 'toggleUpdNotes']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });
@@ -842,15 +845,37 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
   const sb = mkSandbox();
   const fn = sb.window.P2W_PAGES.main;
 
-  ck('状态栏有检查更新的入口，空态和有文件时都有', () => {
+  // 2026-09-05 底栏入口从「检查更新」改成「关于」（检查更新挪进那一屏）。
+  // 守护的规矩没变：**每一屏都要有自救入口**。
+  ck('状态栏有关于的入口，空态和有文件时都有', () => {
     const empty = fn(ready(sb));
-    if (!empty.includes('data-act="checkUpdate"')) throw new Error('空态没有入口');
+    if (!empty.includes('data-act="openAbout"')) throw new Error('空态没有入口');
     const st = ready(sb);
     st.items = [{ path: 'C:\\a\\x.pdf', ok: true, pages: 5, scan_pages: [] }];
-    if (!fn(st).includes('data-act="checkUpdate"')) throw new Error('有文件时没有入口');
+    if (!fn(st).includes('data-act="openAbout"')) throw new Error('有文件时没有入口');
   });
 
-  ck('转换进行中，检查更新按钮禁用但不消失', () => {
+  ck('关于页里第一个按钮就是检查更新', () => {
+    // 🔴 这条是上面那条改动的**代价补偿**：入口多了一层，那么
+    //    进去之后必须一眼看到自救手段，不能再藏。
+    const st = ready(sb);
+    st.about = 'about';
+    const h = fn(st);
+    if (!h.includes('data-act="checkUpdate"')) throw new Error('关于页里没有检查更新');
+    if (!h.includes('data-act="openEnvCheck"')) throw new Error('关于页里没有环境检测');
+  });
+
+  ck('环境检测页：没查过上游就是破折号，不能写「已是最新」', () => {
+    // 🔴 查不到和已最新是两回事，混了就是假绿灯。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { torch: '2.11.0', mineru: '3.4.5' }, root: 'D:/x' };
+    const h = fn(st);
+    if (h.includes('已最新')) throw new Error('没查过却说已最新');
+    if (!h.includes('data-act="checkDeps"')) throw new Error('没有检查上游的按钮');
+  });
+
+  ck('转换进行中，关于按钮禁用但不消失', () => {
     // 🔴 小蔡 2026-09-03 定的。更新包覆盖的正是 pipeline/*.py，而转换
     //    每处理一份 PDF 就新起一次 MinerU 子进程 —— 转到一半换掉代码，
     //    后面几份读到的是新代码；装完还要重启，一重启这批全废。
@@ -860,16 +885,16 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     const st = ready(sb);
     st.task = { state: 'running', items: [] };
     const h = fn(st);
-    if (!h.includes('data-act="checkUpdate"')) throw new Error('按钮被拿掉了');
-    const i = h.indexOf('data-act="checkUpdate"');
+    if (!h.includes('data-act="openAbout"')) throw new Error('按钮被拿掉了');
+    const i = h.indexOf('data-act="openAbout"');
     const tag = h.slice(i, h.indexOf('>', i));
-    if (!tag.includes('disabled')) throw new Error('转换中却还能点更新');
+    if (!tag.includes('disabled')) throw new Error('转换中却还能点');
   });
 
-  ck('没在转换时检查更新是能点的', () => {
+  ck('没在转换时关于是能点的', () => {
     const st = ready(sb);
     const h = fn(st);
-    const i = h.indexOf('data-act="checkUpdate"');
+    const i = h.indexOf('data-act="openAbout"');
     const tag = h.slice(i, h.indexOf('>', i));
     if (tag.includes('disabled')) throw new Error('空闲时反而点不了');
   });
@@ -1381,9 +1406,9 @@ console.log('底部常驻：');
             lines: ['连不上'], error: '下载中断' } })],
   ];
   for (const [name, fn, st] of screens) {
-    ck('「' + name + '」屏底部有检查更新', () => {
+    ck('「' + name + '」屏底部有关于（自救入口）', () => {
       const h = fn(st);
-      if (!h.includes('data-act="checkUpdate"')) throw new Error('没有检查更新按钮');
+      if (!h.includes('data-act="openAbout"')) throw new Error('没有关于按钮');
       if (!segs(h)) throw new Error('三段结构不全');
     });
   }
