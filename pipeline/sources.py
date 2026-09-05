@@ -151,11 +151,24 @@ def download(url, dest, on_progress=None, timeout=30, retries=3):
     那种体验会让人直接卸载。
     """
     tmp = dest + '.part'
-    os.makedirs(os.path.dirname(os.path.abspath(dest)) or '.', exist_ok=True)
+    # 🔴 「不抛异常」是这个函数的契约，那这两处 IO 也得算进去。
+    #    建目录会因为盘只读、路径非法、磁盘满而抛；断点文件的 getsize
+    #    会在 isfile 和 getsize 之间被人清掉而抛。裸着的话异常直接穿到
+    #    调用方，而调用方（模型下载、GPU 运行库）都是照着
+    #    {ok, error, bytes} 写的。（2026-09-05 全量审查补）
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(dest)) or '.',
+                    exist_ok=True)
+    except OSError as e:
+        return {'ok': False, 'bytes': 0,
+                'error': '建不了下载目录：%s' % str(e)[:120]}
     total = 0
 
     for attempt in range(retries):
-        have = os.path.getsize(tmp) if os.path.isfile(tmp) else 0
+        try:
+            have = os.path.getsize(tmp) if os.path.isfile(tmp) else 0
+        except OSError:
+            have = 0          # 断点文件刚被清掉，从头下就是
         headers = {'User-Agent': 'pdf2word/0.1'}
         if have:
             headers['Range'] = 'bytes=%d-' % have

@@ -340,6 +340,12 @@ def _spawn(argv, on_line, env=None, stop_flag=None):
     return p.wait()
 
 
+def _empty_rep():
+    return {'ok': False, 'error': '', 'auto_dir': '', 'md': '',
+            'pages': 0, 'tail': '', 'stage': '', 'cancelled': False,
+            'cached': False}
+
+
 def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
         env=None, stop_flag=None, **kw):
     r"""提取一份 PDF。返回报告 dict，**不抛异常**。
@@ -348,10 +354,33 @@ def run(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
     on_log(line) —— 原始输出，给「查看日志」用
 
     报告字段：ok / error / auto_dir / md / pages / tail
+
+    🔴 **外壳只负责兜底，活在 _run_inner 里干。**
+
+       「不抛异常」原来只是句注释，实际上是漏的：`fingerprint()` 里
+       `open(pdf,'rb')`、`os.makedirs`、`os.listdir` 全裸着。PDF 在
+       isfile 检查之后被移走（U 盘拔了、文件被挪走）、磁盘满、输出目录
+       只读，异常就会一路穿到 server._work 的总兜底 —— 结果是**整批
+       中止**，而 convert.py 的设计意图写得很清楚：「一份书失败不能带倒
+       整批（用户常常一次拖进来一整个文件夹）」。
+
+       这跟 server._work / _work_inner 是同一套写法。
+       （2026-09-05 全量审查查出来的）
     """
-    rep = {'ok': False, 'error': '', 'auto_dir': '', 'md': '',
-           'pages': 0, 'tail': '', 'stage': '', 'cancelled': False,
-           'cached': False}
+    try:
+        return _run_inner(pdf, out_dir, mineru=mineru, on_progress=on_progress,
+                          on_log=on_log, env=env, stop_flag=stop_flag, **kw)
+    except Exception as e:
+        rep = _empty_rep()
+        rep['error'] = ('提取这份时出错：%s: %s'
+                        % (type(e).__name__, str(e)[:160]))
+        return rep
+
+
+def _run_inner(pdf, out_dir, mineru=None, on_progress=None, on_log=None,
+               env=None, stop_flag=None, **kw):
+    """真正干活的那层。会抛异常，由 run() 兜住。"""
+    rep = _empty_rep()
     mineru = mineru or paths.mineru_cmd()
     if isinstance(mineru, str):
         # 老写法：给的是一个可执行文件路径

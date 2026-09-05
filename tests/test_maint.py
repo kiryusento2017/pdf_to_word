@@ -116,6 +116,32 @@ class Test清理(unittest.TestCase):
         self.assertEqual(r['freed'], 0)
         self.assertEqual(r['failed'], [])
 
+    def test_问不出pip缓存目录时不能退化成删当前目录(self):
+        r"""🔴 **os.path.abspath('') 返回的是当前工作目录。**
+
+        pip 坏了 / 没装好时 pip_cache_dir() 返回空串，白名单就会从
+        「pip 缓存目录」悄悄变成「当前工作目录」—— 本机任意进程
+        POST 一个安装目录下的路径就能把文件删掉。上面那条
+        test_只删缓存目录里的东西 盖不住这个形状：它跑的时候
+        pip_cache_dir() 是有值的。（2026-09-05 全量审查发现）
+        """
+        victim = os.path.join(WORK, '安装目录下的文件.txt')
+        io.open(victim, 'w', encoding='utf-8').write('重要文件')
+
+        real = maint.pip_cache_dir
+        cwd = os.getcwd()
+        maint.pip_cache_dir = lambda: ''       # 模拟 pip 问不出来
+        try:
+            os.chdir(ROOT)      # victim 落在 cwd 底下，正是触发的形状
+            r = maint.clean(keys=(), pip_paths=[victim])
+        finally:
+            os.chdir(cwd)
+            maint.pip_cache_dir = real
+
+        self.assertTrue(os.path.isfile(victim),
+                        '问不出 pip 缓存目录时，当前目录下的文件被删了！')
+        self.assertTrue(r['failed'], '拒绝删除时要报出来，不能静默')
+
 
 class Test运行记录(unittest.TestCase):
     r"""诊断报告里最值钱的两条，而 convert.log 给不了 —— 它只记时间和
@@ -136,8 +162,13 @@ class Test运行记录(unittest.TestCase):
         shutil.rmtree(WORK, ignore_errors=True)
 
     def test_记一次成功的转换(self):
-        rep = {'ok': True, 'pages': 23, 'formulas_src': 213,
-               'formulas_ok': 213, 'pdf': r'D:\x\电场.pdf'}
+        # 🔴 **字段名必须跟 convert.pdf_to_word 真实返回的一致。**
+        #    这里原来手工编了 formulas_src / formulas_ok，而 convert 的
+        #    rep 里叫 formulas / formulas_xsl —— 测试自己造了一套假契约，
+        #    于是 400 条全绿，真实运行时 last_run.json 里却永远是 "?/?"
+        #    （2026-09-05 全量审查时从落盘文件查出来的）。
+        rep = {'ok': True, 'pages': 23, 'formulas': 213,
+               'formulas_xsl': 213, 'pdf': r'D:\x\电场.pdf'}
         self.assertTrue(maint.note_run(rep, took_sec=96))
         got = maint.last_run()
         self.assertTrue(got['ok'])

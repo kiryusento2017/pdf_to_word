@@ -237,6 +237,50 @@ class Test跑一次(unittest.TestCase):
         self.assertIn('找不到', r['error'])
 
 
+class Test不抛异常是硬契约(unittest.TestCase):
+    r"""run() 的 docstring 写着「不抛异常」，那就得真的做到。
+
+    2026-09-05 全量审查发现它原来是漏的：`fingerprint()` 里的
+    `open(pdf,'rb')`、`os.makedirs`、`os.listdir` 全裸着。PDF 在
+    isfile 检查之后被移走（U 盘拔了）、磁盘满、输出目录只读，异常
+    都会穿出去，最后被 server._work 的总兜底接住 —— 那是**整批中止**，
+    而 convert.py 的设计意图写得很清楚：「一份书失败不能带倒整批」。
+    """
+
+    def setUp(self):
+        if os.path.isdir(WORK):
+            shutil.rmtree(WORK, ignore_errors=True)
+        os.makedirs(WORK)
+        self.pdf = os.path.join(WORK, '某讲义.pdf')
+        io.open(self.pdf, 'w', encoding='utf-8').write('x')
+        self.out = os.path.join(WORK, 'out')
+        self.orig_fp = extract.fingerprint
+
+    def tearDown(self):
+        extract.fingerprint = self.orig_fp
+        shutil.rmtree(WORK, ignore_errors=True)
+
+    def _boom(self, exc):
+        def fake(*a, **k):
+            raise exc
+        extract.fingerprint = fake
+
+    def test_算指纹时文件没了_返回失败而不是抛出去(self):
+        self._boom(OSError(2, '文件不见了'))
+        rep = extract.run(self.pdf, self.out, mineru='mineru.exe')
+        self.assertFalse(rep['ok'])
+        self.assertIn('出错', rep['error'])
+
+    def test_兜底返回的报告结构要完整(self):
+        r"""convert.pdf_to_word 会直接读 e['ok'] / e['error'] /
+        e.get('tail')，兜底那份少一个字段就换个地方炸。"""
+        self._boom(RuntimeError('随便什么错'))
+        rep = extract.run(self.pdf, self.out, mineru='mineru.exe')
+        for k in ('ok', 'error', 'auto_dir', 'md', 'pages', 'tail',
+                  'stage', 'cancelled', 'cached'):
+            self.assertIn(k, rep, '兜底报告缺字段 %s' % k)
+
+
 class Test退出码不能不看(unittest.TestCase):
     r"""🔴 原来的判据是「找不找得到 .md」，退出码 rc 只在**没有产物**时
     才出现在错误信息里露个脸。

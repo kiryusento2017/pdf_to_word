@@ -271,7 +271,15 @@ def clean(keys=(), pip_paths=()):
     # 🔴 只删缓存目录内的文件。路径是前端传来的，必须验 ——
     #    本机任意进程都能 POST 一个自己的路径过来（server 只绑
     #    127.0.0.1，但那不等于只有我们能连）。
-    cache_dir = os.path.abspath(pip_cache_dir()) if pip_paths else ''
+    #
+    # 🔴 **必须先判空再 abspath。** os.path.abspath('') 返回的是
+    #    当前工作目录 —— 直接套在 pip_cache_dir() 外面的话，pip 坏了
+    #    问不出目录时，白名单会从「pip 缓存目录」悄悄退化成「当前工作
+    #    目录」，等于把安装目录整个敞开给那个 POST。问不出来就一个都
+    #    不删，这是唯一安全的降级方向。（2026-09-05 全量审查查出来的，
+    #    测试见 test_问不出pip缓存目录时不能退化成删当前目录）
+    _cache_root = pip_cache_dir() if pip_paths else ''
+    cache_dir = os.path.abspath(_cache_root) if _cache_root else ''
     for p in (pip_paths or ()):
         ap = os.path.abspath(p)
         if not cache_dir or not ap.startswith(cache_dir + os.sep):
@@ -329,8 +337,13 @@ def note_run(rep, pdf_name='', took_sec=0):
         'pages': rep.get('pages', 0),
         'ok': bool(rep.get('ok')),
         'error': (rep.get('error') or '')[:200],
-        'formulas': '%s/%s' % (rep.get('formulas_ok', '?'),
-                               rep.get('formulas_src', '?')),
+        # 🔴 字段名取自 convert.pdf_to_word 的 rep：**formulas 是源文
+        #    公式总数，formulas_xsl 是成功转成 Word 原生公式的个数**。
+        #    这里原来读的是 formulas_ok / formulas_src —— 那两个名字
+        #    只存在于 todocx 内部（且叫 formulas_replaced / formulas_src），
+        #    convert 往上传的时候已经改过名。于是这一格永远是 "?/?"。
+        'formulas': '%s/%s' % (rep.get('formulas_xsl', '?'),
+                               rep.get('formulas', '?')),
         'took_sec': int(took_sec or 0),
     })
 
