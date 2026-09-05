@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 403 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 407 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
 node tests\front_check.js                                   # 135 条
 ```
@@ -87,7 +87,9 @@ v0.0.2 就带着开发机的运行时垃圾发出去了 —— 而「在 dist �
 
 目前没有任何代码读它（`main.js` 里没有 `app.getVersion()`），所以对不上
 不会出故障；但发行包里带一个写错版本号的清单文件，早晚会误导人。
-`check_package.py` 还没有这条自动检查，靠这份清单管住。
+
+`check_package.py` 会验这一条（2026-09-05 加的），对不上就报错。
+但它是**打完包之后**才跑 —— 在这一步顺手改掉，能省一次重新打包。
 
 ---
 

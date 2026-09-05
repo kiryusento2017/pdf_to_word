@@ -1591,3 +1591,96 @@ PDF 在 isfile 检查之后被移走（U 盘拔了）、磁盘满、输出目录
 **9 个假失败**（test_server 导入失败、test_torchdep 的「开发环境是
 CUDA 版」、test_deps 的「读得出本地装的版本」等）—— 因为 torch / mineru
 只装在 `.venv` 里。这次审查一上来就踩了，差点当成真 bug 去查。
+
+
+---
+
+## 十、v0.2.1：复查发现的六处（2026-09-05）
+
+第九章那轮全量审查之后，小蔡要求再查一遍并把发现的都处理掉。这一章记
+改了什么、什么没改、为什么。
+
+### 改了六处
+
+**1. 删掉 5 处死 import**
+
+`convert.py` 的 `os`、`upgrade.py` 的 `re`、`check_claims.py` 的 `re`、
+`make_icon.py` 的 `ImageChops`、`test_maint.py` 的 `json`。都确认过
+`名字.` 在文件里出现 0 次。`make_icon.py` 那个是
+`from PIL import Image, ImageChops, ImageDraw` 一行里的第二个，改的是
+这一行而不是删整行。
+
+⚠️ 动手时踩了个坑：写的脚本按 `\r\n` 切行，而仓库里**行尾是混的** ——
+`upgrade.py` / `make_icon.py` / `test_maint.py` 是 LF，其余是 CRLF。
+按 CRLF 切 LF 文件会得到「整个文件一行」，索引直接越界。改用
+`readlines()`（每行自带原行尾）才对，改完逐个验过行尾没变。
+
+**2. `upgrade._pip()` 的超时改成独立 watch 线程（观察 B）**
+
+原来写的是「读到一行之后判断一次 `time.time() - t0`」，而 `readline()`
+是阻塞的：pip 卡住不吐东西时（网络断了最常见）代码停在那一行，**超时
+判断一次都执行不到**，1800 秒的上限形同虚设。
+
+这个坑 `models.download` 和 `torchdep.install` 都踩过并修好了，
+`torchdep` 那边的注释写得很清楚 —— 这条链是漏的。
+
+实测证明过测试有效：用旧逻辑跑同一个「卡死的假进程」，timeout 设 0.5 秒
+**实际跑满 10 秒、进程没被杀**；新测试的两条断言都会红。
+
+**3. `upgrade.install()` 检查备份结果（观察 C）**
+
+调 `backup()` 之后不看 `ok` 就往下装。整套事务设计都建立在「装之前先
+备份」上，而回滚是「照着备份目录里有什么就恢复什么」—— 备份空的话回滚
+什么也做不了，那时环境已经被 pip 动过了。
+
+备份失败概率确实很低（硬链接同盘必成、`_site_dir` 有 sysconfig 兜底），
+但这一步失手的代价是环境废掉。拦住时状态仍是 `downloaded`，用户下次
+还能重试安装，不丢东西。
+
+**4. `probe.scan_dir()` 加深度护栏 `MAX_SCAN_DEPTH = 12`（观察 D）**
+
+用户可能把 `C:\` 拖进来，那会让 `os.walk` 跑遍全盘再逐份
+`pymupdf.open` 取文字，界面假死几分钟。
+
+🔴 **只加深度、不加数量上限**：数量上限会造成静默截断（用户不知道有
+文件被漏掉），违反这个项目「绝不假装」的原则。12 层是「正常用法永远
+碰不到」的量 —— 按学科/年级/章节建最多三四层，留了四倍余量。
+`models._find_snapshot` 出于同样理由早就有 `max_depth=6`。
+
+**5. `main.js` 的 `open-file` 只放行 `.docx`（观察 E）**
+
+`shell.openPath` 是「用默认程序打开」，对 `.exe` 就是执行它。页面 HTML
+是字符串拼出来的，万一哪天有个转义漏洞，「能打开任意文件」立刻升级成
+「能执行任意程序」。隔壁 `open-url` 早就卡了域名白名单，这条危害更大
+反而什么都没卡。
+
+限制成 `.docx` 不损失任何功能：渲染层只在两处用它，传的都是转换产物 ——
+正品 `r.docx` 和判失败改名的次品 `r.degraded`（`xxx【公式未完全转换】.docx`，
+改的是文件名，扩展名没变，已验证）。
+
+**6. `check_package.py` 加 package.json 版本号检查**
+
+`build_release.py --version` 会更新 `version.json` 和 `使用说明.txt`，
+唯独不碰 `app/package.json`，所以每发一版它就更落后一版。注意两边格式
+不一样：`version.json` 是 `v0.2.1`，package.json 不带 `v`。
+
+### 查过之后认为不该改的
+
+| | 为什么 |
+|---|---|
+| **观察 A** `vcredist` 不验签名 | 有合理理由：更新包走**第三方镜像**（ghfast/gh-proxy）所以必须强校验 sha256，而 vc_redist 是直连微软、不走镜像，靠 TLS 是成立的。加 `Get-AuthenticodeSignature` 是可选加固，不是缺陷 |
+| **观察 F** XML 未显式关实体 | 实际不可利用：`mml` 来自 KaTeX 结构化生成的输出（不会产 DOCTYPE），XSL 来自本地 Office 安装目录 |
+| **模型误删后的恢复入口** | 小蔡定的。启动自检会自动把人引到下载屏（`app.js` 的 `DOMContentLoaded` 里判 `!d.models.ok` 就跳 `page='model'`），而且底层是增量下载，缺什么补什么，不用重下 4.6 GB。**缺口是真实的**：「重新检查」按钮只在阻塞屏有，环境检测页的「更新模型」条件里第一项就是 `mu.ready`，所以模型缺失时那个按钮不出现 —— 用户在软件开着的时候删了模型，界面上找不到重下入口，得重启。小蔡判断「一般人都会想到重启」，收益不抵改动 |
+
+### 一件没能查清的事
+
+改动过程中跑全量测试，出现过**一次** `FAILED (errors=1)`，随后连跑四次
+都是 `OK`，没能复现，也就没抓到是哪条。
+
+线索：`test_upgrade.py` 里有大量 `io.open(...).write(...)` 不关闭（跑测试
+时满屏 `ResourceWarning: unclosed file`），而 Windows 上未关闭的句柄会让
+后续 `shutil.rmtree` 偶发失败。
+
+这条影响的是 RELEASE.md 第一节「红一条都不许发」这个判据的可信度 ——
+一个会偶发变红的套件，等于给发版门禁装了个不稳的哨兵。**没修，因为
+没复现出来，改法只能靠猜。** 下次再遇到要立刻把完整输出留下来。
