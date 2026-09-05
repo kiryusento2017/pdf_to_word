@@ -336,6 +336,27 @@ Failed to load FastText model: ...\lid.176.ftz cannot be opened for loading!
 （那个文件的开头还记着为什么「用 Windows 短路径名」那个看着更漂亮的
 方案是死路。）
 
+**但上面那些只修好了一半，2026-09-05 才发现。** 识别引擎自己还会再起一个
+进程干活（`python -m mineru.cli.fast_api`，见它的 `cli/api_client.py:511`），
+而「判断这段字是中文还是英文」这件事**只发生在那个进程里** —— 调它那个
+`detect_lang()` 的全在 `backend/` 底下，CLI 侧一处都没有。引导脚本那层的
+补丁根本够不着它。
+
+所以 9-03 到 9-05 之间的每一版，装在中文路径下照样失败，报的还是一模一样
+那句话。而且崩的位置很不巧：在 `cli/common.py:315` 的 `_process_output` 里，
+识别全做完了、正在把结果拼成 markdown，**写盘之前** —— 等好几分钟，
+一个字节都不留。
+
+现在 `sitecustomize.boot_argv()` 认出 `[python, '-m', 'mineru.*', ...]` 这种
+启动命令就改写成经引导脚本启动，`patch_subprocess()` 把这个改写挂在
+`subprocess.Popen.__init__` 上（只能包 `__init__`：MinerU 有
+`subprocess.Popen[bytes]` 和 `isinstance(p, subprocess.Popen)` 两种用法，
+把 `Popen` 换成函数会当场炸）。
+
+引导脚本同时补了 `__main__` 守卫 —— Windows 上 multiprocessing 用 spawn，
+子进程会把主脚本重跑一遍来重建命名空间，那一次 `sys.argv` 里没有模块名，
+再去 `pop(1)` 会拿到 `--host`，PDF 渲染进程池整个起不来。
+
 **唯一还不行的**：文件夹名里带 emoji，或者中文系统上混进韩文这类当前
 系统编码表示不了的字。碰上了软件会直接说清楚是哪个路径、该怎么改，
 不会让你对着一串英文堆栈发愣。
