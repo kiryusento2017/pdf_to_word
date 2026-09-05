@@ -110,8 +110,19 @@
   .bar > i { display: block; height: 100%; background: var(--theme); transition: width .2s; }
 
   /* ── 空态 / 拦截：占满 main，不留白 ───────────────────────────── */
+  /*
+     🔴 是 min-height 不是 height。写死 height:100% 的话，这个盒子的高度
+        恒等于 .main 的可视高度、不随内容增长 —— 内容多了就溢出到盒子外面，
+        而盒子本身没超过 .main，于是 .main 认为没有可滚内容、不出滚动条。
+        结果溢出的部分既看不见、也滚不到。
+        2026-09-05 小蔡报「检查更新时，已是最新会显示线路，有新版本反而
+        不显示」就是这么来的：有新版本那屏多了更新说明和「完整说明」两块，
+        排在后面的线路和按钮被挤出可视区。关于页、缓存清理页同病。
+        改成 min-height 后：内容放得下时表现完全一样（照样居中、照样占满），
+        放不下时盒子被撑高，.main 的 overflow:auto 才真正生效。
+  */
   .fill {
-    height: 100%; display: flex; flex-direction: column;
+    min-height: 100%; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 10px;
     padding: 16px; text-align: center;
   }

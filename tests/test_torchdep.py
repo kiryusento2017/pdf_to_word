@@ -181,6 +181,62 @@ class Test下载进度不能是黑盒(unittest.TestCase):
         self.assertEqual(acc.feed(0, 500), 1000, '换包时进度条退回去了')
         self.assertEqual(acc.feed(500, 500), 1500)
 
+    # ── 分母 ──────────────────────────────────────────────────────────
+    #
+    # 2026-09-05 的 92% 事故：分母是照着 pip 打印的 `2753.2 MB` 换算的
+    # 2.8 GiB，而 pip 那个 MB 是十进制（10^6）。分子用裸字节、分母用
+    # 换算值，两边不同源，下完了进度条只到 92%。
+    # 修法：分母也从 `Progress N of M` 的 M 取，跟分子同源同进制。
+
+    # 小蔡真机 torch_install.log 里的实数（Progress 行的 of）
+    真实_TORCH = 2753189216
+    真实_TORCHVISION = 9585013
+
+    def test_下完了进度条要到顶(self):
+        r"""事故重现：这两个包下完，百分比不能停在 92%。
+
+        setuptools 那 1.3 MB 命中了 pip 缓存、不产生 Progress 行，所以
+        分子天生差一截 —— 那最后一点由 server 端「装完 got = total」
+        补，这里只要求 ≥99%。"""
+        acc = torchdep.ProgressAcc()
+        acc.feed(0, self.真实_TORCH)
+        acc.feed(self.真实_TORCH, self.真实_TORCH)
+        acc.feed(0, self.真实_TORCHVISION)
+        got = acc.feed(self.真实_TORCHVISION, self.真实_TORCHVISION)
+        pct = 100.0 * got / acc.total()
+        self.assertGreaterEqual(
+            pct, 99.0, '下完了却只走到 %.1f%%（92%% 事故复发）' % pct)
+
+    def test_兜底值必须是裸字节不能是换算来的(self):
+        r"""🔴 一旦有人又把 pip 打印的 MB 当 MiB 换算，这条就红。
+
+        判据：兜底值跟真实下载量的偏差不许超过 2%。旧的
+        2.8 * 1024**3 = 3006477107 偏了 8.8%，会被这条拦住。"""
+        真实 = self.真实_TORCH + self.真实_TORCHVISION + 1300000
+        偏差 = abs(torchdep.DOWNLOAD_BYTES - 真实) / float(真实)
+        self.assertLess(偏差, 0.02,
+                        '兜底值 %d 跟真实下载量 %d 差了 %.1f%%'
+                        % (torchdep.DOWNLOAD_BYTES, 真实, 偏差 * 100))
+
+    def test_分母只增不减(self):
+        r"""分母要是会变小，进度条就会往回跳 —— 比没有进度条还糟。"""
+        acc = torchdep.ProgressAcc(floor=1000)
+        seen = [acc.total()]
+        for cur, tot in ((0, 800), (800, 800), (0, 600), (600, 600)):
+            acc.feed(cur, tot)
+            seen.append(acc.total())
+        for i in range(1, len(seen)):
+            self.assertGreaterEqual(seen[i], seen[i - 1],
+                                    '分母变小了：%r' % (seen,))
+
+    def test_实际比兜底大的时候不许冲过100(self):
+        r"""注释里记着的那次：估 2.5 GB、实际下 2.77 GB，冲到了 110%。
+        分母被已见之和接管之后不该再发生。"""
+        acc = torchdep.ProgressAcc(floor=1000)
+        acc.feed(0, 5000)
+        got = acc.feed(5000, 5000)
+        self.assertLessEqual(100.0 * got / acc.total(), 100.0)
+
     def test_日志里不许出现进度行(self):
         r"""2.4 GB 下下来会有几千行 Progress，全塞进日志区的话，
         Collecting / Downloading 这些真正有用的行一行都看不见。"""

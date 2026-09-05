@@ -429,6 +429,11 @@ def _dl_work(source):
             with _LOCK:
                 _DL.update({'state': 'error', 'error': err, 'phase': ''})
             return
+        # 🔴 装完把进度补满再切走。命中 pip 缓存的包不产生 `Progress` 行
+        #    （2026-09-05 那次的 setuptools 就是），分子天生差那一截 ——
+        #    不补的话进度条停在 9x% 就跳去模型阶段，看着像没下完。
+        with _LOCK:
+            _DL['got'] = _DL['total']
 
     with _LOCK:
         _DL['phase'] = 'models'
@@ -502,6 +507,9 @@ def _gpulib_work():
         _DL['state'] = 'done' if ok else 'error'
         _DL['error'] = err
         _DL['phase'] = ''
+        # 同上：成功了就把进度补满，别让它停在 9x%。
+        if ok:
+            _DL['got'] = _DL['total']
 
 
 @app.post('/api/gpulib/install')

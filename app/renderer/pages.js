@@ -509,6 +509,10 @@ function updateView(st) {
       + '<br><br>更新包会覆盖软件里的程序文件，所以装一个**没法验证来源**的包'
       + '是有风险的。你可以选择仍然安装，或者关掉这里、到项目的 Release '
       + '页面手动下载。</div>'
+      // 拿不到校验值最常见的原因就是网络 —— 用户正要拿「装还是不装」
+      // 这个主意，走了哪几条线路、通了几条，是判断「值不值得冒这个险」
+      // 的直接依据。（2026-09-05 补，跟 need_full 那屏一起）
+      + updLines(st, u)
       + '<div style="display:flex;gap:8px;margin-top:2px">'
       + btn('installAnyway', '仍然安装', { cls: 'primary' })
       + close + '</div></div>';
@@ -570,6 +574,10 @@ function updateView(st) {
       + '<div class="f-dim" style="max-width:460px;line-height:1.6">'
       + '你已经下好的模型和 GPU 运行库不受影响 —— 装到同一个文件夹覆盖就行。'
       + '</div>'
+      // 这一屏原来漏了线路。它是「查成功、确实有新版本」里唯一看不到
+      // 线路的一屏 —— 而用户正要判断「是真需要重下，还是我网络有问题」，
+      // 恰恰是最需要这行的时候。（2026-09-05 补）
+      + updLines(st, u)
       + '<div style="display:flex;gap:8px;margin-top:2px">'
       + btn('openReleases', '去下载页', { cls: 'primary' })
       + close + '</div></div>';

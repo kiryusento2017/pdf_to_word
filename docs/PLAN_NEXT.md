@@ -969,6 +969,40 @@ pipeline/torchdep.py:313   VCREDIST_URL = '（同一个）'
 
 ---
 
+### 6. 依赖升级的下载阶段没有进度条（2026-09-05 发现，**小蔡定「先不管」**）
+
+`upgrade.download()` 的签名里有 `on_progress`，但**从签名之后再没出现过**：
+
+    upgrade.py:288   def download(picked, targets=None, on_log=None, on_progress=None):
+    upgrade.py:310       rc, out = _pip(argv, timeout=7200, on_log=on_log)   ← 没往下传
+    _pip() 内部          没有 --progress-bar raw，只有逐行 on_log
+    server/main.py       6 处 on_progress=on_prog 全是别的模块，没有一处给 upgrade
+
+结果：升 torch 要下 2.7 GB、几十分钟，界面上只有滚动日志，**没有进度条**。
+
+**为什么算问题。** 跟项目的既有规矩正面冲突 ——「任何耗时操作都不给黑盒」。
+而且同一个软件里 `torchdep.install` 早就做对了（`--progress-bar raw` +
+`ProgressAcc` + 进度条），升级这条路是**同一件事长成了两个样子**。
+
+**怎么改**（三处）：
+
+1. `_pip()` 加 `--progress-bar raw`，把 `parse_progress()` 认出来的行喂给
+   `on_progress`、不进日志区 —— 照抄 `torchdep.install` 的形状，那边的
+   `is_noise()` 就是干这个的（2.7 GB 会刷几千行进度，不拦会把
+   Collecting / Downloading 这些真正有用的行全淹掉）
+2. `download()` 把 `on_progress` 真的传下去
+3. `server/main.py` 的升级任务接上 got/total，前端加一屏进度
+
+**分母怎么来。** `pip download` 的输出格式跟 `pip install` 一样，直接复用
+`torchdep.ProgressAcc`（2026-09-05 已改成分母跟分子同源、只增不减）。
+🔴 **不要再写一个估算常量** —— 92% 那次事故就是估算常量惹的：照着 pip 打印的
+十进制 MB 换算成 MiB 当分母，下完了进度条只走到 92%。
+
+**为什么现在不做。** 改动跨后端两个文件加前端一屏，比这一批其他几项都大。
+小蔡 2026-09-05 定「依赖升级先不管，主要改更新那一块」。
+
+---
+
 ### 已评估过、认为合理、不改的
 
 | | 为什么合理 |

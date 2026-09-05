@@ -163,13 +163,20 @@ def current_driver():
     except Exception:
         return ''
 
-# 下载量。2026-09-02 小蔡真机日志里的实数：
-#   torch-2.11.0+cu128-cp312-cp312-win_amd64.whl   2753.2 MB
-#   torchvision-0.26.0+cu128                          9.6 MB
-#   setuptools                                         1.3 MB
-# 估小了进度条会冲过 100%（估 2.5 GB 时实际下 2.77 GB，冲到 110%），
-# 所以按实测值取整往上留一点。
-DOWNLOAD_BYTES = int(2.8 * 1024 * 1024 * 1024)
+# 下载量的**兜底值**。只在第一个包开始下之前顶着 —— 之后分母由 pip 报的
+# 真实字节接管（见 ProgressAcc.total）。
+#
+# 🔴 **这个数必须是裸字节，不许拿 pip 打印的「2753.2 MB」换算。**
+#    2026-09-05 的 92% 事故就是这么来的：pip 的 format_size 用十进制
+#    （1 MB = 10^6），这里却当成 MiB 写了 2.8 * 1024^3 = 3006477107，
+#    比真实总量大 8.8%，于是下完了进度条只走到 92% 就停住。
+#    分子来自 `Progress N of M` 的裸字节，分母也必须同源、同进制。
+#
+# 2026-09-05 小蔡真机日志里的实数（取 Progress 行的 of，不是打印的 MB）：
+#   torch-2.11.0+cu128-cp312-cp312-win_amd64.whl   2753189216
+#   torchvision-0.26.0+cu128                          9585013
+#   setuptools-78.1.0（这次命中 pip 缓存，没有 Progress 行）  约 1300000
+DOWNLOAD_BYTES = 2775000000
 
 
 # pip 的机器可读进度行：`Progress 262144 of 12464674`
@@ -214,19 +221,38 @@ class ProgressAcc(object):
     退回去** —— 那比没有进度条还糟，用户会以为卡住了或者出错重来了。
     """
 
-    def __init__(self):
+    def __init__(self, floor=None):
         self.done = 0        # 已经下完的那些包，加起来多少
         self._cur = 0        # 当前这个包下到哪了
         self._tot = 0        # 当前这个包多大
+        self._seen = 0       # 见过的每个包的大小之和 —— 分母的真实来源
+        self._floor = DOWNLOAD_BYTES if floor is None else floor
 
     def feed(self, cur, tot):
         """喂一行进度，返回累计已下字节。"""
         if tot != self._tot or cur < self._cur:
-            # 换包了：把上一个包的总量结算进 done
+            # 换包了：把上一个包的总量结算进 done，新包的大小计进分母
             self.done += self._tot
             self._tot = tot
+            self._seen += tot
         self._cur = cur
         return self.done + cur
+
+    def total(self):
+        r"""分母。**只增不减**，所以进度条不会倒退。
+
+        · 一个包都还没开始下：用兜底值顶着，界面上先有个像样的百分比
+        · 下到一半：已见之和还不含后面没开始下的包，比真实总量小 ——
+          取 max 让兜底值继续顶着，免得进度条冲到 99% 又被后面的包拉回来
+        · 哪天 torch 变胖超过兜底值：已见之和接管，不会冲过 100%
+          （注释里记着的那次「估 2.5 GB 实际下 2.77 GB，冲到 110%」，
+            这一层就是防它的）
+
+        命中 pip 缓存的包不产生 Progress 行（2026-09-05 那次的
+        setuptools 就是），它既不进分子也不进分母 —— 那点尾巴由
+        「装完把 got 补成 total」兜住，见 server/main.py。
+        """
+        return max(self._floor, self._seen)
 
 
 def _site_packages():
@@ -664,7 +690,7 @@ def install(on_log=None, stop_flag=None, on_progress=None):
             if pg is not None:
                 # 进度行只驱动进度条，不进日志区（几千行会把有用的淹掉）
                 if on_progress:
-                    on_progress(acc.feed(pg[0], pg[1]), DOWNLOAD_BYTES)
+                    on_progress(acc.feed(pg[0], pg[1]), acc.total())
                 continue
 
             tail.append(line)
