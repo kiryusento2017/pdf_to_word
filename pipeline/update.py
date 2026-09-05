@@ -187,6 +187,33 @@ API_MIRRORS = [
 # 单条路的超时。因为是并发，这也就是**整体**的最坏耗时。
 API_TRY_TIMEOUT = 6
 
+# 拿到第一个成功结果之后，还愿意为「收集其余线路的明细」多等多久。
+#
+# 🔴 这个值是「速度」和「信息完整」之间的那条线，两头都栽过（见 api_race）：
+#    · 设成 0（第一个成功就 break）→ 明细只剩一条，界面说「5 条未测」
+#    · 设成无穷（等全部跑完）→ 直连被墙时要卡满 6 秒，真赛跑白改
+#
+# 查一次版本，整体最多花多久。**从发出请求那一刻算起**，不是从
+# 「第一条成功」算起。
+#
+# 🔴 这个值 2026-09-05 反复了三次，把账算明白了记在这儿：
+#
+#   v0.1.1 的做法是并发发六条、`ex.map` 等全部回来。因为是并发，
+#   等全部 = 等最慢那条 ≈ 1.1 秒 —— **又快又全，小蔡记得的就是这个**。
+#   它唯一的毛病是直连被墙时要陪那条卡满 6 秒超时。
+#
+#   我为了治那 6 秒，改成「第一个成功就 break」。结果治好了边缘情况，
+#   却把常规情况（直连能通）的明细砍成一条，界面报「5 条未测」——
+#   拿六条真实状态换了 0.2 秒，赔死。
+#
+#   再改成「第一个成功后再宽限 N 秒」，基准点又错了：第一条要是本来
+#   就慢，从它成功开始再等 N 秒，总时长照样失控。
+#
+# 现在：**从头算总预算**。正常网络 1.1 秒就全回来了，循环自然结束，
+# 根本用不到这个上限；直连真卡死也最多 3 秒返回，那条标 pending
+# （未测），不会被写成「连不上」—— 没验证过的结论不许报。
+API_DETAIL_BUDGET = 3.0
+
 
 def _race_fetch(url, prefixes, timeout=None):
     r"""几条线路并发抓同一个 URL，**谁先成功用谁**。返回 bytes 或 None。
@@ -273,18 +300,38 @@ def api_race(url):
     ex = futures.ThreadPoolExecutor(max_workers=len(API_MIRRORS))
     try:
         futs = [ex.submit(one, m) for m in API_MIRRORS]
-        for fut in futures.as_completed(futs):
-            m, d, e, ms = fut.result()
-            done[m['id']] = {'id': m['id'], 'name': m['name'],
-                             'ok': d is not None, 'ms': ms,
-                             'error': _api_err(e) if e else '',
-                             'used': False, 'pending': False,
-                             'seq': seq[m['id']]}
-            if d is not None:
-                data = d
-                break            # 第一个成功的就用，不等其他人
-            if e is not None:
-                err = e
+        # 🔴 **六条一起发、等它们回来，总共给 API_DETAIL_BUDGET 秒。**
+        #
+        #    这就是 v0.1.1 的行为（`ex.map` 并发发、遍历完六个结果），
+        #    再补上它缺的那个上限。为什么绕回来，见那个常量的注释 ——
+        #    2026-09-05 在这儿改错过两版：先是「第一个成功就 break」，
+        #    把明细砍成一条；再是「成功之后再宽限 N 秒」，基准点又错。
+        #
+        #    并发的关键性质：**等全部 = 等最慢那条**，不是六条时间相加。
+        #    正常网络 1.1 秒就都回来了，循环自然结束，用不到那个上限。
+        pend_set = set(futs)
+        deadline = time.time() + API_DETAIL_BUDGET
+        while pend_set:
+            wait = deadline - time.time()
+            if wait <= 0:
+                break                      # 预算用完，剩下的算未测
+            got, pend_set = futures.wait(
+                pend_set, timeout=wait,
+                return_when=futures.FIRST_COMPLETED)
+            if not got:
+                break
+            for fut in got:
+                m, d, e, ms = fut.result()
+                done[m['id']] = {'id': m['id'], 'name': m['name'],
+                                 'ok': d is not None, 'ms': ms,
+                                 'error': _api_err(e) if e else '',
+                                 'used': False, 'pending': False,
+                                 'seq': seq[m['id']]}
+                # 第一个成功的当结果用 —— 跟 v0.1.1 一样的语义
+                if d is not None and data is None:
+                    data = d
+                if e is not None:
+                    err = e
     finally:
         ex.shutdown(wait=False)
 

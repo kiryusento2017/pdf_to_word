@@ -271,6 +271,57 @@ class Test版本比较看方向(unittest.TestCase):
         self.assertTrue(any('gh-proxy' in u or 'ghfast' in u for u in tried),
                         '没试镜像：%s' % tried)
 
+    def test_第一条通了也要把其余线路跑完(self):
+        r"""🔴 **明细必须是完整的，不能只剩一条。**
+
+        2026-09-05 一度在 api_race 里「第一个成功就 break」，理由是
+        「明细是给排查用的，为它多等几秒不划算」。那笔账算错了：
+        多等的不是几秒 —— 串行时代一条条等 6 秒超时才需要 break，
+        并发之后等全部 = 等最慢的那条。本机实测六条并发：第一条成功
+        0.94 秒，全部跑完 1.14 秒，**代价 0.21 秒**。
+
+        而 break 掉之后剩下五条根本没测，界面只能说「1 条已通过，
+        5 条未测」—— 小蔡升级后第一反应是「怎么只剩一条线路能用」。
+        这个面板存在的全部理由就是出事时能看到谁通谁不通，砍掉五条
+        等于把它废了。
+        """
+        seen = []
+        real_open = update.urllib.request.urlopen
+
+        def fake_open(req, timeout=None):
+            seen.append(req.full_url)
+
+            class R(object):
+                def __enter__(self_in):
+                    return self_in
+
+                def __exit__(self_in, *a):
+                    return False
+
+                def read(self_in):
+                    return json.dumps({'tag_name': 'v9.9.9',
+                                       'assets': []}).encode('utf-8')
+            return R()
+
+        update.urllib.request.urlopen = fake_open
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real_open)
+
+        data, lines = update.api_race('https://api.github.com/x')
+
+        self.assertIsNotNone(data, '一条都没成功？')
+        self.assertEqual(len(seen), len(update.API_MIRRORS),
+                         '有线路没被测到：只发了 %d 个请求，名单里有 %d 条'
+                         % (len(seen), len(update.API_MIRRORS)))
+        self.assertEqual(len(lines), len(update.API_MIRRORS),
+                         '明细条数跟名单对不上')
+        self.assertEqual([x for x in lines if x.get('pending')], [],
+                         '全都跑完了还有 pending —— 说明又 break 了')
+        self.assertEqual(len([x for x in lines if x['ok']]),
+                         len(update.API_MIRRORS),
+                         '每条都该是通的（fake 全部返回成功）')
+        self.assertEqual(len([x for x in lines if x.get('used')]), 1,
+                         '「本次采用」必须且只能标一条')
+
     def test_有更新但没附更新包时说清楚(self):
         self._local('v1.0.0', '2026-09-01T00:00:00Z')
         self._remote(_rel('v1.0.1', '2026-09-05T00:00:00Z', assets=[]))
@@ -1287,35 +1338,70 @@ class Test真赛跑(unittest.TestCase):
     def test_第一条慢且失败时不等它(self):
         r"""🔴 这是整个修正的要害。
 
-        直连（名单第一条）超时 0.6 秒才失败，而第二条 0.01 秒就成功 ——
-        改之前要等满 0.6 秒（`ex.map` 得走完第一个才轮到第二个），
-        改之后 0.01 秒就返回。
+        直连（名单第一条）卡到超时才失败，而第二条 0.01 秒就成功。
+        改之前是 `ex.map`，得走完第一个才轮到第二个，要干等满超时；
+        现在拿到第一个成功结果之后只再给 预算用完就返回，
+        到点就返回，**不陪那条卡死的线路等下去**。
+
+        ⚠️ 场景必须让第一条**明显慢过总预算**，否则区分不出
+        两种行为 —— 它要是在宽限期内就完成了，那本来就该被收进明细。
+        （2026-09-05 这条测试原来用 0.6 秒，而宽限期是 1.5 秒，
+          于是等它完成才返回，看着像退化，其实是场景没设对。）
         """
         import time as _t
+        # 把宽限期临时调小，免得这条测试自己跑成几秒
+        real_grace = update.API_DETAIL_BUDGET
+        update.API_DETAIL_BUDGET = 0.3
+        self.addCleanup(setattr, update, 'API_DETAIL_BUDGET', real_grace)
+
+        slow = update.API_DETAIL_BUDGET * 3          # 远超总预算
         ids = [m['id'] for m in update.API_MIRRORS]
-        self._fake({ids[0]: 0.6}, fails={ids[0]})
+        self._fake({ids[0]: slow}, fails={ids[0]})
 
         t0 = _t.time()
         data, lines = update.api_race('https://api.github.com/x')
         took = _t.time() - t0
 
         self.assertIsNotNone(data, '有能用的线路却没拿到数据')
-        self.assertLess(took, 0.5,
-                        '等了 %.2f 秒 —— 像是在等第一条超时（应该 <0.5）' % took)
+        self.assertLess(took, update.API_DETAIL_BUDGET + 0.6,
+                        '等了 %.2f 秒 —— 像是在陪第一条等到底'
+                        '（该在拿到结果后 %.1f 秒内返回）'
+                        % (took, update.API_DETAIL_BUDGET))
+        self.assertLess(took, slow,
+                        '等满了第一条的超时（%.1f 秒），真赛跑白改了' % slow)
+        # 那条没等到的要标 pending，不能写成「连不上」
+        first = [x for x in lines if x['id'] == ids[0]][0]
+        self.assertTrue(first.get('pending'),
+                        '没等完的线路该标 pending')
+        self.assertEqual(first['error'], '', 'pending 的不该带错误信息')
 
-    def test_没跑完的标成pending不算失败(self):
-        r"""提前 break 时有几条还没结果。**标 pending，不能假装它挂了** ——
-        那会让用户以为线路有问题。"""
+    def test_有一条秒回也要等其余线路(self):
+        r"""🔴 **这条测试 2026-09-05 反过来写了一次。**
+
+        原来钉的是「提前 break 时把没跑完的标 pending」—— 那是在为
+        break 这个行为兜底。后来发现 break 本身就是错的：并发之后
+        等全部只比等第一条多 0.21 秒（本机实测 0.94 → 1.14 秒），
+        而代价是明细只剩一条，界面显示「1 条已通过，5 条未测」，
+        用户以为线路都挂了。
+
+        现在钉相反的事：**哪怕第一条秒回，也要把其余线路等完**，
+        明细必须是完整的。
+
+        （`pending` 字段保留，前端也仍认它 —— 万一将来加了总超时上限，
+        那时提前返回的兜底行为还是「标未测」，不是「假装挂了」。）
+        """
         ids = [m['id'] for m in update.API_MIRRORS]
-        # 第一条秒回成功，其余都很慢
-        self._fake({mid: (0.01 if mid == ids[0] else 3.0) for mid in ids})
+        # 第一条秒回成功，其余慢一些但都在超时之内
+        self._fake({mid: (0.01 if mid == ids[0] else 0.20) for mid in ids})
 
         _data, lines = update.api_race('https://api.github.com/x')
-        pend = [x for x in lines if x.get('pending')]
-        self.assertTrue(pend, '没有任何线路被标成 pending')
-        for x in pend:
-            self.assertFalse(x['ok'])
-            self.assertEqual(x['error'], '', 'pending 的不该带错误信息')
+        self.assertEqual(len(lines), len(update.API_MIRRORS),
+                         '明细条数跟名单对不上')
+        self.assertEqual([x for x in lines if x.get('pending')], [],
+                         '有线路没等完就返回了 —— 明细会残缺')
+        self.assertEqual(len([x for x in lines if x['ok']]),
+                         len(update.API_MIRRORS),
+                         '每条都该跑出结果')
 
     def test_标出实际用的是哪条(self):
         r"""界面靠 used 显示「经 xxx」。
