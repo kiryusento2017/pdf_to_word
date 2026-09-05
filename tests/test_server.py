@@ -411,5 +411,114 @@ class Test更新的接缝(unittest.TestCase):
         self.assertNotIn('req.url', src, '还在用前端传的地址')
 
 
+class Test环境检测的接口(unittest.TestCase):
+    r"""「关于 → 环境检测」那一屏要的几个接口。
+
+    这一屏的存在理由：用户装完之后 C 盘莫名少几个 G，而他永远发现
+    不了是谁干的（pip 缓存藏在隐藏文件夹、文件名是哈希、扩展名是
+    .body）。**看得到，才谈得上删不删。**
+    """
+
+    def test_扫占用给得出四类(self):
+        r = client.get('/api/maint/scan')
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        self.assertTrue(d['ok'])
+        keys = [it['key'] for it in d['items']]
+        for k in ('pip_cache', 'logs', 'tmp', 'models'):
+            self.assertIn(k, keys)
+
+    def test_模型那项不给清(self):
+        r"""4.6 GB，清了要重下。不能让用户手滑点掉。"""
+        d = client.get('/api/maint/scan').json()
+        m = [it for it in d['items'] if it['key'] == 'models'][0]
+        self.assertFalse(m['cleanable'])
+
+    def test_转换进行中不许清理(self):
+        r"""_tmp 里有正在用的中间产物，删了当场炸。
+        跟「转换中禁用检查更新」一个规矩。"""
+        tid = 'faketask'
+        with srv._LOCK:
+            srv._TASKS[tid] = {'state': 'running'}
+        try:
+            r = client.post('/api/maint/clean', json={'keys': ['tmp']})
+            self.assertEqual(r.status_code, 409)
+            self.assertIn('正在转换', r.json()['detail'])
+        finally:
+            with srv._LOCK:
+                srv._TASKS.pop(tid, None)
+
+    def test_什么都不选就什么都不删(self):
+        r = client.post('/api/maint/clean', json={'keys': [], 'paths': []})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['freed'], 0)
+
+    def test_不许删缓存目录外的文件(self):
+        r"""🔴 路径是前端传来的。server 只绑 127.0.0.1，但那不等于
+        只有我们能连 —— 本机任意进程都能 POST 一个自己的路径过来。"""
+        r = client.post('/api/maint/clean',
+                        json={'keys': [], 'paths': [r'C:\Windows\notepad.exe']})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['freed'], 0)
+        self.assertTrue(r.json()['failed'])
+        self.assertIn('拒绝', r.json()['failed'][0])
+
+    def test_本地版本不联网就能给(self):
+        r"""打开页面时就要显示，不能等联网。"""
+        r = client.get('/api/deps/local')
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        self.assertTrue(d['ok'])
+        self.assertIn('versions', d)
+        self.assertIn('mineru', d['versions'])
+
+    def test_诊断报告该有的都有(self):
+        r"""老师打电话说「用不了」时，这一段能省掉十几轮问答。"""
+        r = client.get('/api/diag')
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        for k in ('tag', 'os', 'root', 'writable', 'free_gb',
+                  'versions', 'models_ready', 'gpu', 'admin',
+                  'last_run', 'last_error'):
+            self.assertIn(k, d, '诊断报告缺 %s' % k)
+
+    def test_诊断报告带安装路径原文(self):
+        r"""中文路径的坑栽过好几次，路径本身就是证据。"""
+        d = client.get('/api/diag').json()
+        self.assertTrue(d['root'])
+        self.assertIn('pdf_to_word', d['root'].replace(chr(92), '/'))
+
+    def test_没有运行记录时给None而不是炸(self):
+        d = client.get('/api/diag').json()
+        # 可能有也可能没有，但不能报错
+        self.assertIn('last_run', d)
+
+
+class Test转换会记下运行结果(unittest.TestCase):
+    r"""诊断报告里最值钱的两条，而 convert.log 给不了 —— 它只记时间
+    和路径，**没有结果**。"""
+
+    def test_note_run接在唯一的汇合点上(self):
+        r"""convert.pdf_to_word 有 5 个 return 点，逐个插就是
+        「散着写、漏一处」。必须插在 server 里那个唯一的汇合点。"""
+        src = io.open(os.path.join(ROOT, 'server', 'main.py'),
+                      encoding='utf-8').read()
+        self.assertEqual(src.count('maint.note_run('), 1,
+                         'note_run 应该只有一处调用')
+        # 且必须在 summary_line 后面（那时 rep 已经完整）
+        i = src.find("rep['line'] = convert.summary_line(rep)")
+        j = src.find('maint.note_run(')
+        self.assertGreater(j, i, 'note_run 要在 rep 完整之后调')
+
+    def test_记日志被try包着(self):
+        r"""🔴 记日志绝不能把转换搞崩 —— 走到那一步用户的 Word
+        已经转好了。"""
+        src = io.open(os.path.join(ROOT, 'server', 'main.py'),
+                      encoding='utf-8').read()
+        i = src.find('maint.note_run(')
+        seg = src[max(0, i - 200):i]
+        self.assertIn('try:', seg, 'note_run 调用没被 try 包住')
+
+
 if __name__ == '__main__':
     unittest.main()

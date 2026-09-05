@@ -34,6 +34,8 @@ import convert                                        # noqa: E402
 import extract                                        # noqa: E402
 import gpu                                            # noqa: E402
 import models                                         # noqa: E402
+import deps
+import maint
 import paths
 import torchdep
 import vcredist                                          # noqa: E402
@@ -588,6 +590,14 @@ class ScanReq(BaseModel):
     paths: list[str] = []
 
 
+class CleanReq(BaseModel):
+    # 要清哪几类（pip_cache / logs / tmp）
+    keys: list[str] = []
+    # pip 缓存里具体删哪些文件。空 = 只删本软件下的那些，
+    # 不碰别的程序的（缓存是按 Windows 用户共用的）。
+    paths: list[str] = []
+
+
 @app.post('/api/scan')
 def scan(req: ScanReq):
     """把拖进来的东西（文件或文件夹）摊平成 PDF 清单，并逐份体检。
@@ -745,6 +755,7 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
                 if len(t['lines']) > _TASK_MAX_LINES:
                     del t['lines'][0:len(t['lines']) - _TASK_MAX_LINES]
 
+        _one_started = time.time()
         dest = out_dir or os.path.dirname(pdf)
         name = os.path.splitext(os.path.basename(pdf))[0] + '.docx'
         try:
@@ -767,6 +778,22 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
             return
 
         rep['line'] = convert.summary_line(rep)
+
+        # 🔴 **每转完一份就记一次，不等整批结束。** 整批结束才写的话，
+        #    中途崩溃就什么都没有 —— 而那正是最需要看的时刻。这样写，
+        #    最后一条记录停在崩溃前那份，正好指向病根。
+        #
+        #    插在这里而不是 convert.pdf_to_word 里面：那个函数有 5 个
+        #    return 点，逐个插就是「散着写、漏一处」—— 这个项目栽过
+        #    好几次的形状。这里是唯一的汇合点。
+        #
+        #    note_run 自己不抛异常（写不进去返回 False），但仍然套
+        #    一层：**记日志绝不能把转换搞崩**，用户的 Word 已经转好了。
+        try:
+            maint.note_run(rep, pdf_name=os.path.basename(pdf),
+                           took_sec=time.time() - _one_started)
+        except Exception:
+            pass
         with _LOCK:
             t = _TASKS[task_id]
             t['results'].append(rep)
@@ -892,6 +919,93 @@ async def cancel(task_id: str):
             return JSONResponse({'detail': '没有这个任务'}, status_code=404)
         t['cancel'] = True
     return {'ok': True}
+
+
+# ── 关于 / 环境检测 ───────────────────────────────────────────────────
+
+
+@app.get('/api/maint/scan')
+def maint_scan():
+    r"""各项占用有多大。给「关于 → 环境检测」那一屏用。
+
+    会扫 pip 缓存目录（实测小蔡机器上 1462 个文件），秒级完成 ——
+    只读每个 zip 的目录不解压。
+    """
+    return maint.scan()
+
+
+@app.post('/api/maint/clean')
+def maint_clean(req: CleanReq):
+    r"""清理选中的项。
+
+    🔴 **转换进行中不许清** —— 那时 _tmp 里有正在用的中间产物，
+    删了当场炸。跟「转换中禁用检查更新」一个规矩。
+    """
+    with _LOCK:
+        busy = any(t.get('state') == 'running' for t in _TASKS.values())
+    if busy:
+        return JSONResponse({'detail': '正在转换，转完再清理'},
+                            status_code=409)
+    return maint.clean(keys=req.keys, pip_paths=req.paths)
+
+
+@app.get('/api/deps/check')
+def deps_check():
+    r"""torch / mineru / 模型的本地版本和上游版本。
+
+    **只在用户主动点「检查上游」时调**，不在打开页面时自动查 ——
+    照搬 README 里那条既有规矩：「速度那一列没测过就是空的，
+    不拿别的数字顶替」。
+
+    实测约 3.6 秒（两次 pip 子进程 + 一次 HTTP）。
+    """
+    return deps.check_all()
+
+
+@app.get('/api/deps/local')
+def deps_local():
+    """只读本地版本，不联网。打开页面时就能显示。"""
+    return {'ok': True, 'versions': deps.local_versions(),
+            'models_ready': paths.models_ready(),
+            'models_size': paths.models_size()}
+
+
+@app.get('/api/diag')
+def diagnostics():
+    r"""诊断报告的原始数据。前端拼成一段文本给用户复制。
+
+    老师打电话说「用不了」的时候，这一段能省掉十几轮问答 ——
+    显卡驱动、装了什么版本、模型下没下完、最近一次错在哪，全在里面。
+    """
+    import platform
+    loc = update.local_version()
+    out = {
+        'ok': True,
+        'tag': loc.get('tag', ''),
+        'sha': (loc.get('sha') or '')[:7],
+        'os': platform.platform(),
+        'root': paths.ROOT,
+        'writable': paths.writable(),
+        'free_gb': round(paths.free_bytes() / 1024 ** 3, 1),
+        'versions': deps.local_versions(),
+        'models_ready': paths.models_ready(),
+        'models_size': paths.models_size(),
+        'last_run': maint.last_run(),
+        'last_error': maint.last_error(),
+    }
+    try:
+        import gpu
+        out['gpu'] = gpu.detect()
+    except Exception:
+        out['gpu'] = None
+    # 以管理员身份跑的话，%LOCALAPPDATA% 指向管理员账户，看到的
+    # pip 缓存跟用户平时用的不是同一个 —— 排查时这一行能省很多事。
+    try:
+        import ctypes
+        out['admin'] = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        out['admin'] = False
+    return out
 
 
 @app.get('/api/ping')
