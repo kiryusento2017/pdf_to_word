@@ -188,19 +188,66 @@ API_MIRRORS = [
 API_TRY_TIMEOUT = 6
 
 
+def _race_fetch(url, prefixes, timeout=None):
+    r"""几条线路并发抓同一个 URL，**谁先成功用谁**。返回 bytes 或 None。
+
+    给「拉 requires.json」和「网页兜底」用 —— 它们原来是串行的，
+    直连排第一，不通就先干等 6 秒才试第二条。
+
+    比 api_race 简单：不收集线路明细（界面上不显示这两条），所以
+    拿到就返回，没有副作用。
+
+    opener 可以由调用方给（网页兜底那条要拦重定向）。
+    """
+    timeout = timeout or API_TRY_TIMEOUT
+
+    def one(pre):
+        full = pre + url if pre else url
+        req = urllib.request.Request(full, headers=UA)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+
+    ex = futures.ThreadPoolExecutor(max_workers=len(prefixes))
+    try:
+        futs = [ex.submit(one, p) for p in prefixes]
+        for fut in futures.as_completed(futs):
+            try:
+                return fut.result()
+            except Exception:
+                continue
+    finally:
+        # 不等剩下的跑完 —— 它们只是发个 HTTP 请求，没有副作用。
+        ex.shutdown(wait=False)
+    return None
+
+
 def api_race(url):
     r"""并发查 GitHub API，返回 (数据, 线路明细)。
 
     🔴 **原来是串行依次试，这是个隐蔽的坑。** 名单第一条是直连，
        用户网络封了 GitHub 的话，要先干等满 6 秒超时才轮到第二条；
        五条都试一遍最坏 30 秒，而界面上只有一个转圈。
-       并发之后，最坏耗时 = 最慢那条的超时，典型情况约 1.5 秒。
 
-    顺带解决另一件事：**线路明细是白捡的**。既然每条都跑了，把各自的
-    成败和耗时一起交给界面，用户就能看见「这次走的谁、谁挂了」，
-    不用再对着一个转圈猜。这是「不给黑盒」那条规矩在更新这条路上的落实。
+    🔴 **2026-09-05 又修了一次：并发改成真赛跑。**
 
-    返回的 lines 每项：{id, name, ok, ms, error}，按耗时排序。
+       改成并发之后，原来的写法是 `ex.map` —— 六条确实同时发出去，
+       但 `ex.map` **按输入顺序**返回，那个 for 循环必须走完六个
+       结果才结束。直连排第一且它不通的网络里，**每次检查更新都要
+       等满 6 秒**，即使某个镜像 1 秒就返回了。
+
+       （老注释写着「典型情况约 1.5 秒」—— 那句话只在直连能通时
+       成立，是在能直连的环境下测的。而这个软件的目标用户大概率
+       直连不通。）
+
+       现在用 `as_completed`：谁先跑完先给谁，**第一个成功的就用**。
+       直连通的环境行为不变（它最快，还是它先到）；不通的环境立刻
+       用上第一个成功的镜像，不等那 6 秒。
+
+    线路明细仍然给，但**提前返回时会有几条还没跑完** —— 那几条标成
+    `pending`，界面上显示「检测中」。明细是给排查用的，为它多等几秒
+    不划算。全都失败时反倒是完整的（那时六条都跑完了）。
+
+    返回的 lines 每项：{id, name, ok, ms, error, pending}。
     全都失败时抛最后一个异常，让上层报出人话。
     """
     lines, data, err = [], None, None
@@ -216,15 +263,39 @@ def api_race(url):
         except Exception as e:
             return m, None, e, int((time.time() - t0) * 1000)
 
-    with futures.ThreadPoolExecutor(max_workers=len(API_MIRRORS)) as ex:
-        for i, (m, d, e, ms) in enumerate(ex.map(one, API_MIRRORS)):
-            lines.append({'id': m['id'], 'name': m['name'], 'ok': d is not None,
-                          'ms': ms, 'error': _api_err(e) if e else '',
-                          'used': False, 'seq': i})
-            if d is not None and data is None:
+    seq = {m['id']: i for i, m in enumerate(API_MIRRORS)}
+    done = {}
+    # 🔴 **不能用 with**：with 退出时会等所有线程跑完（Python 3.9+ 的
+    #    shutdown(wait=True) 是默认行为），那样 break 就白 break 了。
+    #    手动 shutdown(wait=False) 才能真的提前返回。
+    #    剩下那几个线程会自己跑完然后退出，不影响什么 —— 它们只是
+    #    发个 HTTP 请求，没有副作用。
+    ex = futures.ThreadPoolExecutor(max_workers=len(API_MIRRORS))
+    try:
+        futs = [ex.submit(one, m) for m in API_MIRRORS]
+        for fut in futures.as_completed(futs):
+            m, d, e, ms = fut.result()
+            done[m['id']] = {'id': m['id'], 'name': m['name'],
+                             'ok': d is not None, 'ms': ms,
+                             'error': _api_err(e) if e else '',
+                             'used': False, 'pending': False,
+                             'seq': seq[m['id']]}
+            if d is not None:
                 data = d
-            elif e is not None:
+                break            # 第一个成功的就用，不等其他人
+            if e is not None:
                 err = e
+    finally:
+        ex.shutdown(wait=False)
+
+    # 没跑完的补成 pending，界面上显示「检测中」而不是假装它挂了。
+    for m in API_MIRRORS:
+        if m['id'] not in done:
+            done[m['id']] = {'id': m['id'], 'name': m['name'],
+                             'ok': False, 'ms': 0, 'error': '',
+                             'used': False, 'pending': True,
+                             'seq': seq[m['id']]}
+    lines = list(done.values())
 
     # 挂了的沉底，可用的**保持名单原序**。
     #
@@ -233,7 +304,17 @@ def api_race(url):
     #    延迟最快的直连（903ms）下载只排第 4（663 KB/s），延迟垫底的
     #    gh-proxy.org（1077ms）下载第一（723 KB/s）。两个排名几乎是反的。
     #    排序依据只能是速度，没测速就别排（小蔡定的规矩）。
-    lines.sort(key=lambda x: (not x['ok'], x['seq']))
+    # 排序：成功的在前 → 还在检测的 → 挂了的。可用的保持名单原序。
+    #
+    # 🔴 **不按 ms 排。** 这里的 ms 是查版本的响应延迟，拿它排序等于
+    #    在暗示「排前面的下得快」—— 而那两个排名不是一回事。排序依据
+    #    只能是速度，没测速就别排（小蔡定的规矩）。
+    def _rank(x):
+        if x['ok']:
+            return 0
+        return 1 if x.get('pending') else 2
+
+    lines.sort(key=lambda x: (_rank(x), x['seq']))
     if data is None:
         # 404 = 仓库还没发过版本，换哪条路都一样，照原样抛出去
         e = err if err else RuntimeError('查不到版本')
@@ -245,9 +326,16 @@ def api_race(url):
         except Exception:
             pass
         raise e
-    # 排完之后 lines[0] 正是 data 的来源：两边都是「名单顺序里第一个成功的」。
-    # 「本次采用」标的是**实际用了哪条**，不是「哪条最快」—— 后者要测速才知道。
-    lines[0]['used'] = True
+    # 「本次采用」标的是**实际用了哪条**，不是「哪条最快」——
+    # 后者要测速才知道。
+    #
+    # 🔴 改成 as_completed 之后，lines[0] 不一定是 data 的来源了
+    #    （排序按名单顺序，而实际用的是最先成功的那条）。所以要
+    #    显式标记，不能再靠「排完之后第一个就是」这个巧合。
+    for x in lines:
+        if x['ok']:
+            x['used'] = True
+            break
     return data, lines
 
 
@@ -285,21 +373,37 @@ def _latest_tag_via_web():
         def redirect_request(self, *a, **k):
             return None
 
-    for pre in ('', 'https://ghfast.top/', 'https://gh-proxy.com/'):
+    # 🔴 2026-09-05：原来是串行三条，直连排第一，不通就先干等 6 秒。
+    #    改成并发，谁先抠出 tag 用谁。
+    #
+    #    套不进通用的 _race_fetch —— 那个读响应体，这条要拦重定向读
+    #    Location 头再正则抠 tag。
+    def one(pre):
+        op = urllib.request.build_opener(_NoRedir)
+        req = urllib.request.Request(pre + web if pre else web, headers=UA)
+        loc = ''
         try:
-            op = urllib.request.build_opener(_NoRedir)
-            req = urllib.request.Request(pre + web if pre else web, headers=UA)
-            loc = ''
+            r = op.open(req, timeout=API_TRY_TIMEOUT)
+            loc = r.headers.get('Location', '') or ''
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get('Location', '') or ''
+        m = _re.search(r'/releases/tag/([^/?#]+)', loc)
+        return m.group(1) if m else None
+
+    prefixes = ('', 'https://ghfast.top/', 'https://gh-proxy.com/')
+    ex = futures.ThreadPoolExecutor(max_workers=len(prefixes))
+    try:
+        futs = [ex.submit(one, pre) for pre in prefixes]
+        for fut in futures.as_completed(futs):
             try:
-                r = op.open(req, timeout=API_TRY_TIMEOUT)
-                loc = r.headers.get('Location', '') or ''
-            except urllib.error.HTTPError as e:
-                loc = e.headers.get('Location', '') or ''
-            m = _re.search(r'/releases/tag/([^/?#]+)', loc)
-            if m:
-                return m.group(1)
-        except Exception:
-            continue
+                tag = fut.result()
+            except Exception:
+                continue
+            if tag:
+                return tag
+    finally:
+        # 不等剩下的 —— 它们只是发个 HTTP 请求，没有副作用。
+        ex.shutdown(wait=False)
     return ''
 
 
@@ -386,17 +490,16 @@ def _requires_gap(rel, out=None):
     url = asset.get('browser_download_url') or ''
     if not url:
         return []
-    for pre in ('', 'https://gh-proxy.com/', 'https://ghfast.top/'):
-        try:
-            req = urllib.request.Request(pre + url if pre else url, headers=UA)
-            with urllib.request.urlopen(req, timeout=API_TRY_TIMEOUT) as r:
-                raw = r.read().decode('utf-8')
-            if out is not None:
-                out['upgrade'] = read_upgrade(raw)
-            return check_requires(raw)
-        except Exception:
-            continue
-    return []
+    # 🔴 2026-09-05：原来是串行三条，直连排第一，不通就先干等 6 秒。
+    #    改成并发，谁先成功用谁。
+    body = _race_fetch(url, ('', 'https://gh-proxy.com/',
+                             'https://ghfast.top/'))
+    if body is None:
+        return []
+    raw = body.decode('utf-8', 'replace')
+    if out is not None:
+        out['upgrade'] = read_upgrade(raw)
+    return check_requires(raw)
 
 
 def _is_hr(line):

@@ -348,14 +348,14 @@ app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源�
             icon.ico / icon_source.png（GitHub 头像做的图标）
 runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      396 条 Python + 135 条前端检查 + 四个真实数据验证脚本
+tests/      400 条 Python + 135 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 396 条，15 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 400 条，15 秒
 node tests\front_check.js                                   # 135 条，真渲染
 ```
 

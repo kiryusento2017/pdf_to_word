@@ -310,7 +310,12 @@ _DLL_HINTS = (
 #    所以这份清单的作用是**判断要不要拦**，不是「补齐它就行」。
 VCRUNTIME_DLLS = ('vcruntime140.dll', 'vcruntime140_1.dll',
                   'msvcp140.dll', 'msvcp140_1.dll')
-VCREDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+# 🔴 这里原来还有一份 VCREDIST_URL，跟 vcredist.URL 一模一样，而且
+#    **没有任何地方在用它**（2026-09-05 复查发现）。同一个 URL 写两遍，
+#    哪天要改（换地址、加兜底、改参数）漏一处就是「改了但没生效」——
+#    这个项目栽过好几次这种形状（-x! 和 -xr! 差一个字母毁掉一整版；
+#    中文路径补丁散着写导致在发行版上一次都没生效过）。
+#    删掉了。要用就 import vcredist 拿 vcredist.URL。
 
 
 def vcruntime_missing():

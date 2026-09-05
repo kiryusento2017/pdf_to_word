@@ -480,9 +480,13 @@ class Test镜像(unittest.TestCase):
         used = [x for x in lines if x['used']]
         self.assertEqual(len(used), 1, '「本次采用」必须且只能标一条')
         self.assertTrue(used[0]['ok'])
-        # 标的是**实际用了哪条**（名单顺序里第一个成功的），
-        # 不是「哪条最快」—— 后者要测速才知道
-        self.assertEqual(used[0]['id'], update.API_MIRRORS[0]['id'])
+        # 标的是**实际用了哪条**，不是「哪条最快」—— 后者要测速才知道。
+        #
+        # 🔴 2026-09-05 改成真赛跑之后，「实际用的」从「名单顺序里第一个
+        #    成功的」变成了「最先成功的那条」。所以这里不能再断言它一定
+        #    是 API_MIRRORS[0] —— 只能断言「被标的那条确实成功了」。
+        #    「用的就是数据的来源」这条性质由 Test真赛跑 里那条守。
+        self.assertIn(used[0]['id'], [m['id'] for m in update.API_MIRRORS])
 
     def test_可用线路保持名单原序不按延迟排(self):
         r"""🔴 **排序依据只能是速度，没测速就别排**（小蔡 2026-09-03）。
@@ -522,9 +526,21 @@ class Test镜像(unittest.TestCase):
         self.addCleanup(setattr, update.urllib.request, 'urlopen', real)
 
         _data, lines = update.api_race('https://api.github.com/x')
-        got = [x['id'] for x in lines if x['ok']]
-        self.assertEqual(got, order,
-                         '可用线路没按名单原序排，像是拿延迟排的：%s' % got)
+
+        # 🔴 2026-09-05 改成真赛跑之后，**第一个成功的就 break** ——
+        #    所以「可用的」通常只有一条（最快返回的那条），其余是
+        #    pending。这条测试守的意图没变：**排序不能受延迟影响**。
+        #
+        #    这里让名单越靠前的越慢，如果按延迟排，pending 那几条会
+        #    整个倒过来。
+        rest = [x['id'] for x in lines if not x['ok']]
+        want = [mid for mid in order if mid not in
+                {x['id'] for x in lines if x['ok']}]
+        self.assertEqual(rest, want,
+                         '没按名单原序排，像是拿延迟排的：%s' % rest)
+
+        # 六条都要在明细里，不能因为没跑完就消失
+        self.assertEqual(len(lines), len(order), '有线路从明细里消失了')
 
     def test_全都失败时明细也要带出来(self):
         r"""🔴 **失败时更需要这张表。**
@@ -1226,6 +1242,109 @@ class Test升级策略要真的送到前端(unittest.TestCase):
             update.local_version = old_local
         self.assertIn('upgrade', out)
         self.assertEqual(out['upgrade'], {})
+
+
+class Test真赛跑(unittest.TestCase):
+    r"""2026-09-05 的修正：`ex.map` 换成 `as_completed`。
+
+    改之前六条确实同时发，但 `ex.map` **按输入顺序**返回，for 循环
+    必须走完六个才结束 —— 直连排第一且它不通的网络里，每次检查更新
+    都要等满 6 秒，即使某个镜像 1 秒就返回了。
+
+    而这个软件的目标用户（老师的电脑）大概率直连不通。
+    """
+
+    def _fake(self, delays, fails=()):
+        """delays: {mirror_id: 秒}；fails: 哪几条抛异常。"""
+        import time as _t
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"tag_name": "v1.0.0"}'
+
+        def fake(req, timeout=None):
+            url = getattr(req, 'full_url', '')
+            mid = 'direct'
+            for m in update.API_MIRRORS:
+                if m['prefix'] and url.startswith(m['prefix']):
+                    mid = m['id']
+                    break
+            _t.sleep(delays.get(mid, 0.01))
+            if mid in fails:
+                raise Exception('timed out')
+            return _Resp()
+
+        real = update.urllib.request.urlopen
+        update.urllib.request.urlopen = fake
+        self.addCleanup(setattr, update.urllib.request, 'urlopen', real)
+
+    def test_第一条慢且失败时不等它(self):
+        r"""🔴 这是整个修正的要害。
+
+        直连（名单第一条）超时 0.6 秒才失败，而第二条 0.01 秒就成功 ——
+        改之前要等满 0.6 秒（`ex.map` 得走完第一个才轮到第二个），
+        改之后 0.01 秒就返回。
+        """
+        import time as _t
+        ids = [m['id'] for m in update.API_MIRRORS]
+        self._fake({ids[0]: 0.6}, fails={ids[0]})
+
+        t0 = _t.time()
+        data, lines = update.api_race('https://api.github.com/x')
+        took = _t.time() - t0
+
+        self.assertIsNotNone(data, '有能用的线路却没拿到数据')
+        self.assertLess(took, 0.5,
+                        '等了 %.2f 秒 —— 像是在等第一条超时（应该 <0.5）' % took)
+
+    def test_没跑完的标成pending不算失败(self):
+        r"""提前 break 时有几条还没结果。**标 pending，不能假装它挂了** ——
+        那会让用户以为线路有问题。"""
+        ids = [m['id'] for m in update.API_MIRRORS]
+        # 第一条秒回成功，其余都很慢
+        self._fake({mid: (0.01 if mid == ids[0] else 3.0) for mid in ids})
+
+        _data, lines = update.api_race('https://api.github.com/x')
+        pend = [x for x in lines if x.get('pending')]
+        self.assertTrue(pend, '没有任何线路被标成 pending')
+        for x in pend:
+            self.assertFalse(x['ok'])
+            self.assertEqual(x['error'], '', 'pending 的不该带错误信息')
+
+    def test_标出实际用的是哪条(self):
+        r"""界面靠 used 显示「经 xxx」。
+
+        🔴 改成 as_completed 之后 `lines[0]` 不一定是数据的来源了
+        （排序按名单顺序，实际用的是最先成功的），所以必须显式标记。
+        """
+        ids = [m['id'] for m in update.API_MIRRORS]
+        # 让第三条最快，前两条慢且失败
+        self._fake({ids[0]: 0.5, ids[1]: 0.5, ids[2]: 0.01},
+                   fails={ids[0], ids[1]})
+
+        _data, lines = update.api_race('https://api.github.com/x')
+        used = [x for x in lines if x.get('used')]
+        self.assertEqual(len(used), 1, '「本次采用」要且只要标一条')
+        self.assertTrue(used[0]['ok'], '标的那条居然是失败的')
+
+    def test_全都失败时明细是完整的(self):
+        r"""全失败那种情况反倒跑完了六条 —— 那时明细最有价值：
+        「六条里三条超时、两条 403」才能判断是断网还是被墙。"""
+        ids = [m['id'] for m in update.API_MIRRORS]
+        self._fake({mid: 0.01 for mid in ids}, fails=set(ids))
+
+        with self.assertRaises(Exception) as cm:
+            update.api_race('https://api.github.com/x')
+        lines = getattr(cm.exception, 'lines', [])
+        self.assertEqual(len(lines), len(ids), '全失败时明细该是完整的')
+        self.assertFalse([x for x in lines if x.get('pending')],
+                         '全失败时不该有 pending')
 
 
 if __name__ == '__main__':
