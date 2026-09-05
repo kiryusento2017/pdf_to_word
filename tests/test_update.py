@@ -1091,5 +1091,76 @@ class Test更新说明拆成摘要和全文(unittest.TestCase):
                            '全文被截断了，展开也看不到东西')
 
 
+class Test升级策略(unittest.TestCase):
+    r"""requires.json 里的 upgrade 段：**可选的黑名单，默认全空。**
+
+    般配度不用人管 —— mineru 包里自带 torch<3,>=2.6.0 这样的声明，
+    pip 解依赖时自己会拒。这一段只用于 pip 查不出来的那类问题：
+    新版装得上、但实际效果变差了。
+    """
+
+    def test_读得出upgrade段(self):
+        raw = json.dumps({'version': 'v1', 'requires': {},
+                          'upgrade': {'mineru': {'ok': False, 'note': '识别率掉了'}}})
+        up = update.read_upgrade(raw)
+        self.assertIn('mineru', up)
+
+    def test_老Release没有这一段时返回空字典(self):
+        r"""🔴 老 Release 的 json 里没有 upgrade —— 不能崩，
+        按「没测过」处理。"""
+        raw = json.dumps({'version': 'v0.1.1', 'requires': {'mineru': '3.4.5'}})
+        self.assertEqual(update.read_upgrade(raw), {})
+
+    def test_json坏了也不崩(self):
+        for raw in ('', 'not json', '[]', 'null'):
+            self.assertEqual(update.read_upgrade(raw), {})
+
+    def test_没测过时ok是None(self):
+        r"""None 不是 True 也不是 False —— 界面要显示「我们没测过，
+        升不升你自己定」，**不能当成可以升，也不能当成不能升**。"""
+        up = update.read_upgrade(json.dumps({'upgrade': {
+            'mineru': {'ok': None, 'to': '', 'note': ''}}}))
+        pol = update.upgrade_policy(up, 'mineru')
+        self.assertIsNone(pol['ok'])
+
+    def test_实测不能升时给理由(self):
+        up = update.read_upgrade(json.dumps({'upgrade': {
+            'mineru': {'ok': False, 'to': '', 'note': '3.6 的表格识别退步了'}}}))
+        pol = update.upgrade_policy(up, 'mineru')
+        self.assertIs(pol['ok'], False)
+        self.assertIn('表格', pol['note'])
+
+    def test_torch按通道分开记(self):
+        r"""🔴 cu128 上测通过，不能证明 cu126 上也行 —— 那条通道上的
+        torch 是另一个包（打包的是 CUDA 12.6 的库）。"""
+        up = update.read_upgrade(json.dumps({'upgrade': {'torch': {
+            'cu128': {'ok': True, 'to': '2.12.0', 'note': '本机实测通过'},
+            'cu126': {'ok': None, 'to': '', 'note': ''},
+        }}}))
+        a = update.upgrade_policy(up, 'torch', 'cu128')
+        self.assertIs(a['ok'], True)
+        self.assertEqual(a['to'], '2.12.0')
+
+        b = update.upgrade_policy(up, 'torch', 'cu126')
+        self.assertIsNone(b['ok'], '没测过的通道不能沿用别的通道的结论')
+
+    def test_没记录的通道算没测过(self):
+        up = update.read_upgrade(json.dumps({'upgrade': {'torch': {
+            'cu128': {'ok': True, 'to': '2.12.0'}}}}))
+        self.assertIsNone(update.upgrade_policy(up, 'torch', 'cu130')['ok'])
+
+    def test_查不到的包算没测过(self):
+        self.assertIsNone(update.upgrade_policy({}, 'mineru')['ok'])
+        self.assertIsNone(update.upgrade_policy(None, 'mineru')['ok'])
+
+    def test_老客户端读新格式json不受影响(self):
+        r"""🔴 双向兼容：check_requires 只取 requires 这一个键，
+        多出来的 upgrade 段它根本不看。"""
+        raw = json.dumps({'version': 'v2', 'requires': {'mineru': '3.4.5'},
+                          'upgrade': {'torch': {'cu128': {'ok': False}}}})
+        miss = update.check_requires(raw)
+        self.assertEqual(miss, [], '新格式不该让老逻辑报缺依赖')
+
+
 if __name__ == '__main__':
     unittest.main()

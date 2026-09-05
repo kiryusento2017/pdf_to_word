@@ -408,8 +408,38 @@ def make_update_zip(version, sha=''):
             reqs[name] = _md.version(name)
         except Exception:
             reqs[name] = ''
+    # 🔴 upgrade 段：**可选的黑名单，默认全空。**
+    #
+    #    般配度不用人管 —— mineru 的包里自带 `torch<3,>=2.6.0` 这样的
+    #    声明，`pip install --dry-run` 一跑就知道配不配得上，配不上
+    #    直接报错。**不需要实测。**
+    #
+    #    这一段只用于 pip 查不出来的那类问题：新版装得上、但实际效果
+    #    变差了（识别率掉了之类）。那时候手动填一条把它拦住。
+    #
+    #    ok 三种值：
+    #      null   没测过（默认）→ 界面显示上游版本 +「我们没测过」
+    #      false  实测不能升    → 显示 note 里的理由，**不给升级按钮**
+    #      true   实测可以升    → 按钮变推荐样式
+    #
+    #    🔴 torch 要**按通道分开写**。策略结论是在某一台机器上测出来的，
+    #    而驱动 525~569 的用户走 cu126 通道 —— 那条通道上的 torch 是
+    #    另一个包（打包的是 CUDA 12.6 的库）。cu128 上测通过，不能
+    #    证明 cu126 上也行。没测的那条自动落进「没测过」。
+    #
+    #    用 null 而不是「干脆不写这一项」：不写分不清是忘了还是没测，
+    #    写 null 是明确表示「这一项存在但没测」，打包门禁可以据此提醒。
+    upgrade = {
+        'mineru': {'ok': None, 'to': '', 'note': ''},
+        'torch': {
+            'cu128': {'ok': None, 'to': '', 'note': ''},
+            'cu126': {'ok': None, 'to': '', 'note': ''},
+            'cu118': {'ok': None, 'to': '', 'note': ''},
+        },
+    }
     io.open(rq, 'w', encoding='utf-8').write(
-        json.dumps({'version': version, 'requires': reqs},
+        json.dumps({'version': version, 'requires': reqs,
+                    'upgrade': upgrade},
                    ensure_ascii=False, indent=2))
     # 🔴 这份要**单独作为 Release 附件上传**（几百字节）。
     #    客户端 check() 时先拉它跟本地比，下载前就知道这次更新能不能装 ——
@@ -601,6 +631,10 @@ def main():
     ap.add_argument('--dirty', action='store_true',
                     help='工作区有未提交改动也照打。'
                          '⚠️ 这会让 version.json 里的 sha 说谎')
+    ap.add_argument('--skip-upstream', action='store_true',
+                    help='跳过上游版本检查（没网时用）。'
+                         '⚠️ 这会记进打包日志 —— 静默跳过等于'
+                         '这道门禁不存在')
     a = ap.parse_args()
 
     sha = ''
@@ -634,6 +668,32 @@ def main():
         sys.exit(1)
     if dirty:
         say('注意：工作区不干净，--dirty 已强行打包 —— version.json 的 sha 不可信')
+
+    # 🔴 **上游有新版本就拦住，让人看一眼再决定。**
+    #
+    #    小蔡 2026-09-05：「每次建立预发行版的时候，必须强制提醒我看
+    #    torch 和 min 模型有没有更新。」
+    #
+    #    不是自动升级 —— 版本稳定性由人说了算。这道门禁只负责摆出
+    #    事实：mineru / torch 各通道 / 模型仓库 上游是什么版本，跟
+    #    本地差多少。看完之后决定升不升，把结论写进 requires.json
+    #    的 upgrade 段（不写就是「没测过」，界面上如实显示）。
+    #
+    #    --update-only 不查：那是发 0.5 MB 的代码更新包，不含依赖，
+    #    跟上游版本无关。
+    if not a.update_only and not a.skip_upstream:
+        say('查上游有没有新版本…')
+        r = subprocess.run(
+            [sys.executable, os.path.join(HERE, 'check_upstream.py')],
+            cwd=ROOT)
+        if r.returncode != 0:
+            say('')
+            say('↑ 上面这些看完之后：')
+            say('  · 决定不跟进 → 加 --skip-upstream 继续打包')
+            say('  · 要跟进     → 先升级依赖并实测，再重新打包')
+            sys.exit(1)
+    elif a.skip_upstream:
+        say('⚠️ --skip-upstream：本次未做上游检查')
 
     if a.update_only:
         make_update_zip(a.version, sha)

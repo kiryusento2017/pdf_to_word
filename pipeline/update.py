@@ -604,6 +604,58 @@ def probe_mirrors(asset_url, seconds=2.0, size=0):
 REQUIRES_NAME = 'requires.json'
 
 
+def read_upgrade(raw):
+    r"""从 requires.json 里读 upgrade 段。读不到返回空字典。
+
+    ## 这一段是什么
+
+    一小段跟着每次发布挂在 GitHub 上的文字，软件读它来决定要不要给
+    用户升级按钮。**默认全是 null（没测过），发版的人不用管它。**
+
+    般配度不用人管 —— mineru 的包里自带 `torch<3,>=2.6.0` 这样的声明，
+    pip 解依赖时自己会拒。这一段只用于 pip 查不出来的那类问题：
+    新版装得上、但实际效果变差了。
+
+    ## 兼容性
+
+    🔴 **老 Release 的 json 里没有这一段** —— 读不到就返回空字典，
+    界面按「没测过」处理。反过来，老客户端拿到带这一段的新 json 也
+    没事：check_requires 只取 requires 这一个键，多出来的键它根本
+    不看。**双向兼容，不用做版本协商。**
+    """
+    import json as _json
+    try:
+        d = _json.loads(raw) or {}
+    except Exception:
+        return {}
+    up = d.get('upgrade')
+    return up if isinstance(up, dict) else {}
+
+
+def upgrade_policy(up, name, channel=''):
+    r"""某个包准不准升。返回 {ok, to, note}。
+
+    ok 是 None 表示没测过 —— 界面上要显示「我们没测过，升不升你
+    自己定」，**不能当成「可以升」，也不能当成「不能升」**。
+
+    torch 按通道分开记（cu128 上测通过不代表 cu126 也行），所以要
+    传 channel。传了但那条通道没记录，同样是「没测过」。
+    """
+    blank = {'ok': None, 'to': '', 'note': ''}
+    if not isinstance(up, dict):
+        return blank
+    node = up.get(name)
+    if not isinstance(node, dict):
+        return blank
+    # torch 那种按通道分的：再下一层
+    if channel and 'ok' not in node:
+        node = node.get(channel)
+        if not isinstance(node, dict):
+            return blank
+    return {'ok': node.get('ok'), 'to': node.get('to') or '',
+            'note': node.get('note') or ''}
+
+
 def check_requires(raw):
     r"""比对更新包要求的依赖和本地实际装的。返回缺了什么（空 = 都满足）。
 
