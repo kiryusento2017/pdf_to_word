@@ -34,6 +34,7 @@ var state = {
   updBusy: false,       // 正在查 / 正在下
   updLinesOpen: false,  // 线路表展开了没（默认折叠，只占一行）
   updNotesOpen: false,  // 更新说明展开了没（默认只显示摘要那几行）
+  updLeft: 0,           // 查更新倒计时还剩几秒（0 = 没在倒计时）
 
   // 关于 / 环境检测。about = null 表示没打开；打开时是
   // 'about' 或 'env' 两种视图之一。

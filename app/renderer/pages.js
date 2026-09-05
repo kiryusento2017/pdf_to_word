@@ -474,7 +474,14 @@ function updateView(st) {
   var close = btn('closeUpdate', '关闭');
 
   if (st.updBusy && !u.dlTotal && !u.latest) {
-    return '<div class="fill"><div class="f-dim">正在查看有没有新版本…</div></div>';
+    // 🔴 倒计时归零那一刻结果一起出现（见 actions.checkUpdate）——
+    //    小蔡 2026-09-05 定的：不能倒计时自己转、结果自己蹦。
+    //    数到 0 结果还没到（后端卡死，罕见）就换句话，
+    //    **不显示 0，也不显示负数**。
+    return '<div class="fill"><div class="f-dim">'
+      + (st.updLeft > 0 ? '正在查看有没有新版本… ' + st.updLeft
+                        : '就快好了…')
+      + '</div></div>';
   }
 
   // 装好了，等重启

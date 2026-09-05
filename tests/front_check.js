@@ -1222,6 +1222,20 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('不受影响')) throw new Error('没说模型和已转文件安全');
   });
 
+  ck('查更新等待屏显示倒计时，归零后不显示 0', () => {
+    // 小蔡 2026-09-05 定的：倒计时归零和结果出现必须是同一时刻。
+    // 这里只钉住「数字真的渲染出来了」和「归零不显示 0」——
+    // 「归零那一刻出结果」是 actions 里的时序，渲染层测不到。
+    const st = ready(sb);
+    st.updBusy = true; st.upd = null; st.updLeft = 4;
+    if (!fn(st).includes('正在查看有没有新版本… 4'))
+      throw new Error('等待屏没显示倒计时数字');
+    st.updLeft = 0;
+    const h0 = fn(st);
+    if (h0.includes('… 0')) throw new Error('归零了还在显示 0');
+    if (!h0.includes('就快好了')) throw new Error('归零后没换文案');
+  });
+
   ck('下载中说明下完会自动装，不用再动手', () => {
     const st = ready(sb);
     st.updBusy = true;

@@ -61,6 +61,23 @@
     if (updPoller) { clearInterval(updPoller); updPoller = null; }
   }
 
+  // 查更新的倒计时。**结果早到也压着**，等数到 0 那一刻一起亮出来 ——
+  // 小蔡 2026-09-05 定的：倒计时归零和界面出现必须是同一时刻，不能
+  // 倒计时自己转、结果自己蹦。代价是网络好的时候本来 1.1 秒能出结果，
+  // 也要等满 4 秒。
+  //
+  // 🔴 4 必须大于后端的 API_DETAIL_BUDGET（3.8），留 0.2 秒给网络往返，
+  //    这样数到 0 时结果一定已经在手上。两个数写在两个文件里，
+  //    test_update.py 有一条测试盯着它俩的关系。
+  var UPD_COUNTDOWN = 4;
+  var updTimer = null, updHeld = null;
+
+  function stopUpdCountdown() {
+    if (updTimer) { clearInterval(updTimer); updTimer = null; }
+    updHeld = null;
+    st.updLeft = 0;
+  }
+
   function pollUpd() {
     HTTP.get('/api/update/download').then(function (d) {
       if (!st.upd) return;
@@ -366,21 +383,41 @@
     // 检查更新。请求由后端发 —— 页面的 CSP 只放行 127.0.0.1，
     // 让前端直连 GitHub 得放宽 CSP，那是拿安全性换一个小功能。
     checkUpdate: function () {
+      stopUpdCountdown();
       st.updBusy = true;
       st.upd = null;
+      st.updLeft = UPD_COUNTDOWN;
       render();
-      HTTP.get('/api/update/check').then(function (d) {
+
+      function show(d) {
+        stopUpdCountdown();
         st.updBusy = false;
         st.upd = d;
         render();
+      }
+
+      updTimer = setInterval(function () {
+        if (st.updLeft > 0) st.updLeft--;
+        // 数到 0 且结果在手 → 就是这一刻，一起亮出来。
+        // 数到 0 结果还没到（后端卡死，罕见）→ 停在 0 等着，
+        // 界面换成「就快好了…」，结果一到立刻出（见下面的 else 分支）。
+        if (st.updLeft === 0 && updHeld) show(updHeld);
+        else render();
+      }, 1000);
+
+      HTTP.get('/api/update/check').then(function (d) {
+        if (st.updLeft > 0) updHeld = d;   // 早到了，压着等倒计时
+        else show(d);                       // 已经归零，立刻出
       }).catch(function (e) {
-        st.updBusy = false;
-        st.upd = { ok: false, error: String(e && e.message || e) };
-        render();
+        var d = { ok: false, error: String(e && e.message || e) };
+        if (st.updLeft > 0) updHeld = d;
+        else show(d);
       });
     },
 
     closeUpdate: function () {
+      // 🔴 不清定时器的话，关掉窗口 4 秒后 show() 会把它又打开。
+      stopUpdCountdown();
       st.upd = null;
       st.updAllowUnverified = false;
       st.updLinesOpen = false;

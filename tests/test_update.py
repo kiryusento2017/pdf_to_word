@@ -1433,5 +1433,46 @@ class Test真赛跑(unittest.TestCase):
                          '全失败时不该有 pending')
 
 
+class Test三个时间数的大小关系(unittest.TestCase):
+    r"""查版本这条路上有三个时间数，写在两个文件里，关系错了都不报错。
+
+    单条超时(API_TRY_TIMEOUT) < 兜底窗口(API_DETAIL_BUDGET) < 前端倒计时。
+
+    2026-09-05 就是前两个反了栽的：超时 6 秒、窗口 3 秒，一条真不通的
+    线路要 6 秒才超时，永远赶不上 3 秒的窗口，于是每次都被补成 pending，
+    界面显示「未测」—— 而它其实是**确定不通**的，用户看着「未测」
+    不知道该怎么办。
+    """
+
+    def test_单条超时要短过兜底窗口(self):
+        r"""反了的话，线路来不及给出结论就被窗口踢成「未测」。
+
+        这是上面那个 bug 的直接判据。窗口的定位是**兜底**（防线程卡死），
+        不该抢在线路自己超时之前生效。
+        """
+        self.assertLess(
+            update.API_TRY_TIMEOUT, update.API_DETAIL_BUDGET,
+            '单条超时 %s 秒没短过兜底窗口 %s 秒 —— 真不通的线路会被'
+            '踢成「未测」，而不是老实报「超时」'
+            % (update.API_TRY_TIMEOUT, update.API_DETAIL_BUDGET))
+
+    def test_前端倒计时要长过后端兜底窗口(self):
+        r"""小蔡定的交互：倒计时归零和界面出结果必须是同一时刻。
+
+        倒计时要是没长过后端最坏耗时，就会「数完了还在转」。这两个数
+        一个在 actions.js、一个在 update.py，改一边忘一边不报错，
+        所以在这儿钉住。
+        """
+        js = io.open(os.path.join(ROOT, 'app', 'renderer', 'actions.js'),
+                     encoding='utf-8').read()
+        mark = 'UPD_COUNTDOWN = '
+        self.assertIn(mark, js, 'actions.js 里找不到 UPD_COUNTDOWN')
+        raw = js.split(mark, 1)[1].split(';', 1)[0].strip()
+        self.assertGreater(
+            float(raw), update.API_DETAIL_BUDGET,
+            '前端倒计时 %s 秒没长过后端兜底 %s 秒 —— 会数完了还在转'
+            % (raw, update.API_DETAIL_BUDGET))
+
+
 if __name__ == '__main__':
     unittest.main()
