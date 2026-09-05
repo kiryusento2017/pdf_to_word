@@ -1495,3 +1495,99 @@ v0.0.2 到 v0.1.1 五个版本的 `requires.json` **一字不差**：
 
 **唯一需要留神的一处**：改动 9 要在转换主流程里插一次写文件。那是全项目最不能
 出错的路径，一个 try/except 包住，写失败就跳过，**绝不能让记日志把转换搞崩**。
+
+
+---
+
+## 九、全量审查（2026-09-05）
+
+小蔡要求「全量查所有文件，确定代码逻辑没问题」。跑同一个检查 40 遍没有
+意义（第 2 遍到第 40 遍结果一模一样），所以落实成 **40 个不同维度**，
+每个维度扫一遍全部 56 个文件（Python 46 个 15368 行 / 前端 6 个 2831 行
+/ 文档 4 份 3382 行）。
+
+### 查法
+
+| 组 | 维度 | 结果 |
+|---|---|---|
+| A 自动化基线（6） | unittest / check_docs / check_claims / check_package / check_upstream / front_check | 全绿 |
+| B 静态扫描（14） | 编译、未用 import、裸 except、可变默认参数、硬编码路径、URL、TODO、print、open 无 encoding、shell=True、资源泄漏、吞异常、全局可变 | 4 项要核实，其余干净或误报 |
+| C 逐模块读（16） | convert / probe / gpu / extract / deps / maint / todocx / tomath / update / upgrade / models / torchdep / sources / vcredist / server / 前端 | 挖出 3 个真问题 |
+| D 交叉一致（4） | 字段生产-消费、不抛异常契约、版本号、Windows 特性 | 挖出 2 个真问题 |
+
+三个扫描器留在 `_scratch/`：`pdf2word_scan.py`（多维静态扫描）、
+`pdf2word_fields.py`（字段生产/消费交叉）、`pdf2word_contract.py`
+（「不抛异常」契约检查）。**后两个是这次真正挖出 bug 的工具**，值得复用。
+
+### 改了四处
+
+**1. `maint.note_run()` 字段名对不上（真 bug，有实证）**
+
+诊断报告里的公式统计**永远是 `?/?`**。`note_run` 读的是
+`formulas_ok` / `formulas_src`，而 `convert.pdf_to_word` 的 rep 里
+叫 `formulas` / `formulas_xsl`（todocx 内部那两个名字在 convert 往上
+传的时候已经改过）。证据是 `logs/last_run.json` 落盘内容。
+
+🔴 **为什么 400 条测试没抓到**：`test_记一次成功的转换` 手工编了一个
+`{'formulas_src': 213, 'formulas_ok': 213}` 的 rep —— **测试自己造了
+一套假契约**，于是测试和实现一起错，全绿。测试已改成用真实字段名。
+
+**2. `maint.clean()` 路径白名单会退化（安全）**
+
+`os.path.abspath('')` 返回的是**当前工作目录**。原来写的是
+`cache_dir = os.path.abspath(pip_cache_dir()) if pip_paths else ''`——
+pip 坏了、`pip_cache_dir()` 返回空串时，白名单就从「pip 缓存目录」
+悄悄变成「当前工作目录」，本机任意进程 POST 一个安装目录下的路径就
+能把文件删掉。**测试实际删掉了文件，不是理论风险。** 改成先判空再
+abspath：问不出来就一个都不删。
+
+原有的 `test_只删缓存目录里的东西` 盖不住这个形状 —— 它跑的时候
+`pip_cache_dir()` 是有值的。新增 `test_问不出pip缓存目录时不能退化成删当前目录`。
+
+**3. `extract.run()` / `sources.download()` 的「不抛异常」是漏的**
+
+两个函数的 docstring 都写着「不抛异常」，实际上 `fingerprint()` 里的
+`open(pdf,'rb')`、`os.makedirs`、`os.listdir`、`os.path.getsize` 全裸着。
+PDF 在 isfile 检查之后被移走（U 盘拔了）、磁盘满、输出目录只读，异常
+就会穿到 `server._work` 的总兜底 —— 那是**整批中止**，而 `convert.py`
+的设计意图写得很清楚：「一份书失败不能带倒整批（用户常常一次拖进来
+一整个文件夹）」。
+
+`extract` 改成 `run()` 外壳兜底 + `_run_inner()` 干活，跟
+`server._work / _work_inner` 同一套写法。`sources.download` 那两处
+就地包 try。
+
+**4. `app/package.json` 版本号落后一版**
+
+写着 `0.1.0`，而 git tag、`version.json`、README 都是 v0.1.1。没有任何
+代码读它（`main.js` 里没有 `app.getVersion`），所以只是元数据不一致，
+但**根因是流程**：`build_release.py --version` 会更新 `version.json` 和
+`使用说明.txt`，唯独不碰 `package.json`，所以每发一版它就更落后一版。
+
+已对齐到 0.1.1，并在 `RELEASE.md` 的发版清单里加了这一步。
+
+### 查过、认为合理、没动的
+
+| 项 | 为什么不动 |
+|---|---|
+| 42 处 `except: pass` | 逐处核过，41 处合理（清理善后 / 日志回调 / 可选探测），且大多带注释写明理由。剩下 `upgrade.py:348` 后果仅限备份列表展示为空，回滚不依赖它 |
+| `io.open(...).write()` 无 with | 项目既定风格（`tools/` 里 7 处同写法），长生命周期句柄都有配对 `close()`。按「跟随现有风格」不改 |
+| 5 处未使用的 import | `convert.py:15 os`、`upgrade.py:77 re`、`check_claims.py:24 re`、`make_icon.py:12 ImageChops`、`test_maint.py:10 json`。先前就存在的死代码，按规矩指出不删 |
+| 8 处硬编码盘符 | 全是 Windows 系统路径兜底（Program Files / SystemRoot / 7-Zip），是必要的 |
+| `server/main.py:1137` 的 print | 进程间通信 —— Electron 外壳在等 stdout 那一行拿端口号 |
+| 无公式时显示「公式走 Pandoc」 | `math_engine` 初始化就是 `pandoc`。同一行里还显示着「公式 0」，用户看得出来 |
+| 缓存桶按 mtime 清理 | 命中缓存不更新 mtime，所以常用的桶也会 10 天后被清。代价是重转一次，不值得为它引入 LRU |
+
+### 留给小蔡定的两条
+
+1. **那 5 处死 import 要不要删。** 删了干净，但属于「先前就存在的死代码」，
+   按规矩不擅自动。
+2. **要不要给 `check_package.py` 加一条「package.json 版本号 == version.json」
+   的自动检查。** 不加的话，这个不一致每发一版就会复发一次。
+
+### 一条测试环境的坑（写进 README 了）
+
+跑测试**必须用 `.venv\Scripts\python.exe`**。用全局 Python 会得到
+**9 个假失败**（test_server 导入失败、test_torchdep 的「开发环境是
+CUDA 版」、test_deps 的「读得出本地装的版本」等）—— 因为 torch / mineru
+只装在 `.venv` 里。这次审查一上来就踩了，差点当成真 bug 去查。

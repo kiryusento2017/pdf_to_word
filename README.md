@@ -346,18 +346,35 @@ pipeline/   probe(体检) gpu(显卡) extract(调MinerU) tomath(XSL公式)
 server/     FastAPI，只绑 127.0.0.1，端口系统分配
 app/        Electron 外壳 + 前端（纯 JS 无框架，主屏 + 首次选源屏）
             icon.ico / icon_source.png（GitHub 头像做的图标）
-runtime/    pandoc.exe + node.exe + 许可证；发行版里还有 python/
+runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有的** ——
+            打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
+            直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      400 条 Python + 135 条前端检查 + 四个真实数据验证脚本
+tests/      403 条 Python + 135 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 400 条，15 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 403 条，15 秒
 node tests\front_check.js                                   # 135 条，真渲染
 ```
+
+🔴 **必须是 `.venv\Scripts\python.exe`，不能用全局的 `python`。**
+torch 和 mineru 只装在 `.venv` 里，用全局 Python 跑会得到 **9 个假失败**：
+
+```
+ERROR: test_server            （整个文件导入失败）
+FAIL:  test_开发环境是CUDA版    （torchdep）
+FAIL:  test_读得出本地装的版本   （deps）
+FAIL:  test_判MinerU在不在...   （paths）
+...
+```
+
+这几条测的是「本机真实环境」，缺依赖时它们**应该**红 —— 但那是环境
+不对，不是代码坏了。看见这一组一起红，先确认用的哪个 python，
+别当成真 bug 去查（2026-09-05 全量审查时一上来就栽在这儿）。
 
 这两个都是离线的、秒级的。另有四个**依赖本机真实文件**的验证脚本，
 不在自动套件里：

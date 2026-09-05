@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 400 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 403 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
 node tests\front_check.js                                   # 135 条
 ```
@@ -75,6 +75,19 @@ v0.0.2 就带着开发机的运行时垃圾发出去了 —— 而「在 dist �
 ⚠️ 已知限制：更新包**不会删文件**。哪个版本删掉了某个 `.py`，
 老用户更新后那个文件还留在硬盘上。目前无害（没人 import 它），
 真要删文件的话得在更新包里带一份「该删什么」的清单。
+
+🔴 **手动把 `app/package.json` 的 `version` 改成同一个号。**
+
+`build_release.py --version vX.Y.Z` 会更新 `version.json` 和
+`使用说明.txt`，**唯独不碰 `app/package.json`** —— 它只是被原样拷进
+发行包。不手动改的话，每发一版它就更落后一版（2026-09-05 查出来时
+它停在 `0.1.0`，而实际已经是 v0.1.1）。
+
+写成 `0.1.1` 而不是 `v0.1.1` —— package.json 的版本号不带 `v` 前缀。
+
+目前没有任何代码读它（`main.js` 里没有 `app.getVersion()`），所以对不上
+不会出故障；但发行包里带一个写错版本号的清单文件，早晚会误导人。
+`check_package.py` 还没有这条自动检查，靠这份清单管住。
 
 ---
 
