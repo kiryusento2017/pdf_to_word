@@ -146,7 +146,9 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'downloadUpdate', 'restartApp',
                      'openAbout', 'closeAbout', 'openEnvCheck',
                      'checkDeps', 'toggleMaint', 'toggleCache',
-                     'doClean', 'copyDiag', 'toggleUpdNotes']) {
+                     'doClean', 'copyDiag', 'toggleUpdNotes',
+                     'toggleUpg', 'planUpgrade', 'toggleUpgDetail',
+                     'startUpgrade']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });

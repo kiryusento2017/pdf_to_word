@@ -49,6 +49,14 @@ var state = {
   copied: false,        // 诊断信息刚复制过（给个短暂反馈）
   diagText: '',         // 拼好的诊断文本。放 state 不放 window ——
                         // 隐式全局栽过（2026-09-02 那次点下去直接崩）
+
+  // 依赖升级
+  upgPick: {},          // 勾了哪几个包要升
+  upgPlan: null,        // 预演结果：会动哪些包
+  upgBusy: false,
+  upgDl: null,          // 下载进度
+  upgDetail: false,     // 「会动哪些包」的完整清单展开了没 ——
+                        // 一次升级动十几个包很正常，全摊开会吓着人
   updPick: '',          // 手动指定的线路 id，空 = 自动挑最快的
   updProbing: false,    // 正在实测下载速度（用户主动点的）
   sources: null,

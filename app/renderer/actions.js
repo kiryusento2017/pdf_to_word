@@ -6,6 +6,19 @@
   var render = window.P2W_RENDER;
   var HTTP = window.P2W_HTTP;
 
+  // 升级下载的轮询。跟模型下载那套一个路数。
+  function pollUpgrade() {
+    HTTP.get('/api/upgrade/download').then(function (d) {
+      st.upgDl = d;
+      render();
+      if (d && d.state === 'running') {
+        setTimeout(pollUpgrade, 1000);
+      }
+    }).catch(function () {
+      setTimeout(pollUpgrade, 3000);
+    });
+  }
+
   var poller = null;
 
   function stopPolling() {
@@ -442,6 +455,61 @@
       if (!k) return;
       st.maintPick[k] = !st.maintPick[k];
       render();
+    },
+
+    // 勾选要升级的包。
+    toggleUpg: function (arg) {
+      if (!arg) return;
+      st.upgPick[arg] = !st.upgPick[arg];
+      st.upgPlan = null;      // 选择变了，之前的预演作废
+      render();
+    },
+
+    // 预演：这次升级到底会动哪些包。**不真装。**
+    //
+    // 🔴 用 pip 自己的 --dry-run。如果它解不出来（比如只勾 mineru
+    //    但新版要求更新的 torch，而 torch 被约束文件钉住了），这里
+    //    会显示报错 —— **那正是约束文件要的效果**：显式暴露冲突，
+    //    而不是偷偷装出一个坏组合。
+    planUpgrade: function () {
+      var picked = [];
+      for (var k in st.upgPick) { if (st.upgPick[k]) picked.push(k); }
+      if (!picked.length) return;
+      st.upgBusy = true;
+      render();
+      HTTP.post('/api/upgrade/plan', { picked: picked, targets: {} })
+        .then(function (d) {
+          st.upgPlan = d;
+          st.upgBusy = false;
+          render();
+        }).catch(function (e) {
+          st.upgBusy = false;
+          st.upgPlan = { ok: false, error: String(e && e.message || e) };
+          render();
+        });
+    },
+
+    // 展开/收起完整的变更清单。
+    toggleUpgDetail: function () {
+      st.upgDetail = !st.upgDetail;
+      render();
+    },
+
+    // 开始下载。**后台跑，用户可以继续转 PDF。**
+    startUpgrade: function () {
+      var picked = [];
+      for (var k in st.upgPick) { if (st.upgPick[k]) picked.push(k); }
+      if (!picked.length) return;
+      HTTP.post('/api/upgrade/download', { picked: picked, targets: {} })
+        .then(function () {
+          st.upgDl = { state: 'running', lines: [] };
+          render();
+          pollUpgrade();
+        }).catch(function (e) {
+          st.upgDl = { state: 'done', ok: false,
+                       error: String(e && e.message || e) };
+          render();
+        });
     },
 
     // 展开/收起 pip 缓存的明细。

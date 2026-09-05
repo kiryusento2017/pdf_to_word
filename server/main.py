@@ -43,7 +43,8 @@ import probe                                          # noqa: E402
 import sources                                      # noqa: E402
 import todocx                                         # noqa: E402
 import tomath                                         # noqa: E402
-import update                                         # noqa: E402
+import update
+import upgrade                                         # noqa: E402
 
 app = FastAPI(title='PDF 转 Word')
 app.add_middleware(CORSMiddleware, allow_origins=['*'],
@@ -52,6 +53,9 @@ app.add_middleware(CORSMiddleware, allow_origins=['*'],
 # 任务表。单机单用户，内存里放着就行 —— 存盘反而要处理「上次没跑完的任务」
 # 这种没人关心的状态。软件关掉任务就没了，符合用户预期。
 _TASKS = {}
+
+# 升级下载的状态。跟 _TASKS 一样由 _LOCK 保护。
+_UPG = {}
 _LOCK = threading.Lock()
 
 
@@ -590,6 +594,13 @@ class ScanReq(BaseModel):
     paths: list[str] = []
 
 
+class UpgradeReq(BaseModel):
+    # 勾了哪几个包（torch / torchvision / mineru）
+    picked: list[str] = []
+    # 各自升到哪个版本。空 = 升到最新
+    targets: dict = {}
+
+
 class CleanReq(BaseModel):
     # 要清哪几类（pip_cache / logs / tmp）
     keys: list[str] = []
@@ -1006,6 +1017,93 @@ def diagnostics():
     except Exception:
         out['admin'] = False
     return out
+
+
+@app.post('/api/upgrade/plan')
+def upgrade_plan(req: UpgradeReq):
+    r"""预演：这次升级到底会动哪些包。**不真装。**
+
+    用 pip 自己的 --dry-run --report，所以「该下哪个文件」仍然是
+    pip 判断的。发行版的 pip 实测是 26.2.1，支持这两个参数。
+
+    🔴 如果 pip 解不出来（比如只勾 mineru 但新版要求更新的 torch，
+    而 torch 被约束文件钉住了），这里会返回 ok=False 加报错 ——
+    **那正是约束文件要的效果**：显式暴露冲突，而不是偷偷装出一个
+    坏组合。
+    """
+    with _LOCK:
+        busy = any(t.get('state') == 'running' for t in _TASKS.values())
+    if busy:
+        return JSONResponse({'detail': '正在转换，转完再升级'},
+                            status_code=409)
+    return upgrade.plan(req.picked, req.targets)
+
+
+@app.post('/api/upgrade/download')
+def upgrade_download(req: UpgradeReq):
+    r"""后台下载。**用户可以继续转 PDF，全程不打扰。**
+
+    下完只提示「重启后生效」，不装 —— 安装放在重启时做，那个时刻
+    本来就没有转换在跑，天然不打扰任何人。
+    """
+    with _LOCK:
+        if _UPG.get('state') == 'running':
+            return JSONResponse({'detail': '已经在下了'}, status_code=409)
+        _UPG.clear()
+        _UPG.update({'state': 'running', 'lines': [], 'error': '',
+                     'picked': req.picked})
+
+    def work():
+        def on_log(line):
+            with _LOCK:
+                _UPG['lines'].append(line[-300:])
+                if len(_UPG['lines']) > 400:
+                    del _UPG['lines'][0:len(_UPG['lines']) - 400]
+        try:
+            r = upgrade.download(req.picked, req.targets, on_log=on_log)
+        except Exception as e:
+            r = {'ok': False, 'error': '%s: %s' % (type(e).__name__, e)}
+        with _LOCK:
+            _UPG['state'] = 'done'
+            _UPG['ok'] = bool(r.get('ok'))
+            _UPG['error'] = r.get('error', '')
+
+    threading.Thread(target=work, daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/upgrade/download')
+def upgrade_download_status():
+    with _LOCK:
+        return dict(_UPG)
+
+
+@app.get('/api/upgrade/pending')
+def upgrade_pending():
+    r"""开机时问一次：有没有没做完的升级。
+
+    🔴 下载中断电**不算事**（环境没坏，旧的还能用），正常进主界面。
+    只有装到一半才必须处理 —— 那时 import torch 可能已经失败。
+    """
+    return upgrade.pending()
+
+
+@app.post('/api/upgrade/install')
+def upgrade_install():
+    """装下好的那批。重启时调，此时没有转换在跑。"""
+    return upgrade.install()
+
+
+@app.post('/api/upgrade/rollback')
+def upgrade_rollback():
+    """回滚到升级前。**无条件** —— 不检查坏没坏。"""
+    return upgrade.rollback()
+
+
+@app.get('/api/upgrade/backups')
+def upgrade_backups():
+    """有哪些备份。给环境检测那一屏列出来让用户自己清。"""
+    return {'ok': True, 'items': upgrade.list_backups()}
 
 
 @app.get('/api/ping')

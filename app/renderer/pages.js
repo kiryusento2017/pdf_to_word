@@ -683,6 +683,101 @@ function useRow(st, it) {
 }
 
 
+// 升级区。**只在查过上游、且确实有新版本时才出现** —— 没新版本时
+// 摆一堆勾选框只是噪音。
+//
+// 🔴 策略（requires.json 的 upgrade 段）说不能升的，**不给勾选框**，
+//    只显示理由。默认是「没测过」，那时给框但写清楚我们没测过。
+function upgradeBox(st) {
+  var up = st.deps || {};
+  var pol = (st.upd && st.upd.upgrade) || {};
+  var rows = [];
+
+  [['torch', up.torch], ['mineru', up.mineru]].forEach(function (x) {
+    var name = x[0], d = x[1];
+    if (!d || !d.latest || d.latest === d.local) return;   // 没新版本
+    var p = pol[name] || {};
+    if (p.ok === false) {
+      // 实测不能升 —— 只说理由，不给框
+      rows.push('<tr><td style="padding:1px 8px 1px 0">'
+        + '<span class="f-dim">✕</span></td>'
+        + '<td style="padding:1px 10px 1px 0">' + esc(name) + ' → '
+        + esc(d.latest) + '</td>'
+        + '<td class="f-dim" style="font-size:11px">'
+        + esc(p.note || '实测不建议升级') + '</td></tr>');
+      return;
+    }
+    var on = !!st.upgPick[name];
+    rows.push('<tr><td style="padding:1px 8px 1px 0">'
+      + '<span data-act="toggleUpg" data-arg="' + esc(name) + '" '
+      + 'style="cursor:pointer;user-select:none">'
+      + (on ? '☑' : '☐') + '</span></td>'
+      + '<td style="padding:1px 10px 1px 0">' + esc(name) + ' '
+      + esc(d.local || '') + ' → ' + esc(d.latest) + '</td>'
+      + '<td class="f-dim" style="font-size:11px">'
+      + (p.ok === true ? esc(p.note || '实测可升')
+          : '我们没测过，升不升你自己定') + '</td></tr>');
+  });
+
+  if (!rows.length) return '';
+
+  var picked = 0;
+  for (var k in st.upgPick) { if (st.upgPick[k]) picked++; }
+
+  // 预演结果
+  var plan = '';
+  var pl = st.upgPlan;
+  if (pl) {
+    if (!pl.ok) {
+      plan = '<div class="f-dim" style="font-size:11px;max-width:94%;'
+        + 'text-align:left">装不了：' + esc(pl.error || '') + '</div>';
+    } else {
+      var cs = pl.changes || [];
+      var head2 = '这次会动 ' + cs.length + ' 个包';
+      // 🔴 默认折叠 —— 一次升级动十几个包很正常，全摊开会吓着人。
+      var body = st.upgDetail
+        ? '<div style="max-height:80px;overflow:auto;font-size:11px;'
+          + 'text-align:left">' + cs.map(function (c) {
+            return esc(c.name) + ' ' + esc(c.from || '(新增)')
+              + ' → ' + esc(c.to);
+          }).join('<br>') + '</div>'
+        : '';
+      plan = '<div data-act="toggleUpgDetail" class="f-dim" '
+        + 'style="cursor:pointer;user-select:none;font-size:11px">'
+        + head2 + (st.upgDetail ? ' ▴' : ' ▾') + '</div>' + body;
+    }
+  }
+
+  // 下载进度
+  var dl = '';
+  var d2 = st.upgDl;
+  if (d2) {
+    if (d2.state === 'running') {
+      dl = '<div class="f-dim" style="font-size:11px">正在后台下载，'
+        + '这期间可以照常转 PDF</div>';
+    } else if (d2.ok) {
+      dl = '<div class="f-dim" style="font-size:11px">下载完成 —— '
+        + '重启之后才会真正安装</div>';
+    } else {
+      dl = '<div class="f-dim" style="font-size:11px;max-width:94%">'
+        + '下载失败：' + esc(d2.error || '') + '</div>';
+    }
+  }
+
+  return '<div style="width:96%;text-align:left">'
+    + '<div class="f-dim" style="font-size:11px">可以升级的：</div>'
+    + '<table style="font-size:12px">' + rows.join('') + '</table>'
+    + plan + dl
+    + '<div style="display:flex;gap:8px;margin-top:3px">'
+    + btn('planUpgrade', st.upgBusy ? '正在算…' : '看看会动哪些包',
+          { off: !picked || st.upgBusy })
+    + btn('startUpgrade', '下载并升级',
+          { off: !picked || !(pl && pl.ok),
+            title: !(pl && pl.ok) ? '先看一眼会动哪些包' : '' })
+    + '</div></div>';
+}
+
+
 function envCheckView(st) {
   var d = st.diag || {};
   var g = (d.gpu && d.gpu.gpu) || {};
@@ -760,6 +855,7 @@ function envCheckView(st) {
     + (up.error ? '<span class="f-dim" style="font-size:11px">'
         + esc(up.error) + '</span>' : '')
     + '</div>'
+    + upgradeBox(st)
     + use
     + cache
     + res

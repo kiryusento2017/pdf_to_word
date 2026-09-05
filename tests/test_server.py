@@ -520,5 +520,55 @@ class Test转换会记下运行结果(unittest.TestCase):
         self.assertIn('try:', seg, 'note_run 调用没被 try 包住')
 
 
+class Test升级接口(unittest.TestCase):
+    r"""依赖升级。**升不升由用户决定，但过程必须可预测。**"""
+
+    def test_转换进行中不许升级(self):
+        r"""升级会换掉 pipeline 用的包，转到一半换等于让后面几份
+        跑在不同的代码上。"""
+        tid = 'faketask2'
+        with srv._LOCK:
+            srv._TASKS[tid] = {'state': 'running'}
+        try:
+            r = client.post('/api/upgrade/plan', json={'picked': ['mineru']})
+            self.assertEqual(r.status_code, 409)
+            self.assertIn('正在转换', r.json()['detail'])
+        finally:
+            with srv._LOCK:
+                srv._TASKS.pop(tid, None)
+
+    def test_没选包时不乱跑(self):
+        r = client.post('/api/upgrade/plan', json={'picked': []})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()['ok'])
+
+    def test_开机问一次有没有没做完的(self):
+        r = client.get('/api/upgrade/pending')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('action', r.json())
+        self.assertIn(r.json()['action'], ('none', 'install', 'rollback'))
+
+    def test_备份列表拿得到(self):
+        r = client.get('/api/upgrade/backups')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['ok'])
+        self.assertIsInstance(r.json()['items'], list)
+
+    def test_没有待装的东西时install不乱装(self):
+        r = client.post('/api/upgrade/install')
+        self.assertEqual(r.status_code, 200)
+        # 正常情况下没有待装的升级
+        d = r.json()
+        if not d['ok']:
+            self.assertIn('没有', d['error'])
+
+    def test_没有备份时rollback不装作成功(self):
+        r = client.post('/api/upgrade/rollback')
+        self.assertEqual(r.status_code, 200)
+        d = r.json()
+        if not d['ok']:
+            self.assertTrue(d['error'])
+
+
 if __name__ == '__main__':
     unittest.main()
