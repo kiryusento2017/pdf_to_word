@@ -74,9 +74,9 @@ mineru 的包里自带 `torch<3,>=2.6.0`。用户只勾了 mineru 时，pip 解
 import io
 import json
 import os
-import re
 import shutil
 import subprocess
+import threading
 import time
 
 import paths
@@ -157,7 +157,21 @@ def constraints_for(picked):
 
 
 def _pip(argv, timeout=1800, on_log=None):
-    """跑一条 pip 命令，边跑边喂日志。返回 (returncode, 全部输出)。"""
+    r"""跑一条 pip 命令，边跑边喂日志。返回 (returncode, 全部输出)。
+
+    🔴 **超时检查放在独立线程里，不放读取循环。**
+
+       原来写的是「读到一行之后判断一次 time.time() - t0」——
+       而 `readline()` 是阻塞的：pip 卡住不吐东西时（网络断了最常见）
+       代码就停在那一行上，超时判断**一次都执行不到**，1800 秒的上限
+       形同虚设，升级流程会一直挂着。
+
+       这个坑 models.download 和 torchdep.install 都踩过并修好了，
+       torchdep 那边的注释写得很清楚：「readline() 会阻塞。pip 卡住
+       不吐东西时，代码就停在那儿 —— 而『卡住不动』正是用户最想点
+       停止的时候」。这里是同一个形状，用同一套解法。
+       （2026-09-05 复查发现这条链漏了。）
+    """
     out = []
     try:
         p = subprocess.Popen(
@@ -166,23 +180,37 @@ def _pip(argv, timeout=1800, on_log=None):
             cwd=paths.ROOT, env=paths.child_env())
     except Exception as e:
         return 1, '%s: %s' % (type(e).__name__, e)
-    t0 = time.time()
-    while True:
-        line = p.stdout.readline()
-        if not line:
-            break
-        s = line.decode('utf-8', 'replace').rstrip()
-        out.append(s)
-        if on_log:
+
+    killed = []
+    stop_watch = threading.Event()
+
+    def watch():
+        # wait 返回 False = 等满了 timeout 还没被 set，说明超时了
+        if not stop_watch.wait(timeout):
+            killed.append(True)
             try:
-                on_log(s)
+                p.kill()
             except Exception:
                 pass
-        if time.time() - t0 > timeout:
-            p.kill()
-            out.append('（超时，已中止）')
-            break
+
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        while True:
+            line = p.stdout.readline()
+            if not line:
+                break
+            s = line.decode('utf-8', 'replace').rstrip()
+            out.append(s)
+            if on_log:
+                try:
+                    on_log(s)
+                except Exception:
+                    pass
+    finally:
+        stop_watch.set()
     p.wait()
+    if killed:
+        out.append('（超过 %d 秒没跑完，已中止）' % timeout)
     return p.returncode, '\n'.join(out)
 
 
@@ -367,6 +395,24 @@ def install(on_log=None):
         return {'ok': False, 'error': '状态文件里没记要装什么'}
 
     b = backup(picked)
+    # 🔴 **备份没做成就别往下装。**
+    #
+    #    这个模块整套事务设计（见文件开头）都建立在「装之前先备份」上：
+    #    装到一半断电 → 下次开机读到 phase=installing → 无条件回滚。
+    #    而回滚是「照着备份目录里有什么，就把 site-packages 里对应的
+    #    删掉再拷回来」—— 备份是空的，回滚就什么也做不了，那时候环境
+    #    已经被 pip 动过了，回不去。
+    #
+    #    原来这里不看 b['ok'] 就继续（2026-09-05 复查发现）。备份失败
+    #    概率确实很低（硬链接同盘必成、_site_dir 有 sysconfig 兜底），
+    #    但「概率低」不是「不会发生」，而这一步失手的代价是环境废掉。
+    #    此时状态仍是 downloaded，用户下次还能重试安装，不丢东西。
+    if not b.get('ok'):
+        return {'ok': False,
+                'error': '升级前的备份没做成（%s），没有往下装 —— '
+                         '没有备份的话，装到一半出问题就回不去了。'
+                         % (b.get('error') or '原因不明')}
+
     st = dict(st, phase='installing', backup=b.get('dir', ''),
               backup_files=b.get('files', 0))
     _write_state(st)

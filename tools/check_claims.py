@@ -21,7 +21,6 @@ check_docs 查的是「数字对不对、文件在不在」。这一遍查的是
 """
 import io
 import os
-import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))

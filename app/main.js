@@ -242,8 +242,23 @@ ipcMain.handle('open-path', async (_e, p) => {
   } catch (e) { /* 文件被人挪走了，不值得为此弹窗 */ }
 });
 
+// 🔴 只放行 .docx。
+//
+// `shell.openPath` 是「用默认程序打开」—— 对 .exe 就是**执行它**。
+// 而页面的 HTML 是字符串拼出来的，万一哪天有个转义漏洞，
+// 「能打开任意文件」立刻升级成「能执行任意程序」。
+//
+// 隔壁 open-url 早就卡了域名白名单，理由写在下面那段注释里；
+// 这一条的危害更大，却一直什么都没卡（2026-09-05 复查发现）。
+//
+// 限制成 .docx 不损失任何功能：渲染层只在两个地方用它，传的都是
+// 转换产物 —— 正品 r.docx 和判失败改名的次品 r.degraded
+// （`xxx【公式未完全转换】.docx`，改的是文件名，扩展名没变）。
 ipcMain.handle('open-file', async (_e, p) => {
-  if (p) await shell.openPath(p);
+  if (typeof p !== 'string' || !p) return false;
+  if (!p.toLowerCase().endsWith('.docx')) return false;
+  await shell.openPath(p);
+  return true;
 });
 
 // 只放行这几个域名。页面的 HTML 是字符串拼出来的，万一哪天有个转义

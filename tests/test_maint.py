@@ -7,7 +7,6 @@ r"""占用扫描与清理。
 **看得到，才谈得上删不删。**
 """
 import io
-import json
 import os
 import shutil
 import sys

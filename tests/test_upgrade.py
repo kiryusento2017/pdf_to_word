@@ -12,6 +12,8 @@ import json
 import os
 import shutil
 import sys
+import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -234,6 +236,96 @@ class Test安装用本地包不联网(unittest.TestCase):
             upgrade.read_state = old
         self.assertFalse(r['ok'])
         self.assertIn('没有待安装', r['error'])
+
+    def test_备份没做成就不许往下装(self):
+        r"""🔴 整套事务设计都建立在「装之前先备份」上。
+
+        回滚的做法是「照着备份目录里有什么，把 site-packages 里对应的
+        删掉再拷回来」—— 备份是空的，回滚就什么也做不了，而那时环境
+        已经被 pip 动过了，回不去。所以备份失败必须当场停住。
+        （2026-09-05 复查发现这里原来不看 backup 的返回值就继续。）
+        """
+        old_read, old_backup, old_pip = (upgrade.read_state,
+                                         upgrade.backup, upgrade._pip)
+        装过了 = []
+        upgrade.read_state = lambda: {'phase': 'downloaded',
+                                      'picked': ['mineru']}
+        upgrade.backup = lambda picked: {'ok': False, 'dir': '', 'files': 0,
+                                         'error': '没备份到任何文件'}
+        upgrade._pip = lambda *a, **k: (装过了.append(1), (0, ''))[1]
+        try:
+            r = upgrade.install()
+        finally:
+            upgrade.read_state, upgrade.backup, upgrade._pip = (
+                old_read, old_backup, old_pip)
+
+        self.assertFalse(r['ok'])
+        self.assertIn('备份', r['error'])
+        self.assertEqual(装过了, [], '备份失败了却还是去装了 —— 装坏就回不去')
+
+
+class _卡住的stdout(object):
+    """readline() 一直阻塞，直到进程被 kill —— 模拟 pip 卡住不吐东西。"""
+
+    def __init__(self):
+        self.放行 = threading.Event()
+
+    def readline(self):
+        # 上限 10 秒是防这条测试自己挂死；正常路径下 kill 会提前放行
+        self.放行.wait(10)
+        return b''
+
+
+class _假进程(object):
+    def __init__(self):
+        self.stdout = _卡住的stdout()
+        self.returncode = 0
+        self.pid = 1
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+        self.stdout.放行.set()      # 管道关掉，readline 返回空
+
+    def wait(self):
+        return self.returncode
+
+
+class Test超时对卡死的pip也要生效(unittest.TestCase):
+    r"""🔴 超时检查必须放在独立线程里。
+
+    原来写在读取循环里：`readline()` 之后才判断 time.time() - t0。
+    而 readline 是阻塞的 —— pip 卡住不吐东西时（网络断了最常见）
+    代码停在那一行，超时判断一次都执行不到，1800 秒上限形同虚设。
+
+    这个坑 models.download / torchdep.install 都踩过并修好了，
+    torchdep 的注释里写着。这条链 2026-09-05 复查时才发现漏了。
+    """
+
+    def setUp(self):
+        self.real_popen = upgrade.subprocess.Popen
+        self.fake = _假进程()
+        upgrade.subprocess.Popen = lambda *a, **k: self.fake
+
+    def tearDown(self):
+        upgrade.subprocess.Popen = self.real_popen
+
+    def test_子进程一个字都不吐时超时照样把它杀掉(self):
+        t0 = time.time()
+        rc, out = upgrade._pip(['install', 'x'], timeout=0.5)
+        took = time.time() - t0
+
+        self.assertTrue(self.fake.killed, '超时了却没杀掉进程')
+        self.assertLess(took, 5.0,
+                        '超时没生效 —— 一直等到 readline 自己返回才结束')
+        self.assertIn('已中止', out, '中止了要在输出里说一声')
+
+    def test_正常跑完不会被误杀(self):
+        r"""超时线程不能反过来把正常结束的进程杀了。"""
+        self.fake.stdout.放行.set()       # 立刻返回空 = 进程正常结束
+        rc, out = upgrade._pip(['install', 'x'], timeout=30)
+        self.assertFalse(self.fake.killed, '正常结束的进程被误杀了')
+        self.assertNotIn('已中止', out)
 
 
 if __name__ == '__main__':

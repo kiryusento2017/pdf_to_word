@@ -9,7 +9,7 @@
   2. 四个字缩到 16px 每字只剩 8x8 像素，糊成灰块 —— 小尺寸改用单字。
 """
 import os
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, 'app')

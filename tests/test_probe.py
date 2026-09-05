@@ -166,6 +166,27 @@ class Test批量探测(unittest.TestCase):
         got = probe.scan_dir(WORK)
         self.assertEqual(len(got), 1)
 
+    def test_太深了就不再往下走(self):
+        r"""🔴 护栏，不是功能限制。
+
+        用户可能把整个 C 盘拖进来 —— 那会让 os.walk 跑遍全盘、再逐份
+        pymupdf.open 取文字，界面假死几分钟。默认 12 层是「正常用法
+        永远碰不到」的量（按学科/年级/章节建最多三四层）。
+        （2026-09-05 复查加的：models._find_snapshot 早就有这道护栏，
+          这边一直没有。）
+        """
+        d = WORK
+        for i in range(5):
+            d = os.path.join(d, 'lv%d' % i)
+            os.makedirs(d)
+            _make_pdf(os.path.join(d, 'a%d.pdf' % i), 1,
+                      'enough characters here')
+
+        # 卡到 2 层：只看得见 lv0 和 lv1 里那两份
+        self.assertEqual(len(probe.scan_dir(WORK, max_depth=2)), 2)
+        # 默认深度足够宽松，五层全都找得到 —— 护栏不该漏掉真实文件
+        self.assertEqual(len(probe.scan_dir(WORK)), 5)
+
 
 if __name__ == '__main__':
     unittest.main()

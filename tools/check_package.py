@@ -25,6 +25,7 @@ r"""检查打好的安装包里有没有不该有的东西。**发版前跑**。
   · torch 不该在包里（GPU 运行库是首启按需下的）
 """
 import io
+import json
 import os
 import re
 import subprocess
@@ -172,7 +173,7 @@ def main():
     # 版本号：解出来看
     tmp = os.path.join(DIST, '_check_tmp')
     subprocess.run([sz, 'e', '-y', '-o' + tmp, exe, '使用说明.txt',
-                    'version.json'],
+                    'version.json', r'resources\app\package.json'],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for name in ('使用说明.txt', 'version.json'):
         p = os.path.join(tmp, name)
@@ -185,6 +186,36 @@ def main():
                        '小文件，改了 put_readme 要跑一次完整构建' % (name, ver))
         else:
             print('  [ok] %s 里的版本号是 %s' % (name, ver))
+
+    # 🔴 package.json 的版本号也要对上。
+    #
+    #    `build_release.py --version` 会更新 version.json 和 使用说明.txt，
+    #    **唯独不碰 app/package.json** —— 它只是被原样拷进发行包。
+    #    2026-09-05 查出来时它停在 0.1.0，而实际已经发到 v0.1.1 了：
+    #    不加这道检查的话，每发一版它就更落后一版。
+    #
+    #    没有任何代码读它（main.js 里没有 app.getVersion()），所以对不上
+    #    不会出故障 —— 但发行包里带一个写错版本号的清单文件，早晚误导人。
+    #    发版时手动同步这一步写在 RELEASE.md 第一节第 4 步。
+    #
+    #    ⚠️ 格式不一样：version.json 是 "v0.2.1"，package.json 不带 v。
+    pj = os.path.join(tmp, 'package.json')
+    if not os.path.isfile(pj):
+        bad.append('包里没有 resources/app/package.json')
+    else:
+        got = ''
+        try:
+            got = (json.load(io.open(pj, encoding='utf-8')) or {}).get(
+                'version', '')
+        except Exception as e:
+            bad.append('package.json 读不出来：%s' % str(e)[:80])
+        want = ver.lstrip('v')
+        if got and got != want:
+            bad.append('package.json 的版本号是 %s，应该是 %s —— '
+                       'build_release 不会自动改它，发版前要手动同步'
+                       '（RELEASE.md 第一节第 4 步）' % (got, want))
+        elif got:
+            print('  [ok] package.json 里的版本号是 %s' % got)
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
 

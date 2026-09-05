@@ -83,13 +83,34 @@ def probe_many(paths):
     return [probe_pdf(p) for p in paths]
 
 
-def scan_dir(root):
+# 递归往下走多少层就不再走了。
+#
+# 🔴 这是**防病态输入的护栏，不是功能限制**。用户可能把 `C:\` 或者
+#    整个 D 盘拖进来 —— 那会让 os.walk 跑遍全盘、再逐份 pymupdf.open
+#    取文字，界面假死几分钟，而他多半只是拖错了。
+#
+#    12 层是「正常用法永远碰不到」的量：老师按「学科/年级/章节」建
+#    文件夹最多三四层，留出四倍余量。所以这个值不会让任何真实场景
+#    漏掉文件 —— 那种漏掉是静默的，比卡一会儿更糟。
+#
+#    models._find_snapshot 出于同样的理由用了 max_depth=6，那边的
+#    注释写着「用户可能选中一个巨大的目录（比如整个 D 盘），无限
+#    递归会让界面卡死几分钟」。这里是同一类风险，2026-09-05 复查
+#    时发现只有那边做了防护。
+MAX_SCAN_DEPTH = 12
+
+
+def scan_dir(root, max_depth=MAX_SCAN_DEPTH):
     """递归找出目录下所有 PDF。
 
     **递归**：老师习惯按章节建子文件夹，只扫一层会漏掉大半。
+    深度上限见 MAX_SCAN_DEPTH 的说明。
     """
     out = []
-    for dirpath, _dirnames, filenames in os.walk(root):
+    base = os.path.abspath(root).rstrip(os.sep).count(os.sep)
+    for dirpath, dirnames, filenames in os.walk(root):
+        if os.path.abspath(dirpath).count(os.sep) - base >= max_depth:
+            dirnames[:] = []          # 太深了，不再往下走
         for fn in sorted(filenames):
             if fn.lower().endswith(PDF_EXTS):
                 out.append(os.path.join(dirpath, fn))

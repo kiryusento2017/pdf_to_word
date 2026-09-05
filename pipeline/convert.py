@@ -12,8 +12,6 @@ r"""一份 PDF → 一份 Word。把三步串起来的编排层。
 
 **不抛异常**：一份书失败不能带倒整批（用户常常一次拖进来一整个文件夹）。
 """
-import os
-
 import extract
 import torchdep
 import probe
