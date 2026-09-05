@@ -275,6 +275,113 @@ class Test端到端子进程(unittest.TestCase):
                       % r.stderr.decode('utf-8', 'replace')[-200:])
 
 
+class Test子进程命令改写(unittest.TestCase):
+    r"""MinerU 自己起的那个进程，也得走引导器。
+
+    2026-09-05 发现的第二层：`run_mineru.py` 的补丁只管到
+    `mineru.cli.client` 那个进程，而 hybrid-engine 后端会再起一个
+    `python -m mineru.cli.fast_api` 干活（`cli/api_client.py:511`，
+    多 GPU 那条 `cli/router.py:429` 形状一样）。
+
+    **语言检测只在后面那个进程里发生** —— 调 `utils/language.py` 的全在
+    `backend/` 下，CLI 侧一处都没有。所以补丁挂在 CLI 那层，等于挂在了
+    一个根本不会触发这个 bug 的地方：8-31 起每个版本都有这个洞，
+    9-03 修完照样炸，而 298 条测试全绿。
+    """
+
+    def setUp(self):
+        self.boot = os.path.join(ROOT, 'pipeline', 'sitepatch', 'run_mineru.py')
+
+    def test_mineru模块的_m启动会被改写成走引导器(self):
+        argv = ['py.exe', '-m', 'mineru.cli.fast_api', '--host', '127.0.0.1']
+        self.assertEqual(
+            sitecustomize.boot_argv(argv),
+            ['py.exe', self.boot, 'mineru.cli.fast_api', '--host', '127.0.0.1'])
+
+    def test_模块名与后续参数一字不动(self):
+        r"""转交错了的话，MinerU 拿不到 --host/--port，报的却是它自己的
+        用法错误，跟中文路径毫无关系，极难往这边想。"""
+        argv = ['py.exe', '-m', 'mineru.cli.fast_api', '--port', '4302', '-x']
+        got = sitecustomize.boot_argv(argv)
+        self.assertEqual(got[2], 'mineru.cli.fast_api')
+        self.assertEqual(got[3:], ['--port', '4302', '-x'])
+
+    def test_不该动的命令一律原样返回(self):
+        r"""🔴 这个补丁挂在**所有** Popen 调用上，跟我们无关的必须一个不碰。"""
+        for argv in (['py.exe', '-m', 'pip', 'install', 'x'],
+                     ['py.exe', '-m', 'mineru_other.thing'],   # 前缀像但不是
+                     ['py.exe', '-c', 'print(1)'],
+                     ['py.exe', 'some_script.py', '-m'],
+                     ['py.exe']):
+            self.assertIs(sitecustomize.boot_argv(argv), argv, argv)
+
+    def test_字符串命令原样返回(self):
+        r"""shell=True 那种写法，动不得。"""
+        s = 'python -m mineru.cli.fast_api'
+        self.assertIs(sitecustomize.boot_argv(s), s)
+
+    def test_已经是引导器形式不会套第二层(self):
+        argv = ['py.exe', self.boot, 'mineru.cli.fast_api']
+        self.assertIs(sitecustomize.boot_argv(argv), argv)
+
+
+class Test改写不能破坏Popen本身(unittest.TestCase):
+    r"""🔴 只能包 `Popen.__init__`，不能把 `Popen` 换成函数。
+
+    MinerU 有两处会当场炸：`cli/api_client.py:49` 写了
+    `subprocess.Popen[bytes]`（类型下标），`:283` 写了
+    `isinstance(process, subprocess.Popen)` —— 函数两样都不支持。
+    换错写法的话，中文路径是好了，所有人的转换全挂。
+    """
+
+    def test_类型下标还能用(self):
+        self.assertIsNotNone(subprocess.Popen[bytes])
+
+    def test_isinstance还能用(self):
+        p = subprocess.Popen([sys.executable, '-c', 'pass'])
+        p.wait()
+        self.assertIsInstance(p, subprocess.Popen)
+
+    def test_补丁挂上了(self):
+        self.assertTrue(
+            getattr(subprocess.Popen.__init__, '_zh_path_patched', False),
+            'import sitecustomize 没有把 Popen 补丁挂上')
+
+    def test_重复打补丁不会套娃(self):
+        before = subprocess.Popen.__init__
+        sitecustomize.patch_subprocess()
+        self.assertIs(subprocess.Popen.__init__, before)
+
+
+class Test引导器的spawn守卫(unittest.TestCase):
+    r"""引导器被 multiprocessing 重新执行时，绝不能再去解析 argv。
+
+    Windows 上 multiprocessing 用 spawn，子进程会把主脚本**重新跑一遍**
+    来重建命名空间（`run_name='__mp_main__'`），`sys.argv` 原样继承父
+    进程 —— 那一次没有模块名，`pop(1)` 拿到的是 `--host`，于是
+    `ImportError: No module named --host`，MinerU 的 PDF 渲染进程池整个
+    起不来，任务照样零产物。
+
+    2026-09-05 端到端实测抓到的：同一份 PDF、同一个中文路径，
+    加守卫前 0 个产物，加守卫后 36 个。
+    """
+
+    def test_按mp_main重跑时不碰argv(self):
+        boot = os.path.join(ROOT, 'pipeline', 'sitepatch', 'run_mineru.py')
+        code = ('import runpy, sys\n'
+                'sys.argv = ["run_mineru.py", "--host", "127.0.0.1"]\n'
+                'runpy.run_path(%r, run_name="__mp_main__")\n'
+                'print("ARGV=" + repr(sys.argv))\n' % boot)
+        r = subprocess.run([sys.executable, '-c', code],
+                           capture_output=True, env=paths.child_env())
+        out = (r.stdout + r.stderr).decode('utf-8', 'replace')
+        self.assertEqual(r.returncode, 0,
+                         '守卫没挡住，spawn 重跑时炸了：%s' % out[-400:])
+        self.assertNotIn('No module named', out)
+        self.assertIn("ARGV=['run_mineru.py', '--host', '127.0.0.1']", out,
+                      'argv 被 pop 掉了 —— 守卫没生效：%s' % out[-300:])
+
+
 class Test补丁目录只暴露这一个文件(unittest.TestCase):
     r"""sitepatch/ 是通过 PYTHONPATH 塞进子进程 sys.path 的。
 

@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 431 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 441 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
 node tests\front_check.js                                   # 139 条
 ```

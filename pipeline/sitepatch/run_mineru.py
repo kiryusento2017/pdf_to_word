@@ -46,11 +46,30 @@ except Exception as e:
     #    转换日志，出事时有据可查。
     sys.stderr.write('[sitepatch] 中文路径补丁未生效：%r\n' % (e,))
 
-if len(sys.argv) < 2:
-    sys.stderr.write('用法：run_mineru.py <模块名> [参数...]\n')
-    raise SystemExit(2)
+# 🔴 **这个 `__main__` 守卫不能省**（2026-09-05 端到端实测抓出来的）。
+#
+# Windows 上 multiprocessing 用 spawn，子进程会把主脚本**重新执行一遍**
+# 来重建命名空间（runpy 传的 run_name 是 `__mp_main__`），而 `sys.argv`
+# 是原样继承父进程的 —— 那一次 argv 里根本没有模块名，`pop(1)` 拿到的
+# 是 `--host`，于是：
+#
+#     ImportError: No module named --host
+#
+# MinerU 的 PDF 渲染进程池整个起不来，任务照样零产物 —— 现象跟中文路径
+# 那个 bug 一模一样，但原因毫不相干，极难往这边想。
+#
+# 原来没这个守卫也没出事，是因为当时只有 `mineru.cli.client` 走这里，
+# 那条路不开 multiprocessing。现在 `mineru.cli.fast_api` 也走这里
+# （见 sitecustomize.boot_argv），它是开的。
+#
+# 补丁的 import 放在守卫**外面**是有意的：spawn 出来的那些工作进程
+# 同样需要中文路径补丁。
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        sys.stderr.write('用法：run_mineru.py <模块名> [参数...]\n')
+        raise SystemExit(2)
 
-_mod = sys.argv.pop(1)
-# click 拿 argv[0] 当程序名印在帮助和报错里，给它一个像样的
-sys.argv[0] = 'mineru'
-runpy.run_module(_mod, run_name='__main__')
+    _mod = sys.argv.pop(1)
+    # click 拿 argv[0] 当程序名印在帮助和报错里，给它一个像样的
+    sys.argv[0] = 'mineru'
+    runpy.run_module(_mod, run_name='__main__')
