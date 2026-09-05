@@ -846,7 +846,7 @@ with futures.ThreadPoolExecutor(...) as ex:
 
 ---
 
-### 2. 🔴 模型上游更新了，用户没有任何办法更新
+### 2. ✅ 模型上游更新了，用户没有任何办法更新（2026-09-05 已做）
 
 **这是这轮做的功能留下的缺口**：`deps.check_models()` 能查出上游更新了
 （比 modelscope 的 `LastUpdatedTime`），环境检测页也会显示 ——

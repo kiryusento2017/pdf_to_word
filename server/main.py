@@ -424,9 +424,23 @@ def _dl_work(source):
 
 @app.post('/api/models/download')
 async def start_download(req: DownloadReq):
+    r"""下模型。**首次下载和「更新模型」走的是同一条路。**
+
+    2026-09-05 实测确认底层的 `modelscope.snapshot_download` 是
+    增量的：原样再跑一次 0.9 秒（全新下载要 21 秒），删掉一个文件
+    再跑只补那一个。所以「更新」不需要清空 models/，重跑即可 ——
+    中途失败旧模型还在，用户照常能转 PDF。
+    """
     with _LOCK:
         if _DL['state'] == 'running':
             return {'ok': True, 'already': True}
+        # 🔴 **转换进行中不许下模型。** 首次下载时撞不上（那时还没法
+        #    转换），但「更新模型」这个入口会 —— 增量下载虽然不删旧
+        #    文件，写 models/ 目录仍然跟正在跑的 MinerU 抢文件锁。
+        #    跟「转换中禁用清理 / 检查更新」一个规矩。
+        if any(t.get('state') == 'running' for t in _TASKS.values()):
+            return JSONResponse({'detail': '正在转换，转完再下模型'},
+                                status_code=409)
         _DL.update({'state': 'running', 'got': 0, 'error': '',
                     'line': '', 'lines': [], 'cancel': False,
                     'cmd': '', 'log': ''})

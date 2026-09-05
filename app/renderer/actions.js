@@ -457,6 +457,21 @@
       render();
     },
 
+    // 模型有更新时重新下一次。
+    //
+    // 🔴 **不清空 models/** —— 2026-09-05 实测确认 mineru 的下载器
+    //    是增量的（原样再跑 0.9 秒 vs 全新 21 秒；删掉一个文件再跑
+    //    只补那一个）。直接重跑就行，中途失败旧模型还在，用户照常
+    //    能转 PDF。「先删后下」中途断网就把人坑了。
+    //
+    //    跳到 model 那一屏，进度条、日志区、断点续传全是现成的 ——
+    //    跟首次下载走的是同一条路。
+    updateModels: function () {
+      st.about = null;
+      st.page = 'model';
+      window.P2W_ACTS.startDownload();
+    },
+
     // 勾选要升级的包。
     toggleUpg: function (arg) {
       if (!arg) return;
@@ -622,7 +637,9 @@
     // 跟显卡那条规矩一样：报警，但不替他做主。
     installAnyway: function () {
       st.updAllowUnverified = true;
-      actions.downloadUpdate();
+      // 🔴 不是 actions.downloadUpdate() —— 那个变量不存在，
+      //    点下去会抛 ReferenceError（2026-09-05 复查发现）。
+      window.P2W_ACTS.downloadUpdate();
     },
 
     // 装 GPU 运行库（CUDA 版 PyTorch，约 2.8 GB）。

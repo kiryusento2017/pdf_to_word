@@ -570,5 +570,49 @@ class Test升级接口(unittest.TestCase):
             self.assertTrue(d['error'])
 
 
+class Test模型更新(unittest.TestCase):
+    r"""模型有更新时重新下一次。
+
+    🔴 **不清空 models/** —— 2026-09-05 实测确认 mineru 用的
+    modelscope.snapshot_download 是增量的（原样再跑 0.9 秒 vs 全新
+    21 秒，删掉一个文件再跑只补那一个）。所以「更新」和「首次下载」
+    走的是同一条路。
+    """
+
+    def test_转换进行中不许下模型(self):
+        r"""增量下载虽然不删旧文件，但写 models/ 目录仍然跟正在跑的
+        MinerU 抢文件锁。跟「转换中禁用清理」一个规矩。
+
+        首次下载时撞不上这条（那时还没法转换），是「更新模型」这个
+        入口把它变成了真实场景。"""
+        tid = 'faketask3'
+        with srv._LOCK:
+            srv._TASKS[tid] = {'state': 'running'}
+            was = srv._DL.get('state')
+            srv._DL['state'] = 'idle'
+        try:
+            r = client.post('/api/models/download', json={'source': 'modelscope'})
+            self.assertEqual(r.status_code, 409)
+            self.assertIn('正在转换', r.json()['detail'])
+        finally:
+            with srv._LOCK:
+                srv._TASKS.pop(tid, None)
+                if was is not None:
+                    srv._DL['state'] = was
+
+    def test_已经在下时不重复启动(self):
+        with srv._LOCK:
+            was = srv._DL.get('state')
+            srv._DL['state'] = 'running'
+        try:
+            r = client.post('/api/models/download', json={'source': 'modelscope'})
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.json().get('already'))
+        finally:
+            with srv._LOCK:
+                if was is not None:
+                    srv._DL['state'] = was
+
+
 if __name__ == '__main__':
     unittest.main()

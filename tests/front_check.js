@@ -148,7 +148,7 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'checkDeps', 'toggleMaint', 'toggleCache',
                      'doClean', 'copyDiag', 'toggleUpdNotes',
                      'toggleUpg', 'planUpgrade', 'toggleUpgDetail',
-                     'startUpgrade']) {
+                     'startUpgrade', 'updateModels']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
     }
   });
@@ -1659,6 +1659,57 @@ console.log('\n升级区：');
       const tag = h.slice(i, h.indexOf('>', i));
       if (!tag.includes('disabled')) throw new Error('装不了却还能点下载');
     }
+  });
+}
+
+
+console.log('\n模型更新入口：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const env = (deps) => Object.assign(ready(sb), {
+    about: 'env',
+    diag: { versions: { mineru: '3.4.5' }, root: 'D:/x', models_ready: true },
+    maint: { ok: true, items: [] },
+    deps: deps,
+  });
+
+  ck('没查过上游时不出现「更新模型」', () => {
+    // 🔴 没查过 ≠ 已最新，也 ≠ 该更新。什么都不知道时不该摆按钮。
+    const h = fn(env(undefined));
+    if (h.includes('data-act="updateModels"')) throw new Error('没查过却让人更新');
+  });
+
+  ck('模型已是最新时不出现「更新模型」', () => {
+    const h = fn(env({ ok: true, models: {
+      ready: true, local_time: '2026-09-05', upstream_time: '2026-06-16',
+      error: '' } }));
+    if (h.includes('data-act="updateModels"')) throw new Error('已最新却让人更新');
+  });
+
+  ck('模型旧了才出现「更新模型」', () => {
+    const h = fn(env({ ok: true, models: {
+      ready: true, local_time: '2026-05-01', upstream_time: '2026-06-16',
+      error: '' } }));
+    if (!h.includes('data-act="updateModels"')) throw new Error('旧了却没入口');
+  });
+
+  ck('查不到上游时间时不出现（不猜）', () => {
+    const h = fn(env({ ok: false, models: {
+      ready: true, local_time: '2026-05-01', upstream_time: '', error: '断网' } }));
+    if (h.includes('data-act="updateModels"')) throw new Error('查不到却让人更新');
+  });
+
+  ck('转换进行中，更新模型按钮禁用但不消失', () => {
+    const st = env({ ok: true, models: {
+      ready: true, local_time: '2026-05-01', upstream_time: '2026-06-16',
+      error: '' } });
+    st.task = { state: 'running', items: [] };
+    const h = fn(st);
+    const i = h.indexOf('data-act="updateModels"');
+    if (i < 0) throw new Error('按钮被拿掉了');
+    const tag = h.slice(i, h.indexOf('>', i));
+    if (!tag.includes('disabled')) throw new Error('转换中却还能点');
   });
 }
 

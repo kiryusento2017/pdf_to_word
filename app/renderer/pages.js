@@ -785,6 +785,12 @@ function envCheckView(st) {
   var v = d.versions || {};
   var up = st.deps || {};
 
+  // 模型旧了没有。**只有查过上游、且拿到了上游时间，才谈得上判断** ——
+  // 没查过就是不知道，不是「已最新」。
+  var mu = up.models || {};
+  var modelStale = !!(mu.ready && mu.upstream_time && !mu.error
+                      && mu.local_time && mu.upstream_time > mu.local_time);
+
   // 顶部：机器信息
   var head = '<div class="f-dim" style="text-align:left;line-height:1.7;'
     + 'font-size:11px;max-width:96%">'
@@ -852,6 +858,15 @@ function envCheckView(st) {
     + btn('checkDeps', st.depsBusy ? '正在查…' : '检查上游',
           { off: st.depsBusy || isRunning(st),
             title: isRunning(st) ? '正在转换，转完再查' : '' })
+    // 🔴 模型有更新时才出现这个按钮。
+    //
+    //    点了**不清空 models/**，直接重跑下载命令 —— 2026-09-05
+    //    实测确认底层是增量的（原样再跑 0.9 秒 vs 全新 21 秒，
+    //    删掉一个文件再跑只补那一个）。所以中途失败旧模型还在，
+    //    用户照常能转 PDF。
+    + (modelStale ? btn('updateModels', '更新模型',
+          { off: isRunning(st),
+            title: isRunning(st) ? '正在转换，转完再更新' : '' }) : '')
     + (up.error ? '<span class="f-dim" style="font-size:11px">'
         + esc(up.error) + '</span>' : '')
     + '</div>'
