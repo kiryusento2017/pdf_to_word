@@ -97,6 +97,10 @@
 点开是完整的线路表，行本身就是选择器——**平时用「自动（最快的）」，
 想手动指一条也行**，因为最快的未必最稳。
 
+查版本是六条一起发、总共等 3 秒（正常网络 1.1 秒就全回来了）。超时还没
+回来的那条写「未测」，**不写「连不上」**——没验证过的结论不报，这时上面
+那行会变成「5 条已通过，1 条未测」。
+
 **速度那一列没测过就是空的（`—`）**，不拿别的数字顶替。测速有两个触发点：
 手动点「测下载速度」，或者**点更新时自动测一次**（前提是没手动指定线路）。
 测完会自动选中最快的那条 —— 2026-09-05 之前测速只重排了显示，下载走的还是
@@ -359,14 +363,14 @@ runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有�
             打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
             直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      407 条 Python + 138 条前端检查 + 四个真实数据验证脚本
+tests/      408 条 Python + 138 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 407 条，15 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 408 条，15 秒
 node tests\front_check.js                                   # 138 条，真渲染
 ```
 
