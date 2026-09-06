@@ -517,5 +517,68 @@ class Test写不进去要说人话(unittest.TestCase):
         self.assertIn('更改', r['error'], '没告诉用户怎么办')
 
 
+class Test图里的文字不进正文(unittest.TestCase):
+    r"""MinerU 把图片里 OCR 出来的字塞进 <details> 折叠块，图片本身在块外。
+
+    pandoc 会把这两个标签当 raw HTML 丢掉，**夹在中间的文字却留下**，
+    于是 Word 里出现一行 `text_image` 加一串没头没尾的字母。
+    你那 11 份讲义里 1053 处。
+    """
+
+    def _md(self, body):
+        return ('正文一。\n\n![](a.jpg)\n\n<details>\n<summary>%s</summary>\n\n'
+                'a\nIII\nb\n\n</details>\n\n正文二。\n' % body)
+
+    def test_整块删掉(self):
+        out, n = todocx._strip_details(self._md('text_image'))
+        self.assertEqual(n, 1)
+        self.assertNotIn('text_image', out)
+        self.assertNotIn('III', out)
+        self.assertIn('正文一。', out)
+        self.assertIn('正文二。', out)
+
+    def test_十种标记都要删不是只删text_image(self):
+        r"""MinerU 按图的内容分十类打标记，实测分布：text_image 670、
+        line 253、natural_image 50、flowchart 36、area 16、scatter 12、
+        chemical 7、contour 6、wireframe 2、bar 1。判据是「是不是 details
+        块」，不是「summary 叫什么」。"""
+        for kind in ('line', 'natural_image', 'flowchart', 'area', 'scatter',
+                     'chemical', 'contour', 'wireframe', 'bar'):
+            out, n = todocx._strip_details(self._md(kind))
+            self.assertEqual(n, 1, '%s 没被删' % kind)
+            self.assertNotIn(kind, out)
+
+    def test_图片和公式一个都不能少(self):
+        r"""实测 38 份产物：删块前后公式 8619→8619、图片 1424→1424、
+        表格 57→57。这条把那个实测钉住。"""
+        md = ('![](x.jpg)\n\n$E=mc^2$\n\n<details>\n<summary>text_image</summary>'
+              '\n\nabc\n\n</details>\n\n![](y.jpg)\n\n$F=ma$\n')
+        out, n = todocx._strip_details(md)
+        self.assertEqual(n, 1)
+        self.assertEqual(out.count('!['), 2, '图片被删了')
+        self.assertEqual(out.count('$E=mc^2$'), 1, '公式被删了')
+        self.assertEqual(out.count('$F=ma$'), 1, '公式被删了')
+
+    def test_开合对不上就一个都不删(self):
+        r"""🔴 样本只有 11 份讲义，别的 PDF 万一格式不同，宁可不动也别删错
+        —— 这是交付给老师的正文，删错了没法补。"""
+        broken = '正文\n\n<details>\n<summary>text_image</summary>\n\nabc\n'
+        out, n = todocx._strip_details(broken)
+        self.assertEqual(n, 0)
+        self.assertEqual(out, broken, '格式不对时不该动')
+
+    def test_没有块的时候原样返回(self):
+        md = '就是一段普通正文。\n'
+        out, n = todocx._strip_details(md)
+        self.assertEqual(n, 0)
+        self.assertEqual(out, md)
+
+    def test_一份里有好几块(self):
+        md = self._md('text_image') + self._md('line')
+        out, n = todocx._strip_details(md)
+        self.assertEqual(n, 2)
+        self.assertNotIn('<details>', out)
+
+
 if __name__ == '__main__':
     unittest.main()

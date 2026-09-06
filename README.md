@@ -263,13 +263,25 @@ XSL 探测：先查注册表（Click-to-Run 和传统 MSI 两种键位都读）�
 改成首次启动时按需下（wheel 约 2.8 GB），跟那 4.6 GB 模型走同一个流程，
 用户只等一次。软件会自己检查并在界面上给一个「现在就装」的按钮。
 
-**下哪个 CUDA 版本由驱动决定**，不写死：
+**下哪个 CUDA 版本由「驱动够不够」和「这张卡的机器码在不在里面」一起
+决定**，不写死：
 
-| 驱动 | 用哪个 | 为什么 |
-|---|---|---|
-| ≥ 570 | cu128（CUDA 12.8） | 最新 |
-| ≥ 525 | cu126（CUDA 12.6） | 版本一样新，驱动门槛低一档 |
-| 其余 / 读不到 | cu118（CUDA 11.8） | 最保守 |
+| 显卡 / 驱动 | 用哪个 |
+|---|---|
+| 新卡（算力 12.0）+ 驱动 ≥ 580 | cu132 / cu130 |
+| 主流卡（5.0~9.0）+ 驱动 ≥ 528.33 | cu126 |
+| 老驱动（≥ 452.39）/ 读不到显卡 | cu118 |
+
+🔴 **不是「CUDA 号越大越好」。** 实测各条线路当时的最新 torch：
+cu118 停在 2.7.1、**cu128 停在 2.11.0（官方已停更）**、cu129 只到 2.9.0，
+而 cu126 / cu130 / cu132 都在 2.14.0。按 CUDA 号从大到小挑的话，驱动 572
+的用户会拿到 cu128 的 2.11.0 —— 比低一档的 cu126 还旧三个次版本。
+
+🔴 **还要看显卡型号，不能只看驱动。** 各条线路里编进去的显卡机器码是
+**交叉的**：cu126 有老卡（5.0~9.0）没新卡，cu13x 反过来（7.5~12.0）。
+1080Ti（算力 6.1）配新驱动，只看驱动会挑中 cu128，而 cu128 里根本没有
+6.1 的机器码 —— `import torch` 能过、检测显卡也说「有」，**只有真跑起来
+才报「找不到这张卡的机器码」**。
 
 写死 cu128 的话，驱动低于 570 的机器会在 `import torch` 时报
 `[WinError 1114] 动态链接库(DLL)初始化例程失败`——而 modelscope 的
@@ -398,15 +410,15 @@ runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有�
             打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
             直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      459 条 Python + 142 条前端检查 + 四个真实数据验证脚本
+tests/      510 条 Python + 163 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 459 条，16 秒
-node tests\front_check.js                                   # 142 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 510 条，16 秒
+node tests\front_check.js                                   # 163 条，真渲染
 ```
 
 🔴 **必须是 `.venv\Scripts\python.exe`，不能用全局的 `python`。**

@@ -666,5 +666,93 @@ class Test模型更新(unittest.TestCase):
                     srv._DL['state'] = was
 
 
+class Test倒计时越用越准(unittest.TestCase):
+    r"""只转一份时，原来全程用写死的 26 秒/页，一动不动。
+
+    现在改成：开工前从这台机器的历史里学速度、估一次总时长，之后
+    **老实倒数中途不改**（小蔡定的）。准不准交给跨次积累。
+    """
+
+    def setUp(self):
+        self._runs = srv.maint.runs
+
+    def tearDown(self):
+        srv.maint.runs = self._runs
+
+    def _hist(self, rows):
+        srv.maint.runs = lambda limit=None: rows
+
+    def test_没有历史时用出厂值(self):
+        r"""出厂值取自 2026-09-06 干净环境那次实测：56 页 1814 秒。
+        估出来 1784 秒，误差 1.7%。"""
+        self._hist([])
+        total, w = srv._estimate([56])
+        self.assertLess(abs(total - 1814) / 1814.0, 0.05,
+                        '出厂值估出 %d 秒，跟实测 1814 秒差太多' % total)
+        self.assertAlmostEqual(w['pass1'] + w['pass2'] + w['other'], 1.0, places=3)
+
+    def test_权重跟实测对得上(self):
+        r"""实测两轮 13 分 17 秒 / 15 分 03 秒，约 44% / 51%，其余 5%。"""
+        self._hist([])
+        _t, w = srv._estimate([56])
+        self.assertAlmostEqual(w['pass1'], 0.44, delta=0.03)
+        self.assertAlmostEqual(w['pass2'], 0.51, delta=0.03)
+
+    def test_有历史就用学来的速度(self):
+        r"""这台机器比出厂值慢一倍，估出来的时间就该长一截。"""
+        self._hist([{'pages': 10, 'elements': 200,
+                     'pass1_sec': 284, 'pass2_sec': 328}] * 3)
+        total, _w = srv._estimate([10])
+        self.assertGreater(total, 500, '学到的慢速度没用上：%d' % total)
+
+    def test_缓存命中的那几份不进统计(self):
+        r"""🔴 秒回是没跑显卡，不是显卡快。混进去会把速度学成离谱的快，
+        之后所有估值全线崩坏。
+
+        ⚠️ **这条有两道防线，它只测到结果，测不出是哪道在起作用**：
+        `_learned_rates` 里的 `and a > 0` 是第一道，`_median` 里的
+        「过滤掉 0」是第二道。2026-09-06 变异测试确认：把第一道拆掉，
+        这条照样绿 —— 第二道兜住了。下面那条专门测第二道。
+        """
+        self._hist([{'pages': 23, 'elements': 0, 'pass1_sec': 0, 'pass2_sec': 0}] * 5)
+        total, _w = srv._estimate([56])
+        self.assertGreater(total, 1000, '被缓存记录带歪了：%d 秒' % total)
+
+    def test_算速度时零和负数一律不算数(self):
+        r"""缓存命中那几份的耗时是 0。中位数这一层必须自己把 0 挡掉，
+        不能指望调用方每次都记得过滤。"""
+        self.assertEqual(srv._median([0, 0, 0], 7.5), 7.5, '全是 0 时该退回兜底值')
+        self.assertEqual(srv._median([0, 4.0, 0], 7.5), 4.0, '0 混进来把中位数带歪了')
+        self.assertEqual(srv._median([], 7.5), 7.5)
+
+    def test_偶尔一次抢显卡的慢样本带不歪(self):
+        r"""🔴 用中位数不用平均数。一边转一边开别的软件那次会特别慢
+        （实测 >64 秒/页 vs 干净环境 32.4），平均数会被它拖歪。"""
+        normal = {'pages': 10, 'elements': 200, 'pass1_sec': 142, 'pass2_sec': 164}
+        slow = {'pages': 10, 'elements': 200, 'pass1_sec': 1420, 'pass2_sec': 1640}
+        self._hist([normal, normal, slow, normal, normal])
+        total, _w = srv._estimate([10])
+        self.assertLess(total, 500, '被那次慢的拖歪了：%d 秒' % total)
+
+    def test_估过就老实倒数不再重算(self):
+        r"""🔴 小蔡：「一开始是多少就老老实实的一点一点倒计时。」
+        边跑边改正是「转得越久说要等得越久」那个事故的土壤。"""
+        t = {'est_total': 1800, 'pages': [56], 'results': []}
+        self.assertEqual(srv._remain(t, elapsed=0), 1800)
+        self.assertEqual(srv._remain(t, elapsed=600), 1200)
+        self.assertEqual(srv._remain(t, elapsed=1800), 0)
+
+    def test_倒计时不会变成负数(self):
+        t = {'est_total': 100, 'pages': [10], 'results': []}
+        self.assertEqual(srv._remain(t, elapsed=99999), 0)
+
+    def test_估不出来时老算法还在(self):
+        r"""🔴 体检没拿到页数时走不到新路，老那套按已完成份数反推的算法
+        必须还在 —— 它守着「转得越久说要等得越久」那几条事故教训。"""
+        t = {'pages': [10, 20], 'results': [], 'sec_per_page': 26.0}
+        self.assertEqual(srv._remain(t, elapsed=0), int(30 * 26))
+
+
+
 if __name__ == '__main__':
     unittest.main()

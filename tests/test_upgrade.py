@@ -7,6 +7,7 @@ r"""依赖升级。
   · 装到一半断电 → **无条件回滚**，不判断坏没坏
   · 下载中断电 → 不算事，正常进主界面
 """
+import inspect
 import io
 import json
 import os
@@ -330,3 +331,39 @@ class Test超时对卡死的pip也要生效(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Test升级也要有进度条(unittest.TestCase):
+    r"""点「升级」要下 2.7 GB、几十分钟，界面上原来只有滚动日志，看不出
+    下到哪了 —— 而**第一次装 torch 那条路一直有进度条**，同一件事长成
+    了两个样。
+
+    根子在：download 的参数表里留着 on_progress 这个口子，却从声明之后
+    再没被用过，一路没往下传。
+    """
+
+    def test_要让pip吐机器可读的进度(self):
+        r"""🔴 用 `--progress-bar raw`（`Progress N of M` 两个纯数字），
+        不是默认那个给人看的格式 —— 后者宽度随终端变、单位随大小变，
+        解析要考虑一堆情况。装 torch 那条路早就这么做了。"""
+        src = inspect.getsource(upgrade.download)
+        self.assertIn("'--progress-bar', 'raw'", src)
+
+    def test_进度真的传下去了不是留着不用(self):
+        src = inspect.getsource(upgrade.download)
+        self.assertIn('on_progress=_pg', src, 'on_progress 又只是挂在签名上')
+        self.assertIn('ProgressAcc', src, '没用累加器，分母会随每个新包跳')
+
+    def test_分母不许是新写的估算常量(self):
+        r"""🔴「下完停在 92%」那次事故就是估算常量惹的：照着 pip 打印的
+        十进制 MB 当 MiB 换算，分母比真实大 8.8%。这里分子分母都取自
+        pip 自己吐的字节。"""
+        src = inspect.getsource(upgrade.download)
+        self.assertIn('floor=0', src, '给了个兜底常量，那就是在猜总量')
+
+    def test_进度行不进日志区(self):
+        r"""2.7 GB 会刷出几千行 Progress，不拦的话 Collecting /
+        Downloading 这些真正有用的行全被淹掉。"""
+        src = inspect.getsource(upgrade._pip)
+        self.assertIn('continue', src, '进度行没有被拦下来')
+        self.assertIn('parse_progress', src)

@@ -164,6 +164,39 @@ def where():
 # 界面显示的是「已下 X GB」这个真数，百分比只是个参考。
 TOTAL_BYTES = int(4.6 * 1024 * 1024 * 1024)
 
+# 🔴 上面那个 4.6 GB 是**猜的**（注释自己写着「估」），而分子是扫目录算的
+#    真实字节 —— 分子分母不同源，正是 v0.2.6 那个「装 torch 下完停在 92%」
+#    事故的形状。2026-09-06 实测：模型实际 4,923,616,015 字节，写死的分母
+#    4,939,212,390，进度条停在 99.7%，碰巧很准而已。模型哪天更新变大，
+#    进度条就会冲过 100%。
+#
+#    所以：**下完一次就把真实总量记下来，下次拿真值当分母。** 跟倒计时
+#    那套「越用越准」一个思路，不再多写一个估算常量。
+SIZE_FILE = os.path.join(paths.LOGS, 'models_size.json')
+
+
+def learned_total():
+    """分母。上次下完记下来的真实总量，没有就用出厂估值。"""
+    try:
+        d = json.load(io.open(SIZE_FILE, encoding='utf-8'))
+        n = int(d.get('bytes') or 0)
+        return n if n > 0 else TOTAL_BYTES
+    except Exception:
+        return TOTAL_BYTES
+
+
+def remember_total(n):
+    """把这次下完的真实总量记下来。**永不抛异常** —— 记账不能搞崩下载。"""
+    try:
+        if not n or n <= 0:
+            return False
+        paths.ensure(os.path.dirname(SIZE_FILE))
+        io.open(SIZE_FILE, 'w', encoding='utf-8').write(
+            json.dumps({'bytes': int(n)}, ensure_ascii=False))
+        return True
+    except Exception:
+        return False
+
 
 def download_cmd():
     r"""跑 MinerU 模型下载器的命令前缀。
@@ -301,7 +334,7 @@ def download(source='modelscope', on_progress=None, on_log=None,
                         except OSError:
                             pass
                 if on_progress:
-                    on_progress(got, TOTAL_BYTES)
+                    on_progress(got, learned_total())
             except Exception:
                 pass
             stop_watch.wait(1.0)
@@ -384,4 +417,6 @@ def download(source='modelscope', on_progress=None, on_log=None,
     if not ready():
         return False, ('下载结束了，但没找到可用的模型文件。完整日志：%s'
                        % log_file)
+    # 下完了，把真实总量记下来 —— 下次的进度条分母就不用猜了。
+    remember_total(paths.models_size())
     return True, ''

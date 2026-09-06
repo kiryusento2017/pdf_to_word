@@ -88,12 +88,15 @@ claim('判 MinerU 在不在用 find_spec，不是查文件',
 print()
 print('GPU 运行库')
 import torchdep
-claim('驱动 ≥570 → cu128（README 那张表）',
-      torchdep.pick_channel('572.83')[0] == 'cu128')
-claim('驱动 ≥525 → cu126',
-      torchdep.pick_channel('531.41')[0] == 'cu126')
-claim('其余 / 读不到 → cu118',
-      torchdep.pick_channel('470.05')[0] == 'cu118'
+# 🔴 **每条都显式传 cap**，不让结果取决于跑这个脚本的机器上插着什么卡。
+claim('40 系（8.9）配新驱动 → cu126，不是停更的 cu128',
+      torchdep.pick_channel('572.83', cap=8.9)[0] == 'cu126')
+claim('1080Ti（6.1）配新驱动也走 cu126 —— cu128 里没有它的机器码',
+      torchdep.pick_channel('572.83', cap=6.1)[0] == 'cu126')
+claim('驱动够 13.x 且是新卡 → cu132',
+      torchdep.pick_channel('580.10', cap=12.0)[0] == 'cu132')
+claim('老驱动 / 读不到 → cu118',
+      torchdep.pick_channel('470.05', cap=6.1)[0] == 'cu118'
       and torchdep.pick_channel('')[0] == 'cu118')
 claim('装完会真 import 一次（README：「装完还会真的 import 一次」）',
       'can_load()' in read('pipeline/torchdep.py'))

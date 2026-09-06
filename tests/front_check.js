@@ -1855,6 +1855,211 @@ console.log('\n清理按钮的防护：');
 }
 
 
+console.log('\n总进度条：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const W = { pass1: 0.44, pass2: 0.51, other: 0.05 };
+  const mk = (over) => {
+    const st = ready(sb);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 56, scan_pages: [] }];
+    st.task = Object.assign({
+      state: 'running', total: 1, current: 0, current_name: 'a.pdf',
+      stage: '逐页识别', stage_cur: 0, stage_total: 56,
+      results: [], elapsed: 10, remain: 1800, weights: W,
+    }, over || {});
+    return st;
+  };
+  // 顶上那条是渲染出的第一个 <i style="width:N%">
+  const pct = (st) => {
+    const h = fn(st);
+    const m = h.match(/<div class="bar"><i style="width:(\d+)%/);
+    if (!m) throw new Error('没找到进度条');
+    return parseInt(m[1], 10);
+  };
+
+  ck('逐页识别到一半，总进度约等于第一轮权重的一半', () => {
+    const got = pct(mk({ stage_cur: 28 }));
+    if (Math.abs(got - 22) > 3) throw new Error('期望约 22%，实际 ' + got + '%');
+  });
+
+  ck('第二轮刚开始，总进度约等于第一轮权重', () => {
+    const got = pct(mk({ stage: '识别公式和文字', stage_cur: 0, stage_total: 1100 }));
+    if (Math.abs(got - 44) > 3) throw new Error('期望约 44%，实际 ' + got + '%');
+  });
+
+  ck('换阶段时不会清零重来', () => {
+    // 🔴 这条钉的是原来那个 bug：进度条算的是「当前阶段」的比例，
+    //    一份文件跑六七个阶段，于是涨满又清零六次。
+    const st = mk({ stage_cur: 56 });        // 第一轮跑满
+    const a = pct(st);
+    st.task = Object.assign({}, st.task,
+      { stage: '识别公式和文字', stage_cur: 1, stage_total: 1100 });
+    const b = pct(st);
+    if (b < a) throw new Error('换阶段后倒退了：' + a + '% → ' + b + '%');
+  });
+
+  ck('只准涨不准退', () => {
+    const st = mk({ stage_cur: 40 });
+    const a = pct(st);
+    st.task = Object.assign({}, st.task, { stage_cur: 5 });   // 源头报了个更小的
+    const b = pct(st);
+    if (b < a) throw new Error('倒退了：' + a + '% → ' + b + '%');
+  });
+
+  ck('转完之前最多 99%', () => {
+    const st = mk({ stage: '识别公式和文字', stage_cur: 1100, stage_total: 1100 });
+    const got = pct(st);
+    if (got > 99) throw new Error('还没转完就 ' + got + '%');
+  });
+
+  ck('拿不到权重时用实测的兜底', () => {
+    const st = mk({ stage_cur: 28 });
+    delete st.task.weights;
+    const got = pct(st);
+    if (Math.abs(got - 22) > 3) throw new Error('兜底不对，实际 ' + got + '%');
+  });
+}
+
+
+
+console.log('\n步骤名和步骤清单：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const mk = (over, openStage) => {
+    const st = ready(sb);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 56, scan_pages: [] },
+                { path: 'C:\b.pdf', ok: true, pages: 20, scan_pages: [] }];
+    if (openStage !== undefined) st.openStage = openStage;
+    st.task = Object.assign({
+      state: 'running', total: 2, current: 0, current_name: 'a.pdf',
+      stage: '逐页识别', stage_cur: 23, stage_total: 56,
+      stages: ['分析版面', '准备版面', '逐页识别'],
+      results: [], elapsed: 60, remain: 900,
+      weights: { pass1: 0.44, pass2: 0.51, other: 0.05 },
+    }, over || {});
+    return st;
+  };
+
+  ck('逐页识别带「页」这个单位', () => {
+    const h = fn(mk());
+    if (!h.includes('逐页识别 23/56 页')) throw new Error('没写成「23/56 页」');
+  });
+
+  ck('识别公式和文字带「项」这个单位', () => {
+    const h = fn(mk({ stage: '识别公式和文字', stage_cur: 544, stage_total: 1100 }));
+    if (!h.includes('识别公式和文字 544/1100 项')) throw new Error('没写成「544/1100 项」');
+  });
+
+  ck('其余阶段仍然不显示数字', () => {
+    // 🔴 2026-09-02 的教训：MinerU 换阶段时单位会变（5/11 页 → 5/247 块），
+    //    用户看到数字跳变以为出 bug。只有说得清单位的那两轮才放开。
+    const h = fn(mk({ stage: '分析版面', stage_cur: 5, stage_total: 11 }));
+    if (h.includes('5/11')) throw new Error('把 5/11 显示出来了');
+    if (!h.includes('分析版面')) throw new Error('阶段名也没了');
+  });
+
+  ck('默认不展开步骤清单', () => {
+    const h = fn(mk());
+    if (h.includes('✓ 分析版面')) throw new Error('没点就展开了');
+  });
+
+  ck('展开后列出真的走过的那几步', () => {
+    const h = fn(mk({}, 0));
+    if (!h.includes('✓ 分析版面')) throw new Error('做完的没打勾');
+    if (!h.includes('▶ 逐页识别')) throw new Error('正在做的没给箭头');
+    if (h.includes('识别表格')) throw new Error('把没走过的步骤也摆出来了');
+  });
+
+  ck('正在转的那行能点开', () => {
+    const h = fn(mk());
+    if (!h.includes('data-act="toggleStages"')) throw new Error('点不开');
+  });
+
+  ck('还没轮到的那行点不开', () => {
+    const h = fn(mk());
+    const n = (h.match(/data-act="toggleStages"/g) || []).length;
+    if (n !== 1) throw new Error('可点开的行有 ' + n + ' 个，只该有正在转的那一个');
+  });
+
+  ck('转完的那行也能点开', () => {
+    const st = mk({
+      state: 'done', current: 2,
+      results: [{ ok: true, pdf: 'C:\a.pdf', docx: 'C:\a.docx', line: '公式 3',
+                  stages: ['分析版面', '逐页识别', '识别公式和文字'] }],
+    }, 0);
+    const h = fn(st);
+    if (!h.includes('data-act="toggleStages"')) throw new Error('转完就点不开了');
+    if (!h.includes('✓ 识别公式和文字')) throw new Error('展开后看不到走过的步骤');
+  });
+}
+
+
+
+console.log('\n转换报告：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const mk = (results, over) => {
+    const st = ready(sb);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 56, scan_pages: [] }];
+    Object.assign(st, over || {});
+    st.task = { state: 'done', total: results.length, current: results.length,
+                elapsed: 1814, remain: 0, results: results };
+    return st;
+  };
+  const OK = { ok: true, pdf: 'C:\a.pdf', docx: 'C:\a.docx', pages: 56,
+               formulas: 613, formulas_xsl: 613, tables: 18, images: 132,
+               scan_pages: [], details_dropped: 0, line: '公式 613' };
+
+  ck('全都干净就不出现「看报告」', () => {
+    // 🔴 小蔡：「要是全都转换成功，为什么要报告呢」
+    const h = fn(mk([OK]));
+    if (h.includes('看报告')) throw new Error('没毛病也摆了个报告按钮');
+  });
+
+  ck('有公式没转成就出现', () => {
+    const h = fn(mk([Object.assign({}, OK, { formulas_xsl: 610 })]));
+    if (!h.includes('看报告')) throw new Error('有公式没转成却不给报告');
+  });
+
+  ck('有页没文字层就出现', () => {
+    const h = fn(mk([Object.assign({}, OK, { scan_pages: [3, 7] })]));
+    if (!h.includes('看报告')) throw new Error('有扫描页却不给报告');
+  });
+
+  ck('图里的文字被拦下也要出现', () => {
+    const h = fn(mk([Object.assign({}, OK, { details_dropped: 54 })]));
+    if (!h.includes('看报告')) throw new Error('删了 54 处却不提');
+  });
+
+  ck('转失败了当然要出现', () => {
+    const h = fn(mk([{ ok: false, pdf: 'C:\a.pdf', error: '显卡不够' }]));
+    if (!h.includes('看报告')) throw new Error('失败了不给报告');
+  });
+
+  ck('报告里该说的都说了', () => {
+    const st = mk([Object.assign({}, OK, {
+      formulas_xsl: 610, scan_pages: [3, 7], details_dropped: 54,
+      math_note: '第 42 个没转成' })], { showReport: true });
+    const h = fn(st);
+    if (!h.includes('3 个公式没转成')) throw new Error('没说公式');
+    if (!h.includes('第 3、7 页没有文字层')) throw new Error('没说扫描页');
+    if (!h.includes('54 处没有放进正文')) throw new Error('没说图里的文字');
+    if (!h.includes('没列出来的不代表一定对')) throw new Error('少了那句免责');
+    if (!h.includes('不会存成文件')) throw new Error('没说清不落盘');
+  });
+
+  ck('报告能复制', () => {
+    const st = mk([Object.assign({}, OK, { scan_pages: [3] })], { showReport: true });
+    const h = fn(st);
+    if (!h.includes('data-act="copyReport"')) throw new Error('没有复制按钮');
+  });
+}
+
+
+
 // 🔴 **这个判断必须待在文件最末尾。** 它原来在中间（跑完前 115 条
 //    就 exit），后面还有三个测试块 —— 那 15 条失败了退出码照样是 0，
 //    末尾那句「前端全部通过」也照常打印。发版门禁认的就是这句话，

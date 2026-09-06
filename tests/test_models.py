@@ -310,3 +310,44 @@ class Test绝不碰用户的全局配置(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Test下模型的进度条分母(unittest.TestCase):
+    r"""分子是扫目录算的真实字节，分母原来是**写死的** 4.6 GB —— 分子分母
+    不同源，正是 v0.2.6 那个「装 torch 下完停在 92%」事故的形状。
+
+    2026-09-06 实测：模型实际 4,923,616,015 字节，写死的分母 4,939,212,390，
+    进度条停在 99.7%，碰巧很准而已。模型更新变大就会冲过 100%。
+    """
+
+    def setUp(self):
+        self._f = models.SIZE_FILE
+        self._w = tempfile.mkdtemp(prefix='p2w_sz_')
+        models.SIZE_FILE = os.path.join(self._w, 'models_size.json')
+
+    def tearDown(self):
+        models.SIZE_FILE = self._f
+        shutil.rmtree(self._w, ignore_errors=True)
+
+    def test_没记录过就用出厂估值(self):
+        self.assertEqual(models.learned_total(), models.TOTAL_BYTES)
+
+    def test_记过一次之后用真值(self):
+        models.remember_total(4923616015)
+        self.assertEqual(models.learned_total(), 4923616015)
+
+    def test_文件坏了退回出厂估值(self):
+        io.open(models.SIZE_FILE, 'w', encoding='utf-8').write('{不是合法 JSON')
+        self.assertEqual(models.learned_total(), models.TOTAL_BYTES)
+
+    def test_记零或负数不算数(self):
+        models.remember_total(4923616015)
+        models.remember_total(0)
+        self.assertEqual(models.learned_total(), 4923616015, '被 0 冲掉了')
+
+    def test_写不进去也不能抛异常(self):
+        models.SIZE_FILE = os.path.join(self._w, '不存在', '深', 'x.json')
+        try:
+            models.remember_total(123)
+        except Exception as e:
+            self.fail('记账把下载搞崩了：%s' % e)

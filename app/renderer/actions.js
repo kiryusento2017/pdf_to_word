@@ -321,6 +321,7 @@
         render();
         stopPolling();
         // 一秒一问。转换本身以分钟计，问得再勤也只是多耗电。
+        st.progMax = 0;      // 新一批开始，总进度从头算
         poller = setInterval(poll, 1000);
         poll();
       }).catch(function (e) {
@@ -572,6 +573,16 @@
     // 🔴 **必须能看到明细。** 缓存是按 Windows 用户共用的，里面混着
     //    别的程序下的包（实测扫出过 pyside6、torch+cpu 那些）。
     //    只给一个总数加清理按钮的话，用户一点就误伤别人。
+    // 点文件那一行，展开/收起它走过的步骤清单。
+    // 🔴 只有**正在转的**和**已经转完的**能点开 —— 还没轮到的那几份
+    //    一步都没走过，摆一张空清单没有意义。这个限制在 pages.js 里
+    //    体现为：只有那两种行才带 data-act。
+    toggleStages: function (arg) {
+      var i = parseInt(arg, 10);
+      st.openStage = (st.openStage === i) ? null : i;
+      render();
+    },
+
     toggleCache: function () {
       st.cacheOpen = !st.cacheOpen;
       render();
@@ -603,6 +614,34 @@
     },
 
     // 把诊断信息复制到剪贴板。老师微信发过来，能省十几轮问答。
+    // 转完之后看报告。**不落盘**，只在这儿看和复制。
+    toggleReport: function () {
+      st.showReport = !st.showReport;
+      render();
+    },
+
+    // 复制报告。跟 copyDiag 同一套写法（新剪贴板 API 不行就退回
+    // textarea + execCommand），只是文本换成报告那份。
+    copyReport: function () {
+      var text = st.reportText || '';
+      if (!text) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text);
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        st.copied = true;
+        render();
+        setTimeout(function () { st.copied = false; render(); }, 2000);
+      } catch (e) { /* 复制失败就算了，文本还在屏幕上 */ }
+    },
+
     copyDiag: function () {
       var text = st.diagText || '';
       if (!text) return;

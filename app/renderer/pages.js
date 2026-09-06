@@ -20,6 +20,113 @@ function bar(cur, total) {
   return '<div class="bar"><i style="width:' + pct + '%"></i></div>';
 }
 
+// 顶上那条总进度。**按七个步骤各占多少时间算，不是「当前这步完成了多少」。**
+//
+// 🔴 原来写的是 `t.current + stage_cur/stage_total` —— 后面那项算的是
+//    **当前阶段**的比例，而 MinerU 一份文件要跑六七个阶段、每个都从 0
+//    涨到 1，于是这条进度条在一份文件里涨满又清零六次，像抽风。
+//
+// 权重由后端开工时按这份文件现算（见 main.py 的 _estimate）：公式密集的
+// 讲义第二轮占得多，纯文字的第一轮占得多，所以每份都不一样。拿不到就用
+// 实测的 44 / 51 / 5 兜底。
+//
+// 🔴 **只准涨不准退**，而且真转完之前最多 99% —— 项目里记着一条教训：
+//    「进度条倒退比没有进度条还糟」。
+function convProgress(st, t) {
+  var total = Math.max(t.total || 1, 1);
+  var w = t.weights || { pass1: 0.44, pass2: 0.51, other: 0.05 };
+  var r = t.stage_total ? (t.stage_cur || 0) / t.stage_total : 0;
+  var inner = 0;
+  if (t.stage === '逐页识别') inner = w.pass1 * r;
+  else if (t.stage === '识别公式和文字') inner = w.pass1 + w.pass2 * r;
+  var val = ((t.current || 0) + inner) / total;
+  if (val > 0.99) val = 0.99;
+  if (!(st.progMax > 0) || val > st.progMax) st.progMax = val;
+  return st.progMax;
+}
+
+// 阶段名后面带不带 x/y。
+//
+// 🔴 2026-09-02 定过**不显示阶段内的 x/y**：MinerU 换阶段时单位会变
+//    （先按页 0→11，下一个阶段按文本块 0→247），用户看到数字跳变以为出
+//    bug —— 小蔡当时原话「刚刚文件本来是 5/11，现在是 5/247，我无语了」。
+//
+// 🔴 2026-09-06 **有条件地放开**：只有那两轮带数字，因为现在名字里就写着
+//    单位 ——「逐页识别 23/56 页」「识别公式和文字 544/1100 项」，看得懂
+//    它在数什么，不会再跳得莫名其妙。**其余阶段照旧只给名字**，那条教训
+//    仍然生效。
+function stageText(t) {
+  var s = t.stage || '准备中';
+  if (!t.stage_total) return s;
+  if (s === '逐页识别') return s + ' ' + (t.stage_cur || 0) + '/' + t.stage_total + ' 页';
+  if (s === '识别公式和文字') return s + ' ' + (t.stage_cur || 0) + '/' + t.stage_total + ' 项';
+  return s;
+}
+
+// 展开之后那张步骤清单。做完的打勾，正在做的一个箭头。
+// **只列真的走过的步骤**，不摆一张写死的七步表 —— 走没走过是事实，
+// 摆出来的没走过的步骤就是编的。
+function stageList(names, running) {
+  if (!names || !names.length) return '';
+  return '<div style="padding:2px 0 4px 22px;font-size:11px">'
+    + names.map(function (n, i) {
+      var last = i === names.length - 1;
+      var mark = (last && running) ? '▶' : '✓';
+      return '<div class="' + (last && running ? '' : 'f-dim') + '">'
+        + mark + ' ' + esc(n) + '</div>';
+    }).join('') + '</div>';
+}
+
+// 这一批有没有值得看的东西。**全都干干净净就不给报告按钮** ——
+// 小蔡：「要是全都转换成功，为什么要报告呢」。
+function worthReport(t) {
+  return (t.results || []).some(function (r) {
+    return !r.ok || (r.scan_pages || []).length
+      || ((r.formulas || 0) - (r.formulas_xsl || 0)) > 0
+      || (r.details_dropped || 0) > 0;
+  });
+}
+
+// 转换报告的正文。**不落盘**，只在界面上看和复制。
+//
+// 🔴 开头那句话是硬性的：`probe.py` 记着一条实测教训 —— 界面上故意不显示
+//    「文字版 / 扫描版」这类质量暗示，因为「那会让人以为标了文字版就不用
+//    校对」。有文字层的页照样有错字，而且那错字在原 PDF 里就是错的。
+function reportText(st, t) {
+  var L = [];
+  L.push('转换报告');
+  L.push('列出来的是最可能出问题的地方，没列出来的不代表一定对。');
+  L.push('');
+  (t.results || []).forEach(function (r) {
+    var name = F.base(r.pdf || r.docx || '');
+    L.push(name + (r.ok ? '' : '   ✗ 失败'));
+    if (!r.ok) {
+      L.push('    ' + (r.error || '没说原因'));
+    } else {
+      L.push('    ' + [(r.pages || 0) + ' 页',
+                       '公式 ' + (r.formulas_xsl || 0) + '/' + (r.formulas || 0),
+                       '表 ' + (r.tables || 0),
+                       '图 ' + (r.images || 0)].join(' · '));
+      var miss = (r.formulas || 0) - (r.formulas_xsl || 0);
+      if (miss > 0) L.push('    有 ' + miss + ' 个公式没转成' +
+                           (r.math_note ? '：' + r.math_note : ''));
+      var sp = r.scan_pages || [];
+      if (sp.length) {
+        L.push('    第 ' + sp.slice(0, 12).join('、') + ' 页没有文字层'
+          + (sp.length > 12 ? ' 等 ' + sp.length + ' 页' : '')
+          + '（整页当图片认的，这几页最该核对）');
+      }
+      if (r.details_dropped) {
+        L.push('    图里的文字有 ' + r.details_dropped + ' 处没有放进正文'
+          + '（它们本来就印在图上，Word 里那张图还在）');
+      }
+      L.push('    存到：' + (r.docx || ''));
+    }
+    L.push('');
+  });
+  return L.join(chr10());
+}
+
 function chr10() { return String.fromCharCode(10); }
 
 function dot(color) {
@@ -802,8 +909,17 @@ function upgradeBox(st) {
   var d2 = st.upgDl;
   if (d2) {
     if (d2.state === 'running') {
+      // 🔴 装 torch 那条路一直有进度条，升级这条以前只有滚动日志 ——
+      //    同一件事长成两个样。现在两边都用 pip 自己吐的真实字节。
       dl = '<div class="f-dim" style="font-size:11px">正在后台下载，'
-        + '这期间可以照常转 PDF</div>';
+        + '这期间可以照常转 PDF</div>'
+        + (d2.total > 0
+            ? '<div style="display:flex;gap:6px;align-items:center;'
+              + 'font-size:11px;margin-top:2px">'
+              + '<span class="grow">' + bar(d2.got || 0, d2.total) + '</span>'
+              + '<span class="f-dim" style="white-space:nowrap">'
+              + F.gb(d2.got || 0) + ' / ' + F.gb(d2.total) + '</span></div>'
+            : '');
     } else if (d2.ok) {
       dl = '<div class="f-dim" style="font-size:11px">下载完成 —— '
         + '重启之后才会真正安装</div>';
@@ -1157,7 +1273,7 @@ function mainRun(st) {
     top = '<span style="font-size:13px;font-weight:600;color:var(--theme);'
       + 'white-space:nowrap">' + esc(eta) + '</span>'
       + '<span class="grow" style="padding:0 4px">'
-      + bar(t.current + (t.stage_total ? t.stage_cur / t.stage_total : 0), t.total)
+      + bar(convProgress(st, t), 1)
       + '</span>'
       + (t.total > 1 ? '<span class="f-dim" style="white-space:nowrap">第 '
           + (t.current + 1) + ' / ' + t.total + ' 份</span>' : '');
@@ -1172,6 +1288,8 @@ function mainRun(st) {
       + (t.state === 'cancelled' ? '已停止'
          : (fast ? '你的 GPU 真牛逼' : '转换完成')) + '</span>'
       + '<span class="grow"></span>'
+      + (worthReport(t) ? btn('toggleReport',
+          st.showReport ? '返回列表' : '看报告') : '')
       + btn('newBatch', '再转一批', { cls: 'primary' });
   }
 
@@ -1188,7 +1306,8 @@ function mainRun(st) {
     if (r && r.ok) {
       // 悬停能看到具体是第几个公式没转成 —— math_note 里写着，
       // 以前那个字段没有任何地方读，等于白写。
-      return '<div class="it" title="' + esc(r.docx
+      return '<div class="it" data-act="toggleStages" data-arg="'
+        + i + '" title="' + esc(r.docx
                + (r.math_note ? (chr10() + r.math_note) : '')) + '">'
         + dot('#15803d')
         + '<span class="grow ell">' + esc(F.base(r.docx)) + '</span>'
@@ -1199,10 +1318,12 @@ function mainRun(st) {
             + esc(r.line) + '</span>' : '')
         + btn('openFile', '打开', { cls: 'link', arg: r.docx })
         + btn('openPath', '文件夹', { cls: 'link', arg: r.docx })
-        + '</div>';
+        + '</div>'
+        + (st.openStage === i ? stageList(r.stages, false) : '');
     }
     if (r && !r.ok) {
-      return '<div class="it" title="' + esc(r.error || '') + '">'
+      return '<div class="it" data-act="toggleStages" data-arg="'
+        + i + '" title="' + esc(r.error || '') + '">'
         + dot('#b91c1c')
         + '<span class="grow ell f-dim">' + esc(name) + '</span>'
         + '<span class="rt f-bad ell" style="max-width:200px">失败：'
@@ -1212,12 +1333,14 @@ function mainRun(st) {
         + (r.degraded
             ? btn('openFile', '打开次品', { cls: 'link', arg: r.degraded })
               + btn('openPath', '文件夹', { cls: 'link', arg: r.degraded })
-            : '') + '</div>';
+            : '') + '</div>'
+        // 走到哪一步失败的 —— 这正是最该看的
+        + (st.openStage === i ? stageList(r.stages, false) : '');
     }
     // 还没轮到 / 正在转。current 是已完成的份数，所以它就是当前这份的下标。
     var cur = !done && i === t.current;
     if (cur) {
-      return '<div class="it on">' + dot('#1d4ed8')
+      return '<div class="it on" data-act="toggleStages" data-arg="' + i + '">' + dot('#1d4ed8')
         + '<span class="grow ell">' + esc(name) + '</span>'
         // 🔴 `cur > 0` 才显示数字和小进度条。
         //    MinerU 有些阶段（「准备版面」这类）根本不吐中间进度，
@@ -1237,10 +1360,11 @@ function mainRun(st) {
         //    同一个东西绊了他两次。数字本身没错，是它压根不该给用户看：
         //    单位在变、有些阶段不吐中间值，而用户真正要的是「还要多久」，
         //    那个数在顶上单独显示。
-        + '<span class="rt">' + esc(t.stage || '准备中') + '</span>'
+        + '<span class="rt">' + esc(stageText(t)) + '</span>'
         + '<span style="width:56px;flex:none">'
         + (t.stage_cur > 0 ? bar(t.stage_cur, t.stage_total || 1) : '')
-        + '</span></div>';
+        + '</span></div>'
+        + (st.openStage === i ? stageList(t.stages, true) : '');
     }
     return '<div class="it">' + dot('#d0d0d0')
       + '<span class="grow ell f-dim">' + esc(name) + '</span>'
@@ -1268,6 +1392,16 @@ function mainRun(st) {
   // 🔴 日志覆盖主区，但顶部（剩余时间 + 总进度条）留着。
   //    620x440 太小，日志和文件表分屏的话两边都看不清；而整体进度
   //    在顶上，看日志的时候不会「不知道跑到哪了」。
+  if (st.showReport && done) {
+    st.reportText = reportText(st, t);
+    var rmain = '<div class="fill" style="justify-content:flex-start;gap:6px">'
+      + '<div class="log"><span class="l">'
+      + esc(st.reportText).split(chr10()).join('</span><span class="l">')
+      + '</span></div></div>';
+    return shell(top, rmain,
+      botBar(st, '<span class="f-dim">这份报告只在这儿看，不会存成文件</span>'
+        + btn('copyReport', st.copied ? '已复制' : '复制'), true));
+  }
   if (st.showLog) {
     var lg = t.lines || [];
     var main = '<div class="fill" style="justify-content:flex-start;gap:6px">'

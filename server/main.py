@@ -692,6 +692,84 @@ def _sec_per_page():
     return SEC_PER_PAGE_GPU
 
 
+# ── 倒计时：开工估一次，之后老实倒数 ──────────────────────────────────
+#
+# 小蔡 2026-09-06 定：「一开始是多少就老老实实的一点一点倒计时，不用根据
+# 真实进度调整，不准就不准。」准不准交给**跨次积累** —— 每转完一份把真实
+# 数据记进历史，下次估得更准；而不是在这一次里边跑边改。
+#
+# 出厂值是 2026-09-06 那次干净环境实测拆出来的（56 页 ok.pdf，1814 秒，
+# 613 个公式 / 1100 个元素；第一轮 13 分 17 秒、第二轮 15 分 03 秒）：
+#
+#     每页 14.2 秒  +  每页 19.6 个元素 x 每个元素 0.82 秒  ≈ 30.3 秒/页
+#
+# 跟那次的整体 32.4 秒/页对得上。比原来写死的 26.0 准（那个偏低 25%）。
+PASS1_SEC_PER_PAGE = 14.2      # 逐页识别：每页几秒
+PASS2_SEC_PER_ELEM = 0.82      # 识别公式和文字：每个元素几秒
+ELEMS_PER_PAGE = 19.6          # 一页大概有多少个元素（开转之前不知道，只能靠历史）
+OTHER_SHARE = 0.05             # 其余几个小阶段 + 出 Word，实测占 5%
+LEARN_FROM = 60                # 只看最近这么多条历史
+
+
+def _median(xs, fallback):
+    """中位数。空的就用兜底值。
+
+    🔴 **用中位数不用平均数** —— 一边转一边开别的软件抢显卡的那几次会
+    特别慢（实测 >64 秒/页，而干净环境 32.4），平均数会被那几次拖歪，
+    中位数不受影响。
+    """
+    xs = sorted(x for x in xs if x and x > 0)
+    if not xs:
+        return fallback
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2.0
+
+
+def _learned_rates():
+    """从历史里学这台机器的速度。返回 (每页秒, 每元素秒, 每页元素数)。
+
+    🔴 **只认真跑过 GPU 的记录。** 缓存命中那几份 `pass1_sec` / `pass2_sec`
+    都是 0，混进去会把速度学成离谱的快（秒回是没跑显卡，不是显卡快）。
+    """
+    try:
+        rows = maint.runs(LEARN_FROM)
+    except Exception:
+        rows = []
+    p1, p2, ep = [], [], []
+    for r in rows:
+        pages = r.get('pages') or 0
+        elems = r.get('elements') or 0
+        a = r.get('pass1_sec') or 0
+        b = r.get('pass2_sec') or 0
+        if pages > 0 and a > 0:
+            p1.append(a / float(pages))
+        if pages > 0 and elems > 0:
+            ep.append(elems / float(pages))
+        if elems > 0 and b > 0:
+            p2.append(b / float(elems))
+    return (_median(p1, PASS1_SEC_PER_PAGE),
+            _median(p2, PASS2_SEC_PER_ELEM),
+            _median(ep, ELEMS_PER_PAGE))
+
+
+def _estimate(pages_list):
+    """开工时估一次。返回 (总秒数, 权重字典)。页数不明就返回 (0, 默认权重)。
+
+    权重给顶上那条进度条用：做完的阶段把权重整个加上，正在做的那步按它
+    自己的 x/y 折算。**每份文件的权重都不一样** —— 公式密集的讲义第二轮
+    自然占得多，这正好绕开「写死 65/30 一定不准」那个死结。
+    """
+    spp1, spe2, epp = _learned_rates()
+    per_page = spp1 + epp * spe2
+    total_pages = sum(pages_list or [])
+    core = total_pages * per_page
+    total = core / (1.0 - OTHER_SHARE) if core > 0 else 0
+    w1 = (spp1 / per_page) * (1.0 - OTHER_SHARE) if per_page > 0 else 0.44
+    return int(total), {'pass1': round(w1, 4),
+                        'pass2': round(1.0 - OTHER_SHARE - w1, 4),
+                        'other': OTHER_SHARE}
+
+
 # ── 转换 ────────────────────────────────────────────────────────────────
 class ConvertReq(BaseModel):
     paths: list[str]
@@ -742,11 +820,15 @@ def _work_inner(task_id, pdf_paths, out_dir, prefer_xsl, source=''):
             t['stage'] = '准备'
             t['stage_cur'] = 0
             t['stage_total'] = 0
+            t['stages'] = []      # 换一份就重新记
 
         def on_prog(stage, cur, tot, _tid=task_id):
             with _LOCK:
                 s = _TASKS[_tid]
                 s['stage'], s['stage_cur'], s['stage_total'] = stage, cur, tot
+                # 走过哪几步，按出现顺序，重复的不再记。
+                if stage and (not s['stages'] or s['stages'][-1] != stage):
+                    s['stages'].append(stage)
 
         def stopped(_tid=task_id):
             with _LOCK:
@@ -884,6 +966,7 @@ def start_convert(req: ConvertReq):
         r = probe.probe_pdf(p)
         pages.append(r['pages'] if r['ok'] and r['pages'] else 10)
     with _LOCK:
+        _est, _w = _estimate(pages)
         _TASKS[tid] = {'state': 'running', 'total': len(req.paths), 'current': 0,
                        'current_name': '', 'stage': '', 'stage_cur': 0,
                        'stage_total': 0, 'results': [], 'cancel': False,
@@ -895,7 +978,11 @@ def start_convert(req: ConvertReq):
                        'real_elapsed': 0.0, 'real_pages': 0,
                        # MinerU 最新的那条 tqdm 原样存着，钉在
                        # 日志区最后一行原地刷新（见 on_conv_log）。
-                       'progress_line': ''}
+                       'progress_line': '',
+                       # 开工估一次，之后老实倒数（见 _remain）。weights 给
+                       # 顶上那条进度条按阶段折算用 —— 每份文件都不一样。
+                       'est_total': _est, 'weights': _w,
+                       'stages': []}
     threading.Thread(target=_work, daemon=True,
                      args=(tid, req.paths, req.out_dir, req.prefer_xsl,
                            req.source)).start()
@@ -927,6 +1014,14 @@ def _remain(t, elapsed):
        （done_pages * (elapsed/done_pages) 就是 elapsed），
        「扣掉当前这份已跑时间」整段逻辑是死的。
     """
+    # 🔴 **开工时估过就老实倒数，中途不重算**（小蔡 2026-09-06 定）。
+    #    边跑边改正是下面那个「转得越久说要等得越久」事故的土壤。
+    #    估不出总时长时（体检没拿到页数）才走下面那套按已完成份数反推的
+    #    老算法 —— 它守着的那几条事故教训因此还在。
+    est = t.get('est_total')
+    if est:
+        return max(int(est - elapsed), 0)
+
     pages = t.get('pages') or []
     if not pages:
         return None
@@ -1112,16 +1207,24 @@ def upgrade_download(req: UpgradeReq):
             return JSONResponse({'detail': '已经在下了'}, status_code=409)
         _UPG.clear()
         _UPG.update({'state': 'running', 'lines': [], 'error': '',
+                     # 下了多少 / 一共多少。**两个数都来自 pip 自己吐的
+                     # 字节**，不是估的（见 upgrade.download 的注释）。
+                     'got': 0, 'total': 0,
                      'picked': req.picked})
 
     def work():
+        def on_prog(got, total):
+            with _LOCK:
+                _UPG['got'], _UPG['total'] = got, total
+
         def on_log(line):
             with _LOCK:
                 _UPG['lines'].append(line[-300:])
                 if len(_UPG['lines']) > 400:
                     del _UPG['lines'][0:len(_UPG['lines']) - 400]
         try:
-            r = upgrade.download(req.picked, req.targets, on_log=on_log)
+            r = upgrade.download(req.picked, req.targets,
+                                 on_log=on_log, on_progress=on_prog)
         except Exception as e:
             r = {'ok': False, 'error': '%s: %s' % (type(e).__name__, e)}
         with _LOCK:

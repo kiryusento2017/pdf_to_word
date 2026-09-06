@@ -30,6 +30,9 @@ var state = {
   err: '',
   port: 0,
   // 首次使用那一屏：源清单、选中的源、下载进度
+  showReport: false,    // 转完之后在看报告
+  reportText: '',       // 报告正文，只在内存里，不落盘
+  openStage: null,      // 展开了哪一行的步骤清单，null = 都收着
   upd: null,            // 检查更新的结果：null=没查过
   updBusy: false,       // 正在查 / 正在下
   updLinesOpen: false,  // 线路表展开了没（默认折叠，只占一行）

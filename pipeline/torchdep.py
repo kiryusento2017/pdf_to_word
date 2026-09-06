@@ -87,7 +87,23 @@ TORCH_SOURCES = [
 
 # 测速拿哪个文件当探针。要用**真的要下的那个大文件** —— 拿几 KB 的索引页
 # 测出来的是延迟不是带宽，这个坑在模型源那边栽过（界面显示「约 44 小时」）。
-PROBE_WHEEL = 'torch-2.9.1%2Bcu128-cp312-cp312-win_amd64.whl'
+#
+# 🔴 **每条通道各配一个，不能写死一个 cu128 的文件名。** 那样一换通道
+#    URL 就必然打不开（实测 `cu126/torch-2.9.1+cu128-...whl` 返回 403），
+#    而 `pick_source` 是 try/except pass —— **静默**退回官方源，用户看不到
+#    任何报错，只是下载变慢，极难查。
+#
+# ⚠️ 版本号是快照。PyTorch 不删历史 wheel，所以就算过期，最坏也只是
+#    测速失效退回官方源，不影响能不能装上。加新通道时**必须同时补这里**，
+#    test_torchdep 有一条钉着这件事。
+PROBE_WHEELS = {
+    'cu118': 'torch-2.7.1%2Bcu118-cp312-cp312-win_amd64.whl',
+    'cu126': 'torch-2.14.0%2Bcu126-cp312-cp312-win_amd64.whl',
+    'cu128': 'torch-2.11.0%2Bcu128-cp312-cp312-win_amd64.whl',
+    'cu129': 'torch-2.9.0%2Bcu129-cp312-cp312-win_amd64.whl',
+    'cu130': 'torch-2.14.0%2Bcu130-cp312-cp312-win_amd64.whl',
+    'cu132': 'torch-2.14.0%2Bcu132-cp312-cp312-win_amd64.whl',
+}
 
 
 def probe_sources(tag='cu128', seconds=3.0):
@@ -96,8 +112,11 @@ def probe_sources(tag='cu128', seconds=3.0):
     cand = []
     for m in TORCH_SOURCES:
         base = m['base'] + tag + '/'
+        # 配了探针就测真文件；没配（新通道忘了补）就退而用索引页 ——
+        # 那测出来的是延迟不是带宽，但总比用一个打不开的 URL 强。
+        _w = PROBE_WHEELS.get(tag)
         cand.append({'id': m['id'], 'name': m['name'], 'env': {},
-                     'probe': base + PROBE_WHEEL, 'base': base})
+                     'probe': base + _w if _w else base, 'base': base})
     return sources.probe_all(cand, seconds=seconds)
 
 
@@ -115,11 +134,42 @@ def pick_source(tag='cu128', seconds=3.0):
         pass
     return _BASE + tag + '/', 'PyTorch 官方'
 
+# 各通道里**编进去了哪些显卡的机器码**。
+# 来源：pytorch/pytorch 的 `.ci/pytorch/windows/build_env_setup.py`
+# （main 与 v2.14.0 tag 一致）。本机装 cu128 / cu126 各实测一次
+# `get_arch_list()`，跟这张表逐项对得上。
+#
+# 🔴 **别去看 `.ci/manywheel/` 那份** —— 那是 Linux 的表，12.6 那行少一个
+#    6.1。这个坑第一次查就踩了。
+_ARCH_126 = ((5, 0), (6, 0), (6, 1), (7, 0), (7, 5), (8, 0), (8, 6), (9, 0))
+_ARCH_13X = ((7, 5), (8, 0), (8, 6), (9, 0), (10, 0), (12, 0))
+
+# 驱动门槛抄 `light-the-torch` 的表（它标着来源是 NVIDIA release notes
+# 的 Table 2，逐条有出处，v0.8.1 还在维护）。
+#
+# 🔴 **同一个 CUDA 大版本共用一个门槛** —— wheel 自带 CUDA runtime，走的是
+#    minor version compatibility，不需要各 minor 的 GA 门槛。这一格的说法
+#    换过三次，前两次都错：525 是 **Linux** 的数（Windows 该是 528.33）；
+#    560.76 是 CUDA 12.6 的 **GA** 门槛，wheel 用不着那么高。
+#
+# 表的顺序就是优先级：**官方还在维护的排前面，停更的排后面。**
+# 🔴 不是「CUDA 号越大越好」。实测各通道当时的最新 torch：
+#    cu118=2.7.1（停）、cu126=2.14.0（在更）、cu128=2.11.0（**停了**）、
+#    cu129=2.9.0（废档）、cu130=2.14.0、cu132=2.14.0。
+#    原来那条「从大到小第一个够得着就用」会让驱动 572 的用户拿到 cu128 的
+#    2.11.0 —— 比低一档的 cu126 还旧三个次版本。
+#
+# ⚠️ 这是一张**快照**，官方停更/新增通道时会过期。`check_upstream.py`
+#    在打包前会提醒，别指望它自己跟上。
 TORCH_CHANNELS = [
-    # (最低驱动主版本, index 后缀, 说明)
-    (570, 'cu128', 'CUDA 12.8'),
-    (525, 'cu126', 'CUDA 12.6'),
-    (452, 'cu118', 'CUDA 11.8'),
+    # (index 后缀, 最低驱动, 编进去的显卡算力, 说明)
+    ('cu132', 580.0, _ARCH_13X, 'CUDA 13.2'),
+    ('cu130', 580.0, _ARCH_13X, 'CUDA 13.0'),
+    ('cu126', 528.33, _ARCH_126, 'CUDA 12.6'),
+    ('cu128', 528.33, _ARCH_13X, 'CUDA 12.8（官方已停更）'),
+    ('cu129', 528.33, _ARCH_13X, 'CUDA 12.9（官方已停更）'),
+    # cu118 没有可靠的架构表（那个 tag 的构建脚本里找不到），只按驱动兜底
+    ('cu118', 452.39, None, 'CUDA 11.8'),
 ]
 # 驱动版本读不到时用哪个 —— 挑最保守的那档，宁可慢一点也别 import 不了
 TORCH_FALLBACK = 'cu118'
@@ -136,16 +186,79 @@ def driver_major(ver):
         return 0
 
 
-def pick_channel(driver=None):
-    """按驱动版本挑一档。返回 (后缀, 说明, 用到的驱动号)。
+def driver_num(ver):
+    """把 '572.83' 解析成 572.83。读不出来返回 0。
 
-    驱动读不到（没装 nvidia-smi、没有 N 卡）就走最保守那档 —— 那种机器
-    本来也转不了，但至少别让 import torch 崩掉，否则模型下载一起废。
+    门槛是带小数的（528.33 / 580.0 / 452.39），只比主版本号会把
+    528.0~528.32 那一小段也放进来。
     """
-    n = driver_major(driver)
+    try:
+        parts = str(ver or '').strip().split('.')
+        return float('.'.join(parts[:2])) if parts[0] else 0.0
+    except Exception:
+        return 0.0
+
+
+_CAP_CACHE = []
+
+
+def current_cap():
+    """这台机器显卡的算力，比如 8.9。读不到返回 0。跑一次记住。"""
+    if _CAP_CACHE:
+        return _CAP_CACHE[0]
+    val = 0.0
+    try:
+        import gpu
+        g = (gpu.detect() or {}).get('gpu') or {}
+        val = float(g.get('compute_cap') or 0)
+    except Exception:
+        val = 0.0
+    _CAP_CACHE.append(val)
+    return val
+
+
+def arch_fits(archs, cap):
+    """这个通道里有没有这张卡跑得动的机器码。
+
+    规则：**同一个 major 之内，编进去的 minor <= 设备的 minor 就能跑**，
+    跨 major 完全不通。本机 RTX 4060 是 sm_8.9，cu126 和 cu128 的
+    arch_list 里都没有 8.9，但都跑得动 —— 靠的就是这条。
+
+    ⚠️ 验这条时**不能用矩阵乘**：`a @ a` 走的是 cuBLAS，那是独立的库、
+    有自己的 fatbin，证明不了 torch 自编的 kernel 能跑。当天补验了
+    relu / add_ / sum / where 四个不走 cuBLAS 的算子，全部通过。
+
+    🔴 **读不到显卡信息就算不合格**（小蔡 2026-09-06 定）。以前是读不到
+    就走最保守那档，那等于让一台可能根本没有 N 卡的机器也去下 2.6 GB。
+    """
+    if archs is None:
+        return True          # cu118 没有可靠的架构表，只按驱动兜底
+    if not cap:
+        return False
+    major = int(cap)
+    minor = int(round((cap - major) * 10))
+    return any(a == major and b <= minor for a, b in archs)
+
+
+def pick_channel(driver=None, cap=None):
+    """挑一条 torch 下载线路。返回 (后缀, 说明, 用到的驱动号)。
+
+    判据两维，缺一不可：
+
+      驱动够得着   驱动版本 >= 这条线路要求的最低驱动
+      机器码对得上 这条线路里编进了这张卡能跑的 SASS
+
+    🔴 **只看驱动会出人命**：1080Ti（sm_6.1）配新驱动，按老规矩命中 cu128，
+    而 cu128 根本没编 6.1 的机器码 —— `import torch` 能过、`is_available()`
+    也可能是 True，**只有真跑起 kernel 才报 no kernel image is available**。
+    正式版 wheel 是 SASS-only，不带 PTX，没有 JIT 兜底。
+    """
+    n = driver_num(driver if driver is not None else current_driver())
+    if cap is None:
+        cap = current_cap()
     if n:
-        for need, tag, note in TORCH_CHANNELS:
-            if n >= need:
+        for tag, need, archs, note in TORCH_CHANNELS:
+            if n >= need and arch_fits(archs, cap):
                 return tag, note, n
     return TORCH_FALLBACK, 'CUDA 11.8', n
 
@@ -482,10 +595,15 @@ def explain_load_error(err):
                 % '、'.join(miss))
 
     drv = current_driver()
-    n = driver_major(drv)
-    if n and n < 570:
-        return ('显卡驱动是 %s，撑不起这版 GPU 运行库（需要 570 以上）。'
-                '到 nvidia.com 更新一下驱动，然后回来重新装一次。' % drv)
+    # 🔴 门槛跟着**实际选中的那条线路**走，不写死一个数。原来这里硬编码
+    #    「需要 570 以上」，而 cu118 只要 452.39 —— 驱动 530 的用户会被
+    #    告知一个跟他无关的数字。
+    n = driver_num(drv)
+    _need = min(c[1] for c in TORCH_CHANNELS)
+    if n and n < _need:
+        return ('显卡驱动是 %s，撑不起 GPU 运行库（最低要 %s）。'
+                '到 nvidia.com 更新一下驱动，然后回来重新装一次。'
+                % (drv, _need))
 
     # 运行库在、驱动也够新 —— 剩下的可能性得让人往下查，
     # 所以要把原始报错也带出去，不能只说「失败了」。

@@ -525,6 +525,13 @@ def clean(keys=(), pip_paths=()):
 LAST_RUN = os.path.join(paths.LOGS, 'last_run.json')
 LAST_ERROR = os.path.join(paths.LOGS, 'last_error.json')
 
+# 转换历史。**跟 last_run.json 分开放，那个一个字节都不动** ——
+# 诊断报告读的是它，改格式等于动一个正在用的东西。这里另起一个文件，
+# 每条的结构跟 last_run 那条一样，只多三个字段（源路径、产物路径、
+# 完整报错），列表最新的在最前面。
+RUNS = os.path.join(paths.LOGS, 'runs.json')
+RUNS_KEEP = 200          # 小蔡定的。每条带完整路径和完整报错，不设上限会越滚越大
+
 
 def _write_json(path, data):
     """写一个小 json。**永不抛异常** —— 记日志这件事不能把转换搞崩。"""
@@ -545,6 +552,28 @@ def _read_json(path):
         return None
 
 
+def _append_run(row):
+    """把一条记录插到历史最前面，超过 RUNS_KEEP 条就扔掉最老的。
+
+    **永不抛异常** —— 跟 `_write_json` 一个道理，记账不能把转换搞崩。
+    文件读坏了（半截 JSON、被人手动改过）就当没有历史，从头开始记，
+    不能因为读不出旧的就连新的也不记。
+    """
+    r = _read_json(RUNS)
+    rows = r if isinstance(r, list) else []
+    rows.insert(0, row)
+    del rows[RUNS_KEEP:]
+    return _write_json(RUNS, rows)
+
+
+def runs(limit=None):
+    """读转换历史。最新的在最前面。读不出来返回空列表，不抛异常。"""
+    r = _read_json(RUNS)
+    if not isinstance(r, list):
+        return []
+    return r[:limit] if limit else r
+
+
 def note_run(rep, pdf_name='', took_sec=0):
     r"""记一次转换的结果。**每转完一份就写，不等整批结束。**
 
@@ -552,12 +581,13 @@ def note_run(rep, pdf_name='', took_sec=0):
     时刻。这样写，最后一条记录停在崩溃前那份，正好指向病根。
     """
     rep = rep or {}
-    return _write_json(LAST_RUN, {
+    err = rep.get('error') or ''
+    row = {
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'file': pdf_name or os.path.basename(rep.get('pdf', '') or ''),
         'pages': rep.get('pages', 0),
         'ok': bool(rep.get('ok')),
-        'error': (rep.get('error') or '')[:200],
+        'error': err[:200],
         # 🔴 字段名取自 convert.pdf_to_word 的 rep：**formulas 是源文
         #    公式总数，formulas_xsl 是成功转成 Word 原生公式的个数**。
         #    这里原来读的是 formulas_ok / formulas_src —— 那两个名字
@@ -566,7 +596,13 @@ def note_run(rep, pdf_name='', took_sec=0):
         'formulas': '%s/%s' % (rep.get('formulas_xsl', '?'),
                                rep.get('formulas', '?')),
         'took_sec': int(took_sec or 0),
-    })
+    }
+    # 历史那份多三样：源 PDF 全路径（用来一键重转）、产物 Word 全路径
+    # （用来打开文件 / 打开所在文件夹）、**没截断的报错**（查当时到底
+    # 报了什么 —— 上面那个 200 字符是给诊断报告用的，不动它）。
+    _append_run(dict(row, pdf=rep.get('pdf', '') or '',
+                     docx=rep.get('docx', '') or '', error_full=err))
+    return _write_json(LAST_RUN, row)
 
 
 def note_error(where, msg, hint=''):

@@ -428,3 +428,102 @@ class 空间检查(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Test挑下载线路要看两维(unittest.TestCase):
+    r"""老规矩是「按 CUDA 号从大到小，第一个驱动够得着的就用」。两个前提
+    都塌了：
+
+    1. **CUDA 号大 ≠ torch 新。** 实测 cu128 停在 2.11.0（官方已停更），
+       而低一档的 cu126 已经到 2.14.0。老规矩让驱动 572 的人拿到比低档
+       还旧三个次版本的 torch。
+    2. **只看驱动不看卡。** 各线路编进去的机器码是交叉的：cu126 有老卡
+       没新卡，cu13x 反过来。1080Ti（6.1）配新驱动会命中 cu128，而那里
+       没有 6.1 的码 —— import 能过、is_available() 也可能 True，
+       **只有真跑 kernel 才报 no kernel image is available**。
+
+    🔴 每条都显式传 cap，结果不许取决于跑测试的机器上插着什么卡。
+    """
+
+    def test_40系配新驱动走cu126不是停更的cu128(self):
+        self.assertEqual(torchdep.pick_channel('572.83', cap=8.9)[0], 'cu126')
+
+    def test_1080Ti配新驱动也走cu126(self):
+        r"""老规矩（按 CUDA 号从大到小）会把它送进 cu128，而那里没有 6.1 的
+        机器码，真跑就报 no kernel image is available。
+
+        ⚠️ **这条实际是「表顺序」在保证的，不是架构判据。** 2026-09-06 变异
+        测试确认：把 arch_fits 整个拿掉，这条照样绿 —— 因为 cu126 本来就排
+        在 cu128 前面。架构判据真正起作用的是另外两处（新卡配旧驱动、读不到
+        显卡信息），那两条测试会红。别看着这条以为架构判据被测到了。
+        """
+        self.assertEqual(torchdep.pick_channel('572.83', cap=6.1)[0], 'cu126')
+
+    def test_新卡新驱动走cu132(self):
+        self.assertEqual(torchdep.pick_channel('580.10', cap=12.0)[0], 'cu132')
+
+    def test_新卡配旧驱动只能走停更的cu128(self):
+        r"""算力 12.0 的卡配 572 驱动，三条路都不理想，但结果是对的：
+
+            cu132 / cu130  要 580 驱动，够不着
+            cu126          驱动够，但它只编到 9.0，**没有 12.0 的机器码**
+            cu128          驱动够、机器码有 —— 虽然官方停更了
+
+        停更的 torch 总比「装上跑不动」强。这种卡真正的出路是升驱动到
+        580，那时自动就走 cu132 了。
+        """
+        self.assertEqual(torchdep.pick_channel('572.83', cap=12.0)[0], 'cu128')
+
+    def test_老驱动只剩cu118(self):
+        self.assertEqual(torchdep.pick_channel('470.05', cap=6.1)[0], 'cu118')
+
+    def test_读不到显卡信息时兜底到cu118(self):
+        r"""🔴 小蔡 2026-09-06 定「读不到显卡信息就当作显卡不合格」——
+        真正拦住他的是 gpu.judge（首启那道），这里只保证不会挑一条
+        「装上也跑不动」的线路：除 cu118 外每条都要求机器码对得上。"""
+        self.assertEqual(torchdep.pick_channel('572.83', cap=0)[0], 'cu118')
+        self.assertEqual(torchdep.pick_channel('')[0], 'cu118')
+
+    def test_同major内向上兼容(self):
+        r"""设备 sm_8.9，线路里编的是 8.0 和 8.6 —— 能跑。
+        本机 RTX 4060 就是这个情况，两个版本都实测跑得动。"""
+        self.assertTrue(torchdep.arch_fits(((8, 0), (8, 6)), 8.9))
+        self.assertTrue(torchdep.arch_fits(((8, 6),), 8.6))
+
+    def test_跨major完全不通(self):
+        r"""9.0 的卡不能跑 8.x 的码，反过来也不行。"""
+        self.assertFalse(torchdep.arch_fits(((8, 0), (8, 6)), 9.0))
+        self.assertFalse(torchdep.arch_fits(((9, 0),), 8.9))
+
+    def test_minor比设备高也不通(self):
+        self.assertFalse(torchdep.arch_fits(((8, 9),), 8.6))
+
+    def test_驱动门槛按精确值比不是只比主版本(self):
+        r"""🔴 门槛是 528.33。只比主版本号的话，528.0~528.32 那一小段
+        会被放进来。"""
+        self.assertEqual(torchdep.driver_num('528.33'), 528.33)
+        self.assertEqual(torchdep.pick_channel('528.20', cap=8.9)[0], 'cu118')
+        self.assertEqual(torchdep.pick_channel('528.33', cap=8.9)[0], 'cu126')
+
+    def test_每条通道都得配测速探针(self):
+        r"""🔴 原来写死一个 cu128 的文件名，换通道之后 URL 必然打不开
+        （实测 `cu126/torch-2.9.1+cu128-...whl` 返回 403），而 pick_source
+        是 try/except pass —— **静默**退回官方源，用户看不到任何报错，
+        只是下载变慢，极难查。
+
+        加新通道时忘了补探针，这条会红。
+        """
+        for tag, _need, _archs, _note in torchdep.TORCH_CHANNELS:
+            self.assertIn(tag, torchdep.PROBE_WHEELS, '%s 没配测速探针' % tag)
+
+    def test_探针文件名里的通道号要跟它自己对得上(self):
+        r"""防复制粘贴错 —— cu126 那格填了个 cu128 的文件名，URL 照样打不开。"""
+        for tag, w in torchdep.PROBE_WHEELS.items():
+            self.assertIn(tag, w, '%s 的探针文件名里写的是别的通道：%s' % (tag, w))
+
+    def test_停更的线路排在在维护的后面(self):
+        r"""表的顺序就是优先级。cu128 / cu129 官方已停更，必须排在
+        cu126 后面，否则又会挑到旧 torch。"""
+        tags = [c[0] for c in torchdep.TORCH_CHANNELS]
+        self.assertLess(tags.index('cu126'), tags.index('cu128'))
+        self.assertLess(tags.index('cu126'), tags.index('cu129'))

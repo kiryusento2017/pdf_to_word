@@ -140,6 +140,56 @@ def _run_pandoc(args, stdin_text=None, cwd=None):
     return p.returncode, _dec(p.stdout), _dec(p.stderr)
 
 
+# MinerU 认完一张图之后，会把**图片里的文字**单独抠出来，塞进一个
+# <details> 折叠块 —— 图片本身在块外面，块里只有那些散字。
+#
+# 🔴 pandoc 把 <details> / <summary> 这两个标签当 raw HTML 丢掉，
+#    **标签之间夹的文字却当成正文段落留下了**（跟 HTML 表格不一样：
+#    表格是整块结构，整块丢；这个是「壳丢了、瓤留下」）。于是老师打开
+#    Word 会看见一行孤零零的英文 `text_image`，下面跟着一串没头没尾的
+#    字母（电路图上标的 a' III b' 那些）。
+#
+#    两种 pandoc 参数都实测过 —— 默认的 `-f markdown` 和这里真正在用的
+#    `markdown+tex_math_dollars+raw_html`，**结果完全一样**，不是参数没配对。
+_DETAILS = re.compile(
+    r'<details>\s*\n<summary>[^<]*</summary>.*?</details>\s*', re.S)
+
+
+def _strip_details(text):
+    r"""删掉 MinerU 的 <details> 折叠块。返回 (新文本, 删掉几块)。
+
+    ## 为什么整块删是安全的
+
+    2026-09-06 扫 38 份真实产物（1053 个块）实测：
+
+        块里含图片 ![](...) 的     0 个      → 删了不丢图
+        块里含 $公式$ 的           0 个      → 删了不丢公式
+        嵌套的                     0 个      → 正则不会咬错
+        开合标签对不上的文件       0 个
+
+        整份文件删块前后：公式 8619→8619、图片 1424→1424、表格 57→57
+
+    ## summary 不止 text_image 一种
+
+    MinerU 按图的内容分十类打标记，每一类都会往 Word 里塞一遍：
+    text_image 670、line 253、natural_image 50、flowchart 36、area 16、
+    scatter 12、chemical 7、contour 6、wireframe 2、bar 1。
+    所以判据是「是不是 details 块」，不是「summary 叫不叫 text_image」。
+
+    🔴 **开合标签数对不上就一个都不删。** 上面那 1053 块的样本只有 11 份
+    讲义，别的 PDF 万一格式不同，宁可不动也别删错 —— 这是交付给老师的
+    正文，删错了没法补。
+    """
+    n_open = text.count('<details>')
+    n_close = text.count('</details>')
+    if n_open == 0:
+        return text, 0
+    hits = _DETAILS.findall(text)
+    if n_open != n_close or n_open != len(hits):
+        return text, 0
+    return _DETAILS.sub('', text), n_open
+
+
 def _html_tables_to_markdown(text, cwd=None):
     r"""把 MinerU 输出的 HTML 表格转成 markdown 表格。
 
@@ -523,7 +573,8 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     """
     rep = {'ok': False, 'error': '', 'formulas_src': 0, 'formulas_replaced': 0,
            'math_engine': 'pandoc', 'math_note': '', 'tables': 0, 'images': 0,
-           'tables_bordered': 0, 'images_resized': 0}
+           'tables_bordered': 0, 'images_resized': 0,
+           'details_dropped': 0}
     if not pandoc_available():
         rep['error'] = '找不到内置 pandoc：%s' % PANDOC
         return rep
@@ -550,6 +601,9 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     except Exception as e:
         rep['error'] = '读不了输入文件：%s' % str(e)[:120]
         return rep
+
+    # 图里的字不进正文 —— 图片本身在块外面，Word 里已经有那张图。
+    src, rep['details_dropped'] = _strip_details(src)
 
     # 🔴 **先把公式换成占位符，再交给 pandoc**。
     #    从 AST 层换，不用猜「pandoc 怎么断句」—— 位置天然精确，

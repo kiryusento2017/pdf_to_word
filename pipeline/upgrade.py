@@ -156,7 +156,7 @@ def constraints_for(picked):
     return '\n'.join(lines) + ('\n' if lines else '')
 
 
-def _pip(argv, timeout=1800, on_log=None):
+def _pip(argv, timeout=1800, on_log=None, on_progress=None):
     r"""跑一条 pip 命令，边跑边喂日志。返回 (returncode, 全部输出)。
 
     🔴 **超时检查放在独立线程里，不放读取循环。**
@@ -201,6 +201,19 @@ def _pip(argv, timeout=1800, on_log=None):
                 break
             s = line.decode('utf-8', 'replace').rstrip()
             out.append(s)
+            # 🔴 进度行喂给进度条，**并且不进日志区**。2.7 GB 会刷出几千行
+            #    `Progress N of M`，不拦的话 Collecting / Downloading 这些
+            #    真正有用的行全被淹掉 —— 装 torch 那条路早就这么做了
+            #    （torchdep.is_noise 就是干这个的），这里照抄。
+            if on_progress:
+                import torchdep
+                pg = torchdep.parse_progress(s)
+                if pg:
+                    try:
+                        on_progress(pg[0], pg[1])
+                    except Exception:
+                        pass
+                    continue
             if on_log:
                 try:
                     on_log(s)
@@ -304,7 +317,24 @@ def download(picked, targets=None, on_log=None, on_progress=None):
         spec.append('%s==%s' % (p, t) if t else p)
 
     argv = ['download', '-d', CACHE, '-c', cfile] + spec + _index_args(picked)
-    rc, out = _pip(argv, timeout=7200, on_log=on_log)
+    # 🔴 **分子分母都来自 pip 自己吐的字节数，不新写估算常量。**
+    #    「下完停在 92%」那次事故就是估算常量惹的（照着 pip 打印的十进制
+    #    MB 当 MiB 换算，分母比真实大 8.8%）。ProgressAcc 的分母是「已见
+    #    过的包大小之和」，跟分子同源，而且只增不减。
+    #    floor 给 0：升级下的是哪几个包不一定，没有合适的兜底值，
+    #    直接让已见之和接管。
+    import torchdep
+    _acc = torchdep.ProgressAcc(floor=0)
+
+    def _pg(cur, tot):
+        if on_progress:
+            try:
+                on_progress(_acc.feed(cur, tot), _acc.total())
+            except Exception:
+                pass
+
+    argv = list(argv) + ['--progress-bar', 'raw']
+    rc, out = _pip(argv, timeout=7200, on_log=on_log, on_progress=_pg)
     cmd = 'pip ' + ' '.join(argv)
     if rc != 0:
         tail = [x for x in out.strip().splitlines() if x.strip()][-3:]

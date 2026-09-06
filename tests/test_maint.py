@@ -21,7 +21,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 
 import maint  # noqa: E402
-import paths  # noqa: E402
 
 WORK = os.path.join(ROOT, '_tmp', 'tests', 'maint')
 
@@ -421,6 +420,97 @@ class TestTEMP里的pip残骸(unittest.TestCase):
         才冒出来的行，用户不会知道软件替他看过这个地方。"""
         keys = [it['key'] for it in maint.scan()['items']]
         self.assertIn('temp_pip', keys)
+
+
+
+class Test转换历史(unittest.TestCase):
+    r"""转完关掉软件，之前转过什么全查不到 —— 因为记录是**覆盖写**的，
+    记第二条时把第一条盖掉，永远只剩最后一条。
+
+    🔴 **`last_run.json` 一个字节都不动**（诊断报告读的是它）。历史另起
+    一个文件，每条多三样：源 PDF 全路径、产物 Word 全路径、没截断的报错。
+    """
+
+    def setUp(self):
+        self._run, self._err = maint.LAST_RUN, maint.LAST_ERROR
+        self._runs = maint.RUNS
+        shutil.rmtree(WORK, ignore_errors=True)
+        os.makedirs(WORK)
+        maint.LAST_RUN = os.path.join(WORK, 'last_run.json')
+        maint.LAST_ERROR = os.path.join(WORK, 'last_error.json')
+        maint.RUNS = os.path.join(WORK, 'runs.json')
+
+    def tearDown(self):
+        maint.LAST_RUN, maint.LAST_ERROR = self._run, self._err
+        maint.RUNS = self._runs
+        shutil.rmtree(WORK, ignore_errors=True)
+
+    def _rep(self, name, ok=True, err=''):
+        return {'ok': ok, 'pdf': r'D:\讲义\%s.pdf' % name,
+                'docx': r'D:\输出\%s.docx' % name, 'pages': 12,
+                'formulas': 100, 'formulas_xsl': 99, 'error': err}
+
+    def test_转三份留三条不是只剩最后一条(self):
+        for n in ('甲', '乙', '丙'):
+            maint.note_run(self._rep(n), pdf_name=n + '.pdf', took_sec=10)
+        rows = maint.runs()
+        self.assertEqual([r['file'] for r in rows], ['丙.pdf', '乙.pdf', '甲.pdf'],
+                         '最新的要在最前面，而且一条都不能少')
+
+    def test_超过上限扔掉最老的(self):
+        keep = maint.RUNS_KEEP
+        for i in range(keep + 5):
+            maint.note_run(self._rep('第%d' % i), pdf_name='%d.pdf' % i)
+        rows = maint.runs()
+        self.assertEqual(len(rows), keep)
+        self.assertEqual(rows[0]['file'], '%d.pdf' % (keep + 4), '最新的没留住')
+        self.assertEqual(rows[-1]['file'], '5.pdf', '该扔的没扔掉')
+
+    def test_三个新字段都记下来了(self):
+        long_err = 'X' * 500
+        maint.note_run(self._rep('丁', ok=False, err=long_err), pdf_name='丁.pdf')
+        r = maint.runs()[0]
+        self.assertEqual(r['pdf'], r'D:\讲义\丁.pdf', '源路径没记，没法一键重转')
+        self.assertEqual(r['docx'], r'D:\输出\丁.docx', '产物路径没记，没法打开文件')
+        self.assertEqual(r['error_full'], long_err, '报错被截了，查不到当时到底怎么了')
+
+    def test_诊断报告那份行为一个字不变(self):
+        r"""🔴 last_run.json 是正在被用的东西。报错仍然截到 200 字符，
+        仍然只存最后一条。"""
+        maint.note_run(self._rep('戊', ok=False, err='Y' * 500), pdf_name='戊.pdf')
+        one = maint.last_run()
+        self.assertEqual(one['file'], '戊.pdf')
+        self.assertEqual(len(one['error']), 200, '截断行为被改了')
+        self.assertNotIn('pdf', one, 'last_run 不该多出新字段')
+
+    def test_历史文件读坏了也要能接着记(self):
+        r"""不能因为读不出旧的就连新的也不记。
+
+        🔴 **两种坏法都要测，它们走的不是同一条分支**：
+        半截 JSON 解析失败，`_read_json` 返回 None；而一个**合法但不是
+        列表**的 JSON（老版本留下的单条记录就长这样）能解析成功，
+        判据只写 `r or []` 的话它会原样返回那个 dict，接着 insert 就炸。
+        2026-09-06 变异测试抓出来的：第一版只测了前一种，把判据
+        换成 `r or []` 照样全绿。
+        """
+        for broken in ('{半截的不是合法 JSON', '{"time": "老版本的单条记录"}'):
+            shutil.rmtree(WORK, ignore_errors=True)
+            os.makedirs(WORK)
+            io.open(maint.RUNS, 'w', encoding='utf-8').write(broken)
+            maint.note_run(self._rep('己'), pdf_name='己.pdf')
+            rows = maint.runs()
+            self.assertEqual(len(rows), 1, '坏成 %r 时没接着记' % broken[:12])
+            self.assertEqual(rows[0]['file'], '己.pdf')
+
+    def test_写不进去也不能把转换搞崩(self):
+        maint.RUNS = os.path.join(WORK, '不存在的目录', '别的', 'runs.json')
+        try:
+            maint.note_run(self._rep('庚'), pdf_name='庚.pdf')
+        except Exception as e:
+            self.fail('记历史把主流程搞崩了：%s' % e)
+
+    def test_没有历史时返回空列表不是None(self):
+        self.assertEqual(maint.runs(), [])
 
 
 if __name__ == '__main__':
