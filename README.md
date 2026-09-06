@@ -394,14 +394,14 @@ runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有�
             打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
             直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      445 条 Python + 139 条前端检查 + 四个真实数据验证脚本
+tests/      446 条 Python + 139 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 445 条，16 秒
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 446 条，16 秒
 node tests\front_check.js                                   # 139 条，真渲染
 ```
 
@@ -461,6 +461,11 @@ tests\real_cpu_bench.py       同一份书强制走 CPU，量真实差距（约 
 
 那四个环境变量：`MODELSCOPE_CACHE`、`HF_HOME`、`MINERU_TOOLS_CONFIG_JSON`
 （前三个管落点）、`MINERU_DEVICE_MODE=cuda`（管不许悄悄用 CPU）。
+
+还有第五个 `MINERU_TASK_RESULT_TIMEOUT_SECONDS=86400`，跟落点无关，管的是
+**单份 PDF 最多等 24 小时**。MinerU 客户端默认只等 1 小时，按实测 66 秒/页
+折算**约 54 页就是红线**，过线的讲义会在临门一脚被掉、已算的全作废
+（2026-09-06 一份 56 页的踩过，详见 `child_env()` 的注释）。
 
 日志落在 `logs/`：`model_download.log`、`torch_install.log`、`convert.log`。
 出问题让用户直接把文件发过来，比让他描述现象快得多——2026-09-02 那次

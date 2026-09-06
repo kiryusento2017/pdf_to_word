@@ -90,6 +90,24 @@ class Test给子进程的环境变量(unittest.TestCase):
         self.assertEqual(env['PYTHONUTF8'], '1')
         self.assertEqual(env['MINERU_DEVICE_MODE'], 'cuda')   # 别顾此失彼
 
+    def test_等待上限没被漏掉(self):
+        r"""🔴 **这条钉的是 2026-09-06「转到 62 分钟被掐掉」那次。**
+
+        MinerU 客户端默认只等 3600 秒（mineru/cli/api_client.py:90）。一份
+        56 页讲义实际要跑约 62 分钟 —— 在离终点 18 分钟处整活作废，
+        已经算好的全部扔掉。按实测 66 秒/页折算，约 54 页就是红线，
+        过线必挂、不过线没事，是确定性的不是偶发。
+
+        少了这个变量，**测试照样全绿、四道门禁照样全过**，只有转大
+        文件的人受害 ——「测试绿 ≠ 代码对」的又一个形状，所以钉在这儿。
+        """
+        env = paths.child_env()
+        v = env.get('MINERU_TASK_RESULT_TIMEOUT_SECONDS')
+        self.assertEqual(v, '86400')
+        self.assertTrue(v.isdigit(),
+                        '必须是纯数字字符串 —— 写错了 MinerU 会静默退回 3600，'
+                        '只在日志留一行 warning')
+
     def test_不靠PYTHONPATH挂中文路径补丁(self):
         r"""🔴 **这条钉的是 2026-09-03 差点发出去的一个洞。**
 

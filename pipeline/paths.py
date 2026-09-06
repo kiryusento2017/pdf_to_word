@@ -290,6 +290,25 @@ def child_env(source_env=None):
     （变量名是从 mineru/utils/config_reader.py:106 读出来的，
       它的优先级最高：设了就直接返回，根本不走自动探测。）
 
+    第五个，管的是「等多久」：
+
+      MINERU_TASK_RESULT_TIMEOUT_SECONDS=86400   **单份 PDF 最多等 24 小时**
+
+    MinerU 客户端默认只等 3600 秒（mineru/cli/api_client.py:90），到点就
+    放弃、连带把它自己起的服务端子进程一起收掉，算了一小时的结果全作废。
+    2026-09-06 转一份 56 页讲义时踩到：实际要约 62 分钟（页面级 47 秒/页，
+    公式级还差 18 分钟），在离终点 18 分钟处被掐。按实测 66 秒/页折算，
+    **约 54 页就是红线** —— 过线必挂、不过线没事，是确定性的不是偶发。
+
+    一份 PDF 是一个 task、各算各的（server 那边逐份串行转），所以这里管的
+    是「单份最多等多久」。24 小时够跑约 1300 页；真跑满一天几乎必然是卡死
+    而非在算，留这个上限是留一个最终结论（用户随时能按停止，不必靠它）。
+    ⚠️ 值必须是纯数字字符串：写错了 get_float_env 会**静默**退回 3600，
+    只在日志留一行 warning，白设还看不出来。
+    （客户端 api_client.py:97 和服务端 router.py:1277 读同一个变量名，而
+      服务端子进程的环境是 os.environ.copy() 全量继承 —— 设一次两头都堵住，
+      跟中文路径补丁那次「够不到自己起的进程」不是一回事。）
+
     ⚠️ **中文路径补丁不在这儿挂。** 2026-09-03 一度是靠往这里加
     `PYTHONPATH` 来挂 sitecustomize 的，开发环境测试全绿 —— 而发行版
     的 embeddable Python 有 `._pth`，**`._pth` 一存在，PYTHONPATH 就被
@@ -305,6 +324,7 @@ def child_env(source_env=None):
     env['HF_HOME'] = MODELS
     env['MINERU_TOOLS_CONFIG_JSON'] = CONFIG
     env['MINERU_DEVICE_MODE'] = 'cuda'
+    env['MINERU_TASK_RESULT_TIMEOUT_SECONDS'] = '86400'
     if source_env:
         env.update(source_env)
     return env
