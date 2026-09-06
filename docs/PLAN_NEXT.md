@@ -2243,8 +2243,9 @@ CUDA 11.x          ->  452.39      代码里现在写的 452 是对的
 ```
 
 完整方案（11 处改动、逐项 diff、影响分档）存在
-`_scratch\20260906_torch_channel_final_plan.md`，连同两份外部 AI 的产出
-`20260906_torch_channel_design.md` 和 `20260906_torch_channel_refactor_plan.md`。
+`_scratch\20260906_torch_channel_final_plan.md` —— 它是三份来源的合并版，
+两份外部 AI 的中间产物结论已经全部并进去，原件删了。
+**那份文件顶部有一块更正**（驱动门槛写错、漏查现成轮子），以本节为准。
 
 ### 🔴 审出来的三个坑（这些比方案本身值钱）
 
