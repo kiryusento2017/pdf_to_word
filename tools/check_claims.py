@@ -59,7 +59,7 @@ claim('MINERU_DEVICE_MODE 写死成 cuda（README/DESIGN/RELEASE 都这么说）
 claim('child_env 给四个变量（README 说「四个环境变量」）',
       all(k in env for k in ('MODELSCOPE_CACHE', 'HF_HOME',
                              'MINERU_TOOLS_CONFIG_JSON', 'MINERU_DEVICE_MODE')))
-claim('等待上限设成 86400（MinerU 默认 3600，约 54 页就掉）',
+claim('等待上限设成 86400（MinerU 默认 3600 秒，资源竞争时会撞上）',
       env.get('MINERU_TASK_RESULT_TIMEOUT_SECONDS') == '86400',
       repr(env.get('MINERU_TASK_RESULT_TIMEOUT_SECONDS')))
 claim('配置指向安装目录内，不碰 ~/mineru.json',
