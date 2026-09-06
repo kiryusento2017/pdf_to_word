@@ -459,6 +459,47 @@ class Test环境检测的接口(unittest.TestCase):
             with srv._LOCK:
                 srv._TASKS.pop(tid, None)
 
+    def test_安装进行中不许清理(self):
+        r"""🔴 装东西的三类任务各用一个全局字典，**一个都不在 `_TASKS`
+        里** —— `_DL`（模型 / GPU 运行库 / vcredist）、`_UPG`（依赖升级）、
+        `_UPD`（软件自更新）。只判 `_TASKS` 会把它们全放行：pip 正往
+        `%TEMP%` 的工作目录里解包时被清掉，几 GB 白下。
+
+        （2026-09-06 加 temp_pip 那一项时查出来的既有缺口。`_UPD` 的
+        `installing` 也算在跑 —— 它的状态机有六种，别只判 running。）
+        """
+        for name, state in (('_DL', 'running'), ('_UPG', 'running'),
+                            ('_UPD', 'running'), ('_UPD', 'installing')):
+            d = getattr(srv, name)
+            old = dict(d)
+            with srv._LOCK:
+                d['state'] = state
+            try:
+                r = client.post('/api/maint/clean', json={'keys': ['tmp']})
+                self.assertEqual(r.status_code, 409,
+                                 '%s=%s 时清理没被拦住' % (name, state))
+                self.assertIn('安装', r.json()['detail'])
+            finally:
+                with srv._LOCK:
+                    d.clear()
+                    d.update(old)
+
+    def test_没在装的时候不许拦(self):
+        r"""拦过头比不拦更烦人 —— 清理会永远点不了，而用户不知道为什么。
+        `need_confirm` 是在等用户点确认，不算在跑。"""
+        old = dict(srv._UPD)
+        try:
+            for state in ('idle', 'done', 'error', 'need_confirm'):
+                with srv._LOCK:
+                    srv._UPD['state'] = state
+                r = client.post('/api/maint/clean',
+                                json={'keys': [], 'paths': []})
+                self.assertEqual(r.status_code, 200, '%s 时不该拦' % state)
+        finally:
+            with srv._LOCK:
+                srv._UPD.clear()
+                srv._UPD.update(old)
+
     def test_什么都不选就什么都不删(self):
         r = client.post('/api/maint/clean', json={'keys': [], 'paths': []})
         self.assertEqual(r.status_code, 200)

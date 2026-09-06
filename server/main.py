@@ -646,7 +646,7 @@ class UpgradeReq(BaseModel):
 
 
 class CleanReq(BaseModel):
-    # 要清哪几类（pip_cache / logs / tmp）
+    # 要清哪几类（pip_cache / temp_pip / logs / tmp）
     keys: list[str] = []
     # pip 缓存里具体删哪些文件。空 = 只删本软件下的那些，
     # 不碰别的程序的（缓存是按 Windows 用户共用的）。
@@ -995,11 +995,28 @@ def maint_clean(req: CleanReq):
 
     🔴 **转换进行中不许清** —— 那时 _tmp 里有正在用的中间产物，
     删了当场炸。跟「转换中禁用检查更新」一个规矩。
+
+    🔴 **装东西的时候也不许清。** 三类安装任务各用一个全局字典，
+    **一个都不在 `_TASKS` 里** —— `_DL`（模型 / GPU 运行库 /
+    vcredist）、`_UPG`（依赖升级）、`_UPD`（软件自更新）。只判
+    `_TASKS` 会把它们全放行：pip 正往 `%TEMP%` 的工作目录里解包
+    时被清掉，几 GB 白下，而且报错是一串莫名其妙的文件不存在。
+    （2026-09-06 加 temp_pip 那一项时查出来的既有缺口。）
+
+    `_UPD` 判两个值：它的状态机有六种（idle / running / installing /
+    need_confirm / done / error），**在跑的是 running 和 installing**。
+    自更新的 installing 阶段在往安装目录搬文件，它自己的临时目录用的是
+    `p2w_upd_` 前缀（`update.py:913`），跟我们只删 `pip-` 前缀的
+    temp_pip 不冲突 —— 拦它是为了「安装中不许清」这条规矩本身，
+    不是因为会互相删。`need_confirm` 是在等用户点，不算在跑。
     """
     with _LOCK:
-        busy = any(t.get('state') == 'running' for t in _TASKS.values())
+        busy = (any(t.get('state') == 'running' for t in _TASKS.values())
+                or _DL.get('state') == 'running'
+                or _UPG.get('state') == 'running'
+                or _UPD.get('state') in ('running', 'installing'))
     if busy:
-        return JSONResponse({'detail': '正在转换，转完再清理'},
+        return JSONResponse({'detail': '正在转换或安装，完成后再清理'},
                             status_code=409)
     return maint.clean(keys=req.keys, pip_paths=req.paths)
 

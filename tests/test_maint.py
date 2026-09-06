@@ -9,7 +9,10 @@ r"""占用扫描与清理。
 import io
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 import zipfile
 
@@ -236,6 +239,188 @@ class Test扫描不炸(unittest.TestCase):
         r"""4.6 GB，清了要重下。不能让用户手滑点掉。"""
         models = [it for it in maint.scan()['items'] if it['key'] == 'models'][0]
         self.assertFalse(models['cleanable'])
+
+
+class TestTEMP里的pip残骸(unittest.TestCase):
+    r"""pip 装大 wheel 时会在 `%TEMP%` 下开工作目录，正常跑完自己清掉，
+    **中断就永久留下**。2026-09-06 开发机上扫出 45 个目录 1709.6 MB，
+    最大的一个 1640.2 MB 是 8-21 下到 62.5% 断掉的 torch wheel。
+
+    🔴 **这一组的重点不是「能不能扫出来」，是「会不会删到临时目录
+    外面去」。** `%TEMP%` 跟 pip 缓存不一样 —— 它是本机任何程序都能写
+    的公共目录，谁都能往里放一个指向别处的目录联接（junction）。
+
+    2026-09-06 实测过原来那段 rm_tree：临时目录里放一个指向别处的
+    junction，跑一遍，**外面的文件真被删了，而且一个错都不报，
+    报告「清理成功」**。`os.path.islink()` 对 junction 返回 False，
+    `os.walk` 的 followlinks=False 拦不住它。
+    """
+
+    def setUp(self):
+        self.box = os.path.join(WORK, 'tempbox')
+        shutil.rmtree(self.box, ignore_errors=True)
+        self.fake = os.path.join(self.box, 'faketmp')
+        self.outside = os.path.join(self.box, '临时目录外面')
+        os.makedirs(self.fake)
+        os.makedirs(self.outside)
+        self.victim = os.path.join(self.outside, '不能删.txt')
+        io.open(self.victim, 'w', encoding='utf-8').write('重要文件')
+        self._real = tempfile.gettempdir
+        tempfile.gettempdir = lambda: self.fake
+
+    def tearDown(self):
+        tempfile.gettempdir = self._real
+        shutil.rmtree(self.box, ignore_errors=True)
+
+    def _mk(self, name, age_h):
+        r"""造一个残骸目录。
+
+        🔴 **目录和里面的文件都要调老。** 判年龄看的是「目录里最新的
+        东西什么时候动的」，只调目录的话文件还是刚写的，会被判成
+        「正在用」。
+        """
+        d = os.path.join(self.fake, name)
+        os.makedirs(d)
+        f = os.path.join(d, 'x.whl')
+        io.open(f, 'w', encoding='utf-8').write('y' * 1000)
+        t = time.time() - age_h * 3600
+        os.utime(f, (t, t))
+        os.utime(d, (t, t))
+        return d
+
+    def _junction(self, link, target, age_h=8):
+        r"""造一个目录联接，**并且把它的时间调老**。
+
+        🔴 时间必须调 —— 不调的话它是「刚创建」的，会被年龄门槛顺手
+        挡掉，于是链接防护那几条测试**根本没碰到链接防护就绿了**。
+        2026-09-06 变异测试抓出来的：把两道链接防护全拆光，这几条
+        照样全绿。（跟 CLAUDE.md 第 4 条同一个形状：测试和实现一起
+        错，于是一起绿。）
+        """
+        p = subprocess.run(['cmd', '/c', 'mklink', '/J', link, target],
+                           capture_output=True)
+        if p.returncode != 0 or not os.path.exists(link):
+            self.skipTest('这台机器造不出目录联接')
+        t = time.time() - age_h * 3600
+        try:
+            os.utime(link, (t, t), follow_symlinks=False)
+        except (NotImplementedError, OSError):
+            os.utime(link, (t, t))
+        return link
+
+    def test_只认pip前缀(self):
+        self._mk('pip-unpack-abc', 8)
+        self._mk('notpip-abc', 8)
+        self._mk('tmpXYZ', 8)
+        self.assertEqual([r['name'] for r in maint.temp_pip_dirs()],
+                         ['pip-unpack-abc'])
+
+    def test_刚动过的不碰(self):
+        r"""下 2.7 GB 的 torch 要几十分钟，正在解包的目录必须躲开。"""
+        self._mk('pip-unpack-old', 8)
+        self._mk('pip-install-fresh', 1)
+        names = [r['name'] for r in maint.temp_pip_dirs()]
+        self.assertIn('pip-unpack-old', names)
+        self.assertNotIn('pip-install-fresh', names)
+
+    def test_目录时间没变但文件在写就不算老残骸(self):
+        r"""🔴 往目录里**已有的**文件追加内容，目录的 mtime **一动不动**
+        —— 只有新建 / 删除条目才更新它。实测：追加 100 KB 之后目录时间
+        没变。
+
+        pip 下一个 2.7 GB 的 wheel 正是这个形状：创建文件那一刻目录时间
+        更新，之后几十分钟都在往同一个文件里写。只看目录 mtime 会把
+        **正在下载的目录**判成老残骸删掉。
+
+        前面那道 busy 闸只挡得住本软件自己的安装 —— 用户在别的程序里
+        跑 pip（比如另一个 Python 项目装包）我们不知道，这条判据是那
+        种场景下唯一的防线。
+        """
+        d = self._mk('pip-unpack-downloading', 8)
+        before = os.path.getmtime(d)
+        with io.open(os.path.join(d, 'x.whl'), 'a', encoding='utf-8') as h:
+            h.write('z' * 100)
+        self.assertEqual(os.path.getmtime(d), before,
+                         '前提变了：往已有文件写，目录 mtime 居然变了')
+        self.assertNotIn('pip-unpack-downloading',
+                         [r['name'] for r in maint.temp_pip_dirs()],
+                         '目录时间是老的，但里面的文件正在写，不能当老残骸')
+
+    def test_问不出时间的目录不许当成老残骸(self):
+        r"""🔴 兜底的方向不能搞反。问不出 mtime 通常是目录正被占用或者
+        刚消失，两种都该躲开；而「当成很老」会让代码**主动去删**。
+
+        方向反了的判据比没有判据更危险 —— 没判据是不删，反了是乱删。
+        """
+        d = self._mk('pip-unpack-nostat', 8)
+        real = maint.os.path.getmtime
+
+        def boom(p):
+            if os.path.normcase(p) == os.path.normcase(d):
+                raise OSError('模拟问不出时间')
+            return real(p)
+
+        maint.os.path.getmtime = boom
+        try:
+            names = [r['name'] for r in maint.temp_pip_dirs()]
+        finally:
+            maint.os.path.getmtime = real
+        self.assertNotIn('pip-unpack-nostat', names,
+                         '问不出时间的目录被当成老残骸了')
+
+    def test_目录联接不列出来(self):
+        self._junction(os.path.join(self.fake, 'pip-evil'), self.outside)
+        self.assertEqual(maint.temp_pip_dirs(), [])
+
+    def test_清理不会顺着目录联接删到外面(self):
+        self._junction(os.path.join(self.fake, 'pip-evil'), self.outside)
+        maint.clean(keys=['temp_pip'])
+        self.assertTrue(os.path.isfile(self.victim),
+                        '顺着目录联接把临时目录外面的文件删了！')
+
+    def test_残骸里面藏的联接也不跟进(self):
+        r"""外层判过了不等于安全 —— 联接可以藏在残骸目录里面一层。"""
+        d = self._mk('pip-install-inner', 8)
+        self._junction(os.path.join(d, 'sub'), self.outside)
+        t = time.time() - 8 * 3600
+        os.utime(d, (t, t))
+        maint.clean(keys=['temp_pip'])
+        self.assertTrue(os.path.isfile(self.victim),
+                        '顺着残骸里面的目录联接删到外面了！')
+        self.assertFalse(os.path.exists(d), '残骸本身该被删掉')
+
+    def test_正常残骸能删掉(self):
+        d = self._mk('pip-unpack-old', 8)
+        r = maint.clean(keys=['temp_pip'])
+        self.assertFalse(os.path.exists(d))
+        self.assertEqual(r['failed'], [])
+        self.assertGreater(r['freed'], 0)
+
+    def test_删不掉的时候要报出是哪个目录(self):
+        r"""🔴「删不掉的要老实报」这条规矩已经有了，但粒度得对得上：
+        这一支删的是**目录**，而 rm_file 报的是**文件名**。三个残骸
+        目录里的文件可能重名，只报文件名等于没报。
+        """
+        d = self._mk('pip-unpack-locked', 8)
+        h = io.open(os.path.join(d, 'x.whl'), 'rb')   # 占住句柄，删不掉
+        try:
+            r = maint.clean(keys=['temp_pip'])
+        finally:
+            h.close()
+        self.assertTrue(os.path.isdir(d), '前提变了：被占用的文件居然删掉了')
+        self.assertTrue(any('pip-unpack-locked' in x for x in r['failed']),
+                        '没说清楚是哪个目录没删掉：%r' % (r['failed'],))
+
+    def test_没选这一项就不删(self):
+        d = self._mk('pip-unpack-old', 8)
+        maint.clean(keys=['logs'])
+        self.assertTrue(os.path.exists(d))
+
+    def test_这一项即使是0也要显示(self):
+        r"""这一屏存在的意义是「看得见 C 盘被谁占了」。只在有东西时
+        才冒出来的行，用户不会知道软件替他看过这个地方。"""
+        keys = [it['key'] for it in maint.scan()['items']]
+        self.assertIn('temp_pip', keys)
 
 
 if __name__ == '__main__':

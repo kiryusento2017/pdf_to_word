@@ -1683,10 +1683,6 @@ console.log('转换时永远有数字在跳：');
 }
 
 console.log('');
-if (bad) {
-  console.log('\u524d\u7aef\u68c0\u67e5\u5931\u8d25 ' + bad + ' \u9879');
-  process.exit(1);
-}
 
 console.log('\n升级区：');
 {
@@ -1807,6 +1803,66 @@ console.log('\n模型更新入口：');
     const tag = h.slice(i, h.indexOf('>', i));
     if (!tag.includes('disabled')) throw new Error('转换中却还能点');
   });
+}
+
+console.log('\n清理按钮的防护：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  // 勾上一项 —— 不勾的话按钮本来就是灰的，测不出是被谁拦的
+  const base = () => Object.assign(ready(sb), {
+    about: 'env',
+    diag: { versions: {}, root: 'D:/x', models_ready: true },
+    maint: { ok: true, items: [] },
+    maintPick: { temp_pip: true },
+  });
+  const cleanTag = (st) => {
+    const h = fn(st);
+    const i = h.indexOf('data-act="doClean"');
+    if (i < 0) throw new Error('清理按钮不见了');
+    return h.slice(i, h.indexOf('>', i));
+  };
+
+  ck('没在装东西的时候能点清理', () => {
+    // 🔴 拦过头比不拦更烦人：按钮永远点不了，而用户不知道为什么
+    if (cleanTag(base()).includes('disabled')) throw new Error('没在装却点不了');
+  });
+
+  ck('装东西时清理按钮变灰并说明原因', () => {
+    // 🔴 只有这两样够得着这一屏。软件自更新（后端 _UPD）不在其中 ——
+    //    st.upd 一有值 pageMain 就切去「检查更新」那一屏，清理按钮
+    //    根本不渲染。后端照样拦它，两边不对称是有意的。
+    const cases = [
+      ['下模型或装运行库', (st) => { st.dl = { running: true }; }],
+      ['依赖升级', (st) => { st.upgDl = { state: 'running' }; }],
+    ];
+    for (const [name, set] of cases) {
+      const st = base();
+      set(st);
+      const tag = cleanTag(st);
+      if (!tag.includes('disabled')) throw new Error(name + ' 时还能点清理');
+      if (!tag.includes('正在安装')) throw new Error(name + ' 时没说为什么点不了');
+    }
+  });
+
+  ck('转换进行中也不让清', () => {
+    const st = base();
+    st.task = { state: 'running', items: [] };
+    const tag = cleanTag(st);
+    if (!tag.includes('disabled')) throw new Error('转换中还能点清理');
+    if (!tag.includes('正在转换')) throw new Error('转换中没说为什么');
+  });
+}
+
+
+// 🔴 **这个判断必须待在文件最末尾。** 它原来在中间（跑完前 115 条
+//    就 exit），后面还有三个测试块 —— 那 15 条失败了退出码照样是 0，
+//    末尾那句「前端全部通过」也照常打印。发版门禁认的就是这句话，
+//    于是「红了也报绿」。（2026-09-06 加清理按钮那几条测试时发现：
+//    自己写的两条明明是 ✗，脚本还是说全部通过。）
+if (bad) {
+  console.log('\u524d\u7aef\u68c0\u67e5\u5931\u8d25 ' + bad + ' \u9879');
+  process.exit(1);
 }
 
 console.log('\u524d\u7aef\u5168\u90e8\u901a\u8fc7');

@@ -45,6 +45,7 @@ import io
 import json
 import os
 import subprocess
+import tempfile
 import time
 import zipfile
 
@@ -65,6 +66,11 @@ OUR_PACKAGES = frozenset([
 # 小于这个大小的缓存条目不单独列出来（几百个几十 KB 的元数据文件，
 # 列出来只会淹没真正值得删的那几个）。仍然计入总量。
 MIN_LIST_BYTES = 1024 * 1024
+
+# TEMP 里那些 pip 残骸，最后动过的时间在这个小时数以内就不碰 ——
+# 可能是正在跑的安装用着的。下 2.7 GB 的 torch 本身要几十分钟，
+# 门槛太短会撞上正在解包的目录。
+TEMP_PIP_MIN_AGE_H = 6
 
 
 def _dir_size(path):
@@ -181,6 +187,156 @@ def scan_pip_cache(detail=True):
     return out
 
 
+def _is_link(p):
+    r"""这个路径是不是链接（软链接或目录联接）。
+
+    🔴 **`os.path.islink()` 对 Windows 的目录联接（junction）返回 False**，
+    别想当然。2026-09-06 实测：在临时目录下造一个指向别处的
+    `pip-evil-junction`，`islink` 说不是链接，`os.walk` 直接走进去，
+    照着 `clean()` 里那段 rm_tree 跑一遍，**外面那个文件真被删了，
+    而且一个错都不报，报告「清理成功」**。
+
+    判据用 `os.path.isjunction()`（3.12 新增）。两个环境实测都有：
+    发行版自带的 python 和开发用的 .venv 都是 **3.12.10**。
+
+    ⚠️ 取不到它的时候退回只判软链接，**那种环境下这个函数是不够用的**。
+    别把下面这句读成「有兜底所以没事」：`temp_pip_dirs()` 的 realpath
+    父目录校验只保护**顶层**那个候选目录，而 `_tree_stat()` 和
+    `rm_tree_safe()` 在目录**内部**剪枝时也调这个函数 —— 那里没有任何
+    兜底。所以真跑在 3.12 以下时，藏在残骸里面的联接会被跟进去。
+    留这个分支只是为了不当场抛 AttributeError。
+    """
+    try:
+        if os.path.islink(p):
+            return True
+    except OSError:
+        return True          # 判不了就当是，宁可不删
+    fn = getattr(os.path, 'isjunction', None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(p))
+    except OSError:
+        return True
+
+
+def _tree_stat(d):
+    r"""这个目录多大、里面最新的东西是什么时候动的。返回 (字节, mtime)。
+
+    **不跟着链接走** —— `os.walk` 的 followlinks=False 只管软链接，
+    对 junction 无效（见 `_is_link`），所以自己把链接子目录摘掉。
+
+    🔴 **时间必须看里面的东西，不能只看目录自己的 mtime。**
+    实测：往目录里**已有的**文件追加 100 KB，目录的 mtime **一动不动**
+    —— 只有新建 / 删除条目才更新它。而 pip 下一个 2.7 GB 的 wheel 正是
+    这个形状：创建文件那一刻目录时间更新，之后几十分钟都在往同一个文件
+    里写，目录时间停在最开始。拿目录 mtime 当「多久没动过」的判据，
+    会把**正在下载的目录**判成老残骸删掉。
+
+    （2026-09-06 审查时实测发现，第一版就是只看目录 mtime。）
+
+    用 `lstat` 不用 `stat`：万一里面有指向大文件的软链接，跟着算会把
+    大小算成目标的，而我们删的是链接本身。
+    """
+    total = 0
+    try:
+        newest = os.path.getmtime(d)
+    except OSError:
+        # 🔴 问不出时间要当成「刚动过」，不能当成「很老」。0.0 是 1970 年，
+        #    算出来就是「一直没动过」，调用方会拿去删。问不出来通常意味着
+        #    目录正被占用或刚消失 —— 两种情况都该躲开。
+        #    （方向搞反的判据比没有判据更危险：它会主动去删。）
+        newest = time.time()
+    for dp, dns, fns in os.walk(d):
+        dns[:] = [n for n in dns if not _is_link(os.path.join(dp, n))]
+        for n in dns:
+            try:
+                mt = os.lstat(os.path.join(dp, n)).st_mtime
+            except OSError:
+                continue
+            if mt > newest:
+                newest = mt
+        for n in fns:
+            try:
+                st = os.lstat(os.path.join(dp, n))
+            except OSError:
+                continue
+            total += st.st_size
+            if st.st_mtime > newest:
+                newest = st.st_mtime
+    return total, newest
+
+
+def temp_pip_dirs(min_age_h=TEMP_PIP_MIN_AGE_H):
+    r"""系统临时目录里 pip 留下的残骸。返回 [{path, name, size, mtime}]。
+
+    ## 这些是怎么来的
+
+    pip 装一个大 wheel 时会在 `%TEMP%` 下开工作目录
+    （`pip/_internal/utils/temp_dir.py:174` 的
+    `mkdtemp(prefix=f"pip-{kind}-")`，kind 有 unpack / install /
+    uninstall / build-env / req-build / modern-metadata 等 15 种，
+    **全部以 `pip-` 开头**，所以按这一个前缀扫就够，不会漏）。
+
+    正常跑完 pip 自己会清掉，**中断就不会** —— 进程被杀、断网、
+    用户点取消、关机，那几 GB 就永久留下。而「删掉软件文件夹 =
+    卸载干净」这个承诺覆盖不到 `%TEMP%`。
+
+    2026-09-06 在开发机上扫出 45 个目录 1709.6 MB，最大的一个
+    1640.2 MB 是 8-21 那次下到 62.5% 断掉的 torch wheel。
+
+    ## 目录必须问系统要，不能硬编码
+
+    跟 `pip_cache_dir()` 一个道理。实测同一台机器上 `%TEMP%` 环境变量
+    给的是 8.3 短名（`C:\Users\KIRYUS~1\...`），系统 API 算出来的是长名
+    （`C:\Users\kiryusento\...`）—— 同一个地方两种写法，**字符串不相等**。
+    用户名不到 8 个字符的机器根本没有短名，还有人把临时目录改到别的盘。
+
+    ## 🔴 三道防护
+
+    1. `_is_link()` 挡住链接和目录联接 —— 顺着它删会爬到临时目录外面
+    2. **父目录按 realpath 归一化后比对** —— 兜住 `_is_link` 漏掉的其它
+       重解析点，短名/长名的问题也一并解决（两边 realpath 之后实测相等）
+    3. **只列一层**找候选，实测 55585 项的临时目录列一层 0.06 秒。
+       候选目录本身要走一遍 `_tree_stat`（判年龄必须看里面的文件，
+       原因见那个函数）
+    """
+    root = tempfile.gettempdir()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return []
+    real_root = os.path.realpath(root).lower()
+    now = time.time()
+    cut = float(min_age_h) * 3600.0
+    rows = []
+    for n in names:
+        if not n.startswith('pip-'):
+            continue
+        p = os.path.join(root, n)
+        # 顺序不能反：先排链接再 isdir —— isdir 会跟着链接走
+        if _is_link(p) or not os.path.isdir(p):
+            continue
+        real = os.path.realpath(p)
+        if os.path.dirname(real).lower() != real_root:
+            continue
+        size, newest = _tree_stat(real)
+        if now - newest < cut:
+            continue
+        rows.append({'path': real, 'name': n,
+                     'size': size, 'mtime': newest})
+    rows.sort(key=lambda x: -x['size'])
+    return rows
+
+
+def scan_temp_pip(min_age_h=TEMP_PIP_MIN_AGE_H):
+    """汇总 temp_pip_dirs()。返回 {dir, total, count, items}。"""
+    rows = temp_pip_dirs(min_age_h)
+    return {'dir': tempfile.gettempdir(),
+            'total': sum(r['size'] for r in rows),
+            'count': len(rows), 'items': rows}
+
+
 def scan_logs():
     """日志和转换临时文件有多大。"""
     return {'logs': _dir_size(paths.LOGS), 'tmp': _dir_size(paths.TMP)}
@@ -193,6 +349,7 @@ def scan():
     {key, label, size, note, cleanable}
     """
     pip = scan_pip_cache()
+    tmp_pip = scan_temp_pip()
     logs = scan_logs()
     models = paths.models_size()
 
@@ -203,6 +360,16 @@ def scan():
          'note': ('其中本软件的约 %d MB'
                   % (pip.get('ours_total', 0) // 1024 // 1024))
                  if pip.get('ours_total') else pip.get('error', ''),
+         'cleanable': True},
+        # 🔴 这一行即使是 0 也照样显示。这一屏存在的意义就是「看得见
+        #    C 盘被谁占了」，只在有东西时才冒出来的行，用户不会知道
+        #    软件替他看过这个地方。跟 pip 缓存那行一个待遇。
+        {'key': 'temp_pip',
+         'label': 'pip 安装残留（装到一半中断留下的）',
+         'size': tmp_pip['total'],
+         'note': ('%d 个目录，%d 小时内动过的不算'
+                  % (tmp_pip['count'], TEMP_PIP_MIN_AGE_H))
+                 if tmp_pip['count'] else '没有',
          'cleanable': True},
         {'key': 'logs', 'label': '日志', 'size': logs['logs'],
          'note': '', 'cleanable': True},
@@ -258,11 +425,65 @@ def clean(keys=(), pip_paths=()):
             except OSError:
                 pass
 
+    def rm_tree_safe(d):
+        r"""删一个 TEMP 残骸目录，**不跟着链接走**。
+
+        🔴 **故意跟上面的 rm_tree 分开写，不是给它加参数。** 那个跑在
+        `logs/` 和 `_tmp/` 上，是软件自己的目录，行为一个字都不能动。
+        这个跑在 `%TEMP%` 上 —— 那是本机任何程序都能写的公共目录，
+        谁都能往里放一个指向别处的目录联接。
+
+        `os.walk` 的 followlinks=False 只管软链接，**对 Windows 的
+        junction 无效**（`os.path.islink` 对它返回 False）。所以自己
+        在 topdown 遍历里剪枝：链接目录只删链接本身（`os.rmdir` 删的是
+        链接点，不碰目标），绝不往里钻。
+
+        （剪枝必须在 topdown=True 时做 —— topdown=False 改 dirnames
+          对遍历没有任何影响。）
+        """
+        if _is_link(d) or not os.path.isdir(d):
+            return
+        dirs = []
+        files = []
+        for dp, dns, fns in os.walk(d):
+            subs = []
+            for n in dns:
+                p = os.path.join(dp, n)
+                dirs.append(p)
+                if not _is_link(p):
+                    subs.append(n)
+            dns[:] = subs
+            for fn in fns:
+                files.append(os.path.join(dp, fn))
+        for p in files:
+            rm_file(p)
+        for p in sorted(dirs, key=len, reverse=True):
+            try:
+                os.rmdir(p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+        # 🔴 删的是目录，报的却是文件名 —— 粒度对不上，用户看到
+        #    「x.whl（拒绝访问）」不知道哪个目录还在。补一条目录级的。
+        #    （rm_file 是 pip 缓存那支也在用的既有函数，不动它。）
+        if os.path.isdir(d):
+            failed.append('%s（里面有文件正被占用，整个目录没删掉）'
+                          % os.path.basename(d))
+
     keys = set(keys or ())
     if 'logs' in keys:
         rm_tree(paths.LOGS)
     if 'tmp' in keys:
         rm_tree(paths.TMP)
+    if 'temp_pip' in keys:
+        # 🔴 路径由后端自己列，**不接受前端传进来的**。temp_pip_dirs()
+        #    里已经把前缀、链接、父目录、年龄四道判据全过了一遍，
+        #    所以这里不用碰下面那段 pip_paths 的白名单校验。
+        for _r in temp_pip_dirs():
+            rm_tree_safe(_r['path'])
     if 'pip_cache' in keys and not pip_paths:
         # 没指定具体文件 = 清掉本软件的那些（不碰别人的）
         s = scan_pip_cache()

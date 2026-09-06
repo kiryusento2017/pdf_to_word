@@ -38,11 +38,15 @@
 装完连同下载的东西一共占硬盘约 10 GB。不想用了直接删掉整个文件夹，
 模型、日志、缓存跟着一起走，不写注册表。转好的 Word 不受影响。
 
-删不掉的只有两样，都是系统级的公共组件，不是这个软件私有的：
-**微软 C++ 运行库**（装在系统里，控制面板可卸载）和 **pip 的下载缓存**
-（在 `%LOCALAPPDATA%\pip\cache`，别的 Python 程序也在用同一个）。
-软件里「关于 → 环境检测」能看到缓存有多大、里面都是什么，
-想清就清。
+删不掉的只有三样，都不是这个软件私有的：
+
+- **微软 C++ 运行库** —— 装在系统里，控制面板可卸载
+- **pip 的下载缓存** —— 在 `%LOCALAPPDATA%\pip\cache`，别的 Python
+  程序也在用同一个
+- **pip 装到一半中断留下的残骸** —— 在 `%TEMP%`，正常装完 pip 自己会
+  清，进程被杀 / 断网 / 关机就会永久留下，一次可能是几个 GB
+
+后两样在软件里「关于 → 环境检测」都看得到有多大、里面是什么，想清就清。
 
 更新：软件里点「检查更新」→ 自动下载安装（约 0.5 MB）→ 点「立即重启」。
 不用再来 GitHub。
@@ -394,15 +398,15 @@ runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有�
             打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
             直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      446 条 Python + 139 条前端检查 + 四个真实数据验证脚本
+tests/      459 条 Python + 142 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 446 条，16 秒
-node tests\front_check.js                                   # 139 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 459 条，16 秒
+node tests\front_check.js                                   # 142 条，真渲染
 ```
 
 🔴 **必须是 `.venv\Scripts\python.exe`，不能用全局的 `python`。**

@@ -899,6 +899,19 @@ function envCheckView(st) {
   var picked = 0;
   for (var k in st.maintPick) { if (st.maintPick[k]) picked++; }
 
+  // 装东西的时候不许清 —— 后端那道闸是真正拦住的地方，这里只是
+  // 让按钮变灰并说清为什么，免得用户点下去吃一个看不懂的 409。
+  //
+  // 🔴 **只判两样，不判软件自更新（后端的 _UPD）。** 实测过：st.upd
+  //    一有值，pageMain 就走「检查更新」那一屏 —— 那个分支（本文件
+  //    1017 行附近）排在 st.about 前面，这一屏根本渲染不出来，
+  //    判了也是死代码。**后端仍然要拦 _UPD**，因为直接打接口绕得过
+  //    前端；两边不对称是有意的，不是漏了。
+  //    st.dl   = 模型 / GPU 运行库 / vcredist（后端 _DL）
+  //    st.upgDl= 依赖升级（后端 _UPG，升级区就在这一屏里）
+  var installing = !!((st.dl && st.dl.running)
+                   || (st.upgDl && st.upgDl.state === 'running'));
+
   return '<div class="fill" style="justify-content:flex-start;'
     + 'padding-top:10px;gap:7px">'
     + head
@@ -925,7 +938,9 @@ function envCheckView(st) {
     + res
     + '<div style="display:flex;gap:8px;margin-top:2px">'
     + btn('doClean', picked ? '清理选中的 ' + picked + ' 项' : '清理',
-          { off: !picked || st.maintBusy })
+          { off: !picked || st.maintBusy || installing || isRunning(st),
+            title: installing ? '正在安装，装完再清理'
+                 : (isRunning(st) ? '正在转换，转完再清理' : '') })
     + btn('copyDiag', st.copied ? '已复制' : '复制诊断信息')
     + btn('openAbout', '返回')
     + '</div></div>';
