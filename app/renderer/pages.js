@@ -127,38 +127,63 @@ function reportText(st, t) {
   return L.join(chr10());
 }
 
-// 主屏空着时显示的转换历史。
+// 转换历史里的一行。给「历史」那一屏用。
 //
-// 🔴 **不另开一屏。** app.js 开头那条界面哲学写着「任何时候主体都是那张表」——
-//    没有待转文件时，那张表就显示历史，顺着同一个位置，而且打开软件就看得见
-//    上次转了什么、存哪了。
-//
-// 四件事都在这一行里：找回转好的 Word（打开 / 文件夹）、确认转没转过成没成
-// （✓ / ✗ 和耗时）、失败的一键重转、出事时翻当时的报错（鼠标悬停看全文）。
+// 🔴 **没有「一键重转」。** 2026-09-07 小蔡问「出错重转也没用啊」——
+//    一半对：确定性失败（PDF 加密、文件损坏、扫描件没文字层）重转一百次
+//    也是那个结果，这类占大头；但转到一半关窗口、显存被占、超时这类是
+//    环境问题，换个时候就成了，重转有用。
+//    **不做的真正理由是不划算**：用户真要重转，把 PDF 再拖进来就行，而做它
+//    要加按钮 + 批量勾选 + 跳屏 + 源文件还在不在的判断 —— 省用户一步，
+//    换四样复杂度。替代做法几乎不花钱：失败那行的「文件夹」直接开源 PDF
+//    所在目录（open-path 传文件会打开目录**并选中它**），想重转就拖进去。
 function runRow(r) {
   var ok = !!r.ok;
   var when = (r.time || '').slice(5, 16);        // 只留 月-日 时:分
   var name = F.base(r.pdf || '') || (r.file || '');
   var right = ok
     ? '<span class="f-dim">' + F.sec(r.took_sec || 0) + '</span>'
-    : '<span class="f-bad ell" style="max-width:150px">'
+    : '<span class="f-bad ell" style="max-width:190px">'
       + esc(r.error || '失败') + '</span>';
   // 失败那条的完整报错挂在 title 上 —— 200 字符的截断版给诊断报告用，
   // 这里用没截断的那份（error_full）。
   var tip = ok ? (r.docx || '') : (r.error_full || r.error || '');
+  // 成功开产物 Word 所在目录，失败开源 PDF 所在目录（想重转就从那儿拖）。
+  var folder = ok ? (r.docx || '') : (r.pdf || '');
   return '<div class="it" title="' + esc(tip) + '">'
     + dot(ok ? '#15803d' : '#b91c1c')
     + '<span class="f-dim" style="width:78px;flex:none;font-size:11px">'
     + esc(when) + '</span>'
     + '<span class="grow ell">' + esc(name) + '</span>'
     + right
-    + (ok && r.docx
-        ? btn('openFile', '打开', { cls: 'link', arg: r.docx })
-          + btn('openPath', '文件夹', { cls: 'link', arg: r.docx })
-        : '')
-    + (r.pdf ? btn('reconvert', '重转', { cls: 'link', arg: r.pdf }) : '')
+    + (ok && r.docx ? btn('openFile', '打开', { cls: 'link', arg: r.docx }) : '')
+    + (folder ? btn('openPath', '文件夹', { cls: 'link', arg: folder }) : '')
     + '</div>';
 }
+
+
+// 转换历史那一屏。
+//
+// 🔴 **专门一屏，不在主屏顺带展示。** 上一版是「主屏没有待转文件时那张表
+//    就显示历史」，小蔡实测后要固定入口 —— 拖了文件进来历史就没了，等于
+//    想看的时候看不到。
+function historyView(st) {
+  var rows = st.runs || [];
+  if (!rows.length) {
+    return '<div class="fill">'
+      + '<div style="font-size:14px;font-weight:600">还没有转换记录</div>'
+      + '<div class="f-dim">转过的每一份都会记在这儿，'
+      + '关掉软件也还在</div></div>';
+  }
+  return '<div style="padding:10px 12px;display:flex;flex-direction:column;'
+    + 'gap:6px;height:100%;box-sizing:border-box">'
+    + '<div class="f-dim" style="font-size:11px">共 ' + rows.length + ' 份 · '
+    + '鼠标停在失败那行上能看完整报错</div>'
+    + '<div style="flex:1;min-height:0;overflow:auto">'
+    + rows.map(runRow).join('')
+    + '</div></div>';
+}
+
 
 function chr10() { return String.fromCharCode(10); }
 
@@ -237,6 +262,10 @@ function envLine(st, compact) {
 function botBar(st, extra, compact) {
   var busy = isRunning(st);
   return envLine(st, compact)
+    // 🔴 「历史」排在「关于」前面 —— 常用的靠左。
+    //    **而且转换中不禁用**：旁边的「关于」怕误操作是灰的，但历史纯只读，
+    //    转换中恰恰是最想看「上一份存哪了」的时候。
+    + btn('openHistory', '历史', { cls: 'link' })
     + btn('openAbout', '关于',
           { cls: 'link', off: busy,
             title: busy ? '正在转换，转完再看' : '' })
@@ -1170,6 +1199,11 @@ function pageMain(st) {
   // 关于 / 环境检测。排在更新面板后面 —— 点了「检查更新」就该
   // 看更新，不该被关于页盖住。
   if (st.about) {
+    if (st.about === 'history') {
+      return shell('<span class="f-dim" style="padding:0 4px">转换历史</span>',
+                   historyView(st),
+                   botBar(st, btn('closeAbout', '返回', { cls: 'link' })));
+    }
     if (st.about === 'env') {
       // 诊断文本算好存进 state，copyDiag 直接读 —— 不用隐式全局，
       // 那个前端检查专门在防（2026-09-02 栽过）。
@@ -1220,19 +1254,9 @@ function mainPick(st) {
       + '<div style="display:flex;gap:8px;margin-top:4px">'
       + btn('pickFiles', '选文件') + btn('pickDir', '选文件夹') + '</div>'
       + (st.err ? '<div class="f-bad" style="margin-top:6px">' + esc(st.err) + '</div>' : '')
-      + ((st.runs || []).length
-          ? '<div style="width:94%;margin-top:12px;text-align:left">'
-            + '<div class="f-dim" style="font-size:11px;padding-bottom:2px">'
-            + '之前转过的（' + st.runs.length + ' 份）</div>'
-            + '<div style="max-height:132px;overflow:auto">'
-            + st.runs.slice(0, 50).map(runRow).join('')
-            + '</div></div>'
-          : '')
       + '</div>';
     return shell(top, main,
-      botBar(st, '<span class="f-dim">'
-        + ((st.runs || []).length ? '还没有文件 · 下面是之前转过的' : '还没有文件')
-        + '</span>'));
+      botBar(st, '<span class="f-dim">还没有文件</span>'));
   }
 
   var n = 0, pages = 0;

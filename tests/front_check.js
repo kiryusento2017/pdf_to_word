@@ -75,6 +75,9 @@ function mkSandbox() {
       pathForFile: (f) => (f && f.path) || '',
     },
   };
+  // 把监听器暴露出去 —— 测「开机那一刻做了什么」要能手动触发
+  // DOMContentLoaded。
+  sb._on = listeners;
   sb.window = sb;
   sb.globalThis = sb;
   vm.createContext(sb);
@@ -2106,59 +2109,133 @@ console.log('\n界面状态不许串到下一批：');
 
 
 
-console.log('\n主屏空着时显示转换历史：');
+console.log('\n转换历史（专门一屏）：');
 {
   const sb = mkSandbox();
   const fn = sb.window.P2W_PAGES.main;
   const OK = { time: '2026-09-06 10:30:42', file: '讲义.pdf', ok: true,
-               pages: 56, took_sec: 1814, pdf: 'D:\讲义.pdf',
-               docx: 'D:\讲义.docx', error: '', error_full: '' };
+               pages: 56, took_sec: 1814, pdf: 'D:\源\讲义.pdf',
+               docx: 'D:\出\讲义.docx', error: '', error_full: '' };
   const BAD = { time: '2026-09-05 19:12:03', file: '作业.pdf', ok: false,
-                pages: 20, took_sec: 3600, pdf: 'D:\作业.pdf', docx: '',
+                pages: 20, took_sec: 3600, pdf: 'D:\源\作业.pdf', docx: '',
                 error: '超时被掐断', error_full: '超时被掐断，完整的一大段原因写在这里' };
-  const mk = (runs) => Object.assign(ready(sb), { items: [], runs: runs });
+  const hist = (runs) => Object.assign(ready(sb), { items: [], runs: runs, about: 'history' });
 
-  ck('没有历史时跟以前一样，只提示拖文件', () => {
-    const h = fn(mk([]));
-    if (!h.includes('把 PDF 拖进来')) throw new Error('提示没了');
-    if (h.includes('之前转过的')) throw new Error('没历史却摆了个空列表');
-  });
-
-  ck('有历史时列在主屏上，不用另开一屏', () => {
-    // 🔴 界面哲学：任何时候主体都是那张表。没有待转文件时，那张表显示历史。
-    const h = fn(mk([OK, BAD]));
-    if (!h.includes('之前转过的')) throw new Error('历史没显示');
-    if (!h.includes('讲义.pdf')) throw new Error('文件名没显示');
-    if (!h.includes('把 PDF 拖进来')) throw new Error('把拖放提示挤掉了');
-  });
-
-  ck('转成功的那行能打开 Word 和所在文件夹', () => {
-    const h = fn(mk([OK]));
-    if (!h.includes('data-act="openFile"')) throw new Error('没有「打开」');
-    if (!h.includes('data-act="openPath"')) throw new Error('没有「文件夹」');
-  });
-
-  ck('失败的那行不给「打开」，但给完整报错', () => {
-    const h = fn(mk([BAD]));
-    const seg = h.slice(h.indexOf('作业.pdf') - 400, h.indexOf('作业.pdf') + 400);
-    if (seg.includes('data-act="openFile"')) throw new Error('失败的还给打开按钮');
-    if (!h.includes('完整的一大段原因')) throw new Error('完整报错没挂上去（只有截断版没用）');
-  });
-
-  ck('每一行都能一键重转', () => {
-    const h = fn(mk([OK, BAD]));
-    const n = (h.match(/data-act="reconvert"/g) || []).length;
-    if (n !== 2) throw new Error('可重转的行有 ' + n + ' 个，该有 2 个');
-  });
-
-  ck('拖了文件进来之后就不显示历史了', () => {
-    const st = mk([OK]);
-    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 10, scan_pages: [] }];
+  ck('主屏不再顺带展示历史（改成专门一屏了）', () => {
+    const st = Object.assign(ready(sb), { items: [], runs: [OK, BAD] });
     const h = fn(st);
-    if (h.includes('之前转过的')) throw new Error('待转清单被历史挤占了');
+    if (h.includes('之前转过的')) throw new Error('主屏还在顺带展示历史');
+    if (!h.includes('把 PDF 拖进来')) throw new Error('把拖放提示弄丢了');
+  });
+
+  ck('底部有「历史」入口，而且排在「关于」前面', () => {
+    const h = fn(Object.assign(ready(sb), { items: [] }));
+    const a = h.indexOf('data-act="openHistory"');
+    const b = h.indexOf('data-act="openAbout"');
+    if (a < 0) throw new Error('底部没有「历史」按钮');
+    if (!(a < b)) throw new Error('「历史」该排在「关于」前面');
+  });
+
+  ck('转换中「关于」变灰，但「历史」照样能点', () => {
+    const st = ready(sb);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 10, scan_pages: [] }];
+    st.task = { state: 'running', total: 1, current: 0, elapsed: 5,
+                remain: 60, results: [], stage: '识别公式和文字' };
+    const h = fn(st);
+    const at = h.indexOf('data-act="openHistory"');
+    const seg = h.slice(Math.max(0, at - 120), at + 60);
+    if (/disabled/.test(seg)) throw new Error('转换中把「历史」也禁用了');
+    if (!h.includes('data-act="openAbout"')) throw new Error('「关于」不见了');
+  });
+
+  ck('历史屏把记录列出来', () => {
+    const h = fn(hist([OK, BAD]));
+    if (!h.includes('转换历史')) throw new Error('标题不对');
+    if (!h.includes('讲义.pdf') || !h.includes('作业.pdf')) throw new Error('记录没列全');
+    if (!h.includes('data-act="closeAbout"')) throw new Error('没有「返回」');
+  });
+
+  ck('成功那行能打开 Word，也能开它所在的目录', () => {
+    const h = fn(hist([OK]));
+    const f = h.match(/data-act="openFile" data-arg="([^"]*)"/);
+    const p = h.match(/data-act="openPath" data-arg="([^"]*)"/);
+    if (!f) throw new Error('没有「打开」');
+    if (!p) throw new Error('没有「文件夹」');
+    if (!/讲义\.docx$/.test(f[1])) throw new Error('「打开」没指向产物 Word：' + f[1]);
+    if (!/讲义\.docx$/.test(p[1])) throw new Error('「文件夹」该指向产物所在目录：' + p[1]);
+  });
+
+  ck('失败那行不给「打开」，「文件夹」指向源 PDF', () => {
+    // 🔴 **必须验按钮的 data-arg，不能只验页面上有没有那个文件名** ——
+    //    文件名在行首那一列本来就显示着，光 includes('作业.pdf') 的话，
+    //    把 folder 改成永远指向空的 docx 这条也照样绿（2026-09-07 变异抓到）。
+    const h = fn(hist([BAD]));
+    if (h.includes('data-act="openFile"')) throw new Error('失败的还给「打开」');
+    const m = h.match(/data-act="openPath" data-arg="([^"]*)"/);
+    if (!m) throw new Error('失败那行没有「文件夹」按钮');
+    if (!/作业\.pdf$/.test(m[1])) {
+      throw new Error('「文件夹」没指向源 PDF，指向的是：' + (m[1] || '(空)'));
+    }
+    if (!h.includes('完整的一大段原因')) throw new Error('完整报错没挂上去（截断版没用）');
+  });
+
+  ck('没有「一键重转」', () => {
+    const h = fn(hist([OK, BAD]));
+    if (h.includes('reconvert')) throw new Error('「重转」又回来了');
+  });
+
+  ck('一条记录都没有时给句人话，不是空白', () => {
+    const h = fn(hist([]));
+    if (!h.includes('还没有转换记录')) throw new Error('空态没提示');
+    if (!h.includes('关掉软件也还在')) throw new Error('没说清楚记录是持久的');
   });
 }
 
+
+console.log('\n开机那一刻的顺序：');
+{
+  ck('拉转换历史必须在拿到端口之后', () => {
+    // 🔴 2026-09-07 的哑巴 bug：这句原本排在 getPort 前面，而
+    //    apiUrl 是 'http://127.0.0.1:' + state.port + p —— 开机那次请求
+    //    发的是 `.../127.0.0.1:null/api/runs`，必然失败，又被 loadRuns
+    //    自己的 catch 静默吞掉。**调用位置错 + catch 吃掉证据**，
+    //    于是「开机看不到历史」而且一声不吭。
+    //
+    //    渲染测试全是纯函数，测不到「什么时候调」，所以这条专门盯时序：
+    //    把 getPort 换成同步 thenable，启动链第一环当场跑完，然后看
+    //    每次 fetch 发生时 state.port 是什么。
+    const sb = mkSandbox();
+    const seen = [];
+    sb.fetch = (u) => {
+      seen.push({ url: String(u), port: sb.window.P2W_STATE.port });
+      return { then: () => ({ then: () => ({ catch: () => {} }) }) };
+    };
+    sb.api.getPort = () => ({
+      then: (f) => { f(1234); return { then: () => ({ catch: () => {} }) }; },
+    });
+    const boot = sb._on['DOMContentLoaded'];
+    if (!boot) throw new Error('没注册 DOMContentLoaded，启动流程没法测');
+    boot();
+
+    const runs = seen.filter((x) => x.url.indexOf('/api/runs') >= 0);
+    if (!runs.length) throw new Error('开机压根没去拉历史');
+    // 🔴 判据就一条：请求发出去那一刻，port 必须已经是 getPort 给的值。
+    //    别写花哨的条件 —— 第一版写成 `!r.port || r.port === 1234 ? false : true`，
+    //    括号优先级让它**永远不抛**，变异测试当场抓出这是条假绿测试。
+    for (const r of runs) {
+      if (r.port !== 1234) {
+        throw new Error('端口还没就位就去拉历史了，当时 port = '
+                        + JSON.stringify(r.port) + '，URL：' + r.url);
+      }
+    }
+  });
+
+  // 🔴 本来还想加一条「历史拉不到不许把启动流程带崩」，写完发现**测不到
+  //    它声称要测的东西**：真实的 fetch 失败返回的是 rejected Promise，
+  //    不会同步抛；为了在同步的 ck 里测而让 fetch 直接 throw，崩的其实是
+  //    后面那句 get('/api/env')，跟历史这条路无关。造个不真实的场景凑一条
+  //    绿测试没有意义 —— 删掉，记在这儿。
+}
 
 
 // 🔴 **这个判断必须待在文件最末尾。** 它原来在中间（跑完前 115 条

@@ -62,6 +62,10 @@ NOT_PROJECT_FILES = {
     # 跟 logs/*.log 一样，源码库里本来就不该有 —— 有反而说明打包会
     # 把开发机的假记号带给用户（build_release 已把它排除）。
     'vc_done.json',
+    # 软件跑起来才在 logs/ 下生成的数据：转换历史、学到的模型总量、
+    # 上一次转换的诊断快照、升级下载的断点。跟上面那些 .log 一样，
+    # 源码库里没有是正常的 —— 文档（尤其台账和进度档）会提它们的名字。
+    'runs.json', 'models_size.json', 'last_run.json', 'upgrade_state.json',
 }
 
 

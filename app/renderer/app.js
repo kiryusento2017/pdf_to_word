@@ -238,11 +238,14 @@ window.addEventListener('drop', function (e) {
 // ── 启动 ───────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function () {
   render();
-  // 拉一次转换历史 —— 主屏空着的时候显示它，打开软件就看得见
-  // 上次转了什么、存哪了。拉不到就当没有，不打扰主流程。
-  try { window.P2W_ACTS.loadRuns(); } catch (e) { /* 无所谓 */ }
   window.api.getPort().then(function (port) {
     state.port = port;
+    // 🔴 **拉历史必须在拿到 port 之后。** 2026-09-07 栽过：这句原本放在
+    //    getPort 前面，而 apiUrl 是 'http://127.0.0.1:' + state.port + p ——
+    //    开机那次请求发的是 `.../127.0.0.1:null/api/runs`，必然失败，又被
+    //    loadRuns 自己的 catch 静默吞掉，于是「开机看不到历史」而且一声不吭。
+    //    调用位置错 + catch 吃掉证据，两个错叠一起才成了哑巴 bug。
+    try { window.P2W_ACTS.loadRuns(); } catch (e) { /* 历史拉不到不挡主流程 */ }
     return get('/api/env');
   }).then(function (d) {
     state.env = d;
