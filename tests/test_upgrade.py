@@ -463,6 +463,44 @@ class Test下好的包还在不在(unittest.TestCase):
         self.assertEqual(r['action'], 'redownload')
         self.assertIn('torch', str(r.get('missing') or ''))
 
+    def test_下完包却没来得及写状态也要认出来(self):
+        r"""🔴 2026-09-07 小蔡真实撞上：14:43:52 两个 wheel 都落盘了，
+        `upgrade_state.json` 却根本不存在 —— 2.5 GB 成了软件不认识的孤儿，
+        重启后当然看不到「立即重启」，再点检查又说要重下。
+
+        根子在 `download()` **只在全部成功之后才写一次状态**：pip 把文件
+        写完、函数还没走到写状态那一句，进程被杀（关软件时 before-quit 里
+        killTree 连整棵进程树一起砍），状态就永远停在「没下过」。
+
+        所以：开工就写 `downloading`，而 `pending()` 看到这个状态时
+        **要去数一下包齐没齐** —— 齐了就是能装，别让用户白下一次。
+        """
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'downloading', 'picked': ['torch', 'torchvision']}))
+        self._wheel('torch', '2.14.0+cu126')
+        self._wheel('torchvision', '0.29.0+cu126')
+        r = upgrade.pending()
+        self.assertEqual(r['action'], 'install',
+                         '包明明齐了却不认，用户得白下一次')
+
+    def test_下到一半被打断包不齐时不许说能装(self):
+        r"""同上那条的反面：真下到一半被掐，包是残的，这时候说「能装」
+        就会装到一半失败再回滚，比直接让他重下还糟。"""
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'downloading', 'picked': ['torch', 'torchvision']}))
+        self._wheel('torch', '2.14.0+cu126')      # torchvision 还没下到
+        self.assertEqual(upgrade.pending()['action'], 'none')
+
+    def test_开工就写下状态别等下完才写(self):
+        r"""光让 pending 认得出还不够 —— download 得真的一开工就落一次盘，
+        不然进程被杀时状态文件根本不存在，pending 无从认起。"""
+        import inspect
+        src = inspect.getsource(upgrade.download)
+        at = src.find('_pip(')
+        self.assertGreater(at, 0, '找不到跑 pip 那一步')
+        self.assertIn("'downloading'", src[:at],
+                      'download 没有在开跑之前写下 downloading 状态')
+
     def test_装到一半断电照旧回滚不受影响(self):
         io.open(upgrade.STATE, 'w', encoding='utf-8').write(
             json.dumps({'phase': 'installing', 'picked': ['torch'],

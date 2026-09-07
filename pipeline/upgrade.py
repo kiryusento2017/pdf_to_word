@@ -341,6 +341,20 @@ def download(picked, targets=None, on_log=None, on_progress=None):
         t = (targets or {}).get(p)
         spec.append('%s==%s' % (p, t) if t else p)
 
+    # 🔴 **开工就写一次状态，别等下完才写。**
+    #
+    #    2026-09-07 小蔡真实撞上：两个 wheel 都落盘了、upgrade_state.json
+    #    却根本不存在 —— pip 把文件写完、这个函数还没走到底下那句
+    #    `_write_state({'phase': 'downloaded'})`，进程就被杀了（关软件时
+    #    before-quit 里 killTree 连整棵进程树一起砍）。于是 2.5 GB 成了
+    #    软件不认识的孤儿，重启后看不到「立即重启」，再点检查又说要重下。
+    #
+    #    先落一个 downloading，pending() 看到它会去数包齐没齐 —— 齐了
+    #    就照样能装，不让用户白下一次。
+    _write_state({'phase': 'downloading', 'picked': picked,
+                  'targets': targets or {},
+                  'time': time.strftime('%Y-%m-%d %H:%M:%S')})
+
     argv = ['download', '-d', CACHE, '-c', cfile] + spec + _index_args(picked)
     # 🔴 **分子分母都来自 pip 自己吐的字节数，不新写估算常量。**
     #    「下完停在 92%」那次事故就是估算常量惹的（照着 pip 打印的十进制
@@ -600,6 +614,14 @@ def pending():
     if phase == 'installing':
         return {'action': 'rollback', 'backup': st.get('backup', ''),
                 'picked': st.get('picked', [])}
+    if phase == 'downloading':
+        # 下载中断电**本身**不算事（环境没坏，旧的还能用）。但要分清两种：
+        #   · 包已经齐了 —— 那是「下完了没来得及写状态」，照样能装
+        #   · 包还残着   —— 那才是真的下到一半，让他重下，别装到一半失败
+        picked = st.get('picked') or []
+        if picked and not missing_wheels(picked):
+            return {'action': 'install', 'picked': picked}
+        return {'action': 'none'}
     if phase == 'downloaded':
         picked = st.get('picked') or []
         missing = missing_wheels(picked)
