@@ -1061,7 +1061,13 @@ function envCheckView(st) {
       + 'user-select:none;font-size:11px">'
       + (st.cacheOpen ? '收起缓存明细 ▴' : '缓存明细（' + pip.items.length + ' 项）▾')
       + '</div>'
-      + (st.cacheOpen ? '<div style="max-height:96px;overflow:auto;'
+      // 🔴 **这个 id 是给 render() 认的**，别删。展开后这里是一个独立的
+      //    滚动框（max-height + overflow:auto），用户滑的是它而不是外面的
+      //    .main。重绘是 innerHTML 整体赋值，框会被换成新元素、scrollTop
+      //    归 0 —— render() 靠这个 id 把位置放回去。
+      //    2026-09-07 小蔡报「展开明细往下滑，自己跳回最顶上」就是漏了这处
+      //    （当时只保住了 .main 和 #dllog 两个容器）。
+      + (st.cacheOpen ? '<div id="cachelist" style="max-height:96px;overflow:auto;'
         + 'font-size:11px;text-align:left"><table>' + rows + '</table></div>' : '');
   }
 

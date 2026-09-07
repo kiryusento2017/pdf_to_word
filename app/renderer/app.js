@@ -177,6 +177,14 @@ function render() {
       || (sh - logTop - ch) <= 3;
   }
 
+  // 缓存明细展开后是**第三个**滚动容器，跟上面两个一样得把位置记下来。
+  // 🔴 2026-09-07 小蔡报「展开明细往下滑，自己跳回最顶上，只在更新组件时」
+  //    —— 根因不是恢复得不准，是这一处**根本没人管**：写上面那两段时这个框
+  //    还不存在，后来加明细的人没想起来。升级期间每秒重绘一次，于是一秒
+  //    归零一次。
+  var prevCache = el.querySelector ? el.querySelector('#cachelist') : null;
+  var cacheTop = prevCache ? prevCache.scrollTop : 0;
+
   var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.main;
   el.innerHTML = page(state);
 
@@ -194,6 +202,11 @@ function render() {
     var now = el.querySelector('.main');
     // 列表变短时浏览器自己会截断到最大值，不用管
     if (now) now.scrollTop = top;
+  }
+
+  if (cacheTop && el.querySelector) {
+    var nowCache = el.querySelector('#cachelist');
+    if (nowCache) nowCache.scrollTop = cacheTop;
   }
 }
 

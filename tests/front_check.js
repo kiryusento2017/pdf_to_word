@@ -36,6 +36,7 @@ function mkSandbox() {
   const appEl = (function () {
     let mainEl = { scrollTop: 0 };
     let logEl = null;
+    let cacheEl = null;
     return {
       set innerHTML(v) {
         this._html = v;
@@ -44,12 +45,19 @@ function mkSandbox() {
         // 给出 scrollHeight/clientHeight，粘底判据才算得出来。
         logEl = v.indexOf('id="dllog"') >= 0
           ? { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 } : null;
+        // 缓存明细展开后是**第三个**滚动容器（max-height + overflow:auto）。
+        // 跟上面两个一样，innerHTML 换掉之后是新元素、scrollTop 从 0 开始 ——
+        // 不模拟这一点就测不出「明细一滑就跳回顶部」。
+        cacheEl = v.indexOf('id="cachelist"') >= 0
+          ? { scrollTop: 0, scrollHeight: 600, clientHeight: 96 } : null;
       },
       get innerHTML() { return this._html || ''; },
       querySelector: (s) => (s === '.main' ? mainEl
-                           : (s === '#dllog' ? logEl : null)),
+                           : (s === '#dllog' ? logEl
+                           : (s === '#cachelist' ? cacheEl : null))),
       get _main() { return mainEl; },
       get _log() { return logEl; },
+      get _cache() { return cacheEl; },
     };
   }());
   const sb = {
@@ -2235,6 +2243,47 @@ console.log('\n开机那一刻的顺序：');
   //    不会同步抛；为了在同步的 ck 里测而让 fetch 直接 throw，崩的其实是
   //    后面那句 get('/api/env')，跟历史这条路无关。造个不真实的场景凑一条
   //    绿测试没有意义 —— 删掉，记在这儿。
+}
+
+
+console.log('\n缓存明细展开后，重绘不许把它滚回顶部：');
+{
+  // 🔴 2026-09-07 小蔡报的：环境检测页展开缓存明细往下滑，自己跳回最顶上，
+  //    **只在「更新组件」进行时出现**。
+  //
+  //    根因不是「恢复得不准」，是**根本没恢复**：明细展开后自己是一个
+  //    `max-height:96px; overflow:auto` 的独立滚动框，用户滑的是它；
+  //    而 render() 当时只保存/恢复 .main 和 #dllog 两个容器 —— 写那段时
+  //    这个框还不存在，后来加明细的人没想起来还有这么一处。
+  //    升级期间 pollUpgrade 每秒 render 一次，于是一秒归零一次。
+  const sb = mkSandbox();
+  const el = sb.document.getElementById('app');
+
+  ck('明细框滚到一半，重绘之后还在原处', () => {
+    const st = sb.window.P2W_STATE;
+    Object.assign(st, ready(sb));
+    st.about = 'env';
+    st.cacheOpen = true;
+    st.maint = { ok: true, pip: { items: [
+      { name: 'torch', size: 2600000000, ours: true },
+      { name: 'numpy', size: 40000000, ours: false },
+    ] } };
+    sb.window.P2W_RENDER();
+    if (!el._cache) throw new Error('明细框没渲染出来（是不是没给 id）');
+    el._cache.scrollTop = 42;          // 用户往下滑
+    sb.window.P2W_RENDER();            // 升级期间每秒来这么一次
+    if (el._cache.scrollTop !== 42) {
+      throw new Error('明细被滚回了 ' + el._cache.scrollTop + '，该留在 42');
+    }
+  });
+
+  ck('明细收起来时不因为找不到它而出错', () => {
+    const st = sb.window.P2W_STATE;
+    Object.assign(st, ready(sb));
+    st.about = 'env';
+    st.cacheOpen = false;
+    sb.window.P2W_RENDER();            // 不抛就算过
+  });
 }
 
 
