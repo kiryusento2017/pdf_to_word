@@ -167,14 +167,11 @@ function render() {
   //
   //    日志区**不走这套**：它要的是「贴底就跟着滚」，不是「留在原处」，
   //    见下面那段。
-  //    querySelectorAll 做了容错：测试用的假 window 没有它。
   var keep = {};
-  if (el.querySelectorAll) {
-    var olds = el.querySelectorAll('[data-keep-scroll]');
-    for (var i = 0; i < olds.length; i++) {
-      var k = olds[i].getAttribute('data-keep-scroll');
-      if (k) keep[k] = olds[i].scrollTop;
-    }
+  var olds = el.querySelectorAll('[data-keep-scroll]');
+  for (var i = 0; i < olds.length; i++) {
+    var k = olds[i].getAttribute('data-keep-scroll');
+    if (k) keep[k] = olds[i].scrollTop;
   }
 
   // 🔴 日志区**只在用户本来就贴着底部时**才跟着滚。
@@ -206,12 +203,10 @@ function render() {
   }
 
   // 位置放回去。内容变短时浏览器自己会截断到最大值，不用管。
-  if (el.querySelectorAll) {
-    var news = el.querySelectorAll('[data-keep-scroll]');
-    for (var j = 0; j < news.length; j++) {
-      var k2 = news[j].getAttribute('data-keep-scroll');
-      if (k2 && keep[k2]) news[j].scrollTop = keep[k2];
-    }
+  var news = el.querySelectorAll('[data-keep-scroll]');
+  for (var j = 0; j < news.length; j++) {
+    var k2 = news[j].getAttribute('data-keep-scroll');
+    if (k2 && keep[k2]) news[j].scrollTop = keep[k2];
   }
 }
 

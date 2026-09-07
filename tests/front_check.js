@@ -2192,6 +2192,23 @@ console.log('\n转换历史（专门一屏）：');
     if (!h.includes('完整的一大段原因')) throw new Error('完整报错没挂上去（截断版没用）');
   });
 
+  ck('每次进历史屏都重新拉一次，不吃开机那份缓存', () => {
+    // 🔴 用户常是**刚转完一批就想看**，用开机时拉的那份会正好少掉最关心的
+    //    那几条。2026-09-07 变异发现这条承诺没人盯着：把 openHistory 里的
+    //    loadRuns 删掉，所有测试照样绿。
+    const sb2 = mkSandbox();
+    const urls = [];
+    sb2.window.P2W_STATE.port = 1234;
+    sb2.fetch = (u) => {
+      urls.push(String(u));
+      return { then: () => ({ then: () => ({ catch: () => {} }) }) };
+    };
+    sb2.window.P2W_ACTS.openHistory();
+    if (!urls.some((u) => u.indexOf('/api/runs') >= 0)) {
+      throw new Error('进历史屏没去拉数据，发出去的请求：' + JSON.stringify(urls));
+    }
+  });
+
   ck('没有「一键重转」', () => {
     const h = fn(hist([OK, BAD]));
     if (h.includes('reconvert')) throw new Error('「重转」又回来了');
