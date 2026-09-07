@@ -162,7 +162,7 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'downloadUpdate', 'restartApp',
                      'openAbout', 'closeAbout', 'openEnvCheck',
                      'checkDeps', 'toggleMaint', 'toggleCache',
-                     'doClean', 'copyDiag', 'toggleUpdNotes',
+                     'doClean', 'exportDiag', 'toggleUpdNotes',
                      'toggleUpg', 'planUpgrade', 'toggleUpgDetail',
                      'startUpgrade', 'updateModels']) {
       if (typeof a[k] !== 'function') throw new Error('缺 ' + k);
@@ -856,6 +856,44 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
     if (real.picked['C:\\a\\好.pdf'] !== false) throw new Error('成功的没取消勾选');
     if (real.picked['C:\\a\\坏.pdf'] !== true) throw new Error('失败的没勾上');
   });
+
+  ck('「再转一批」不许碰这批根本没转过的文件', () => {
+    // 🔴 有了待办队列之后，items 里会混着**没转过**的文件：摁停止时并回来
+    //    的待办、晋升时 start() 失败留下的那批。原来一律按 results 重设
+    //    勾选，它们不在 results 里 → 全被取消勾选 —— 用户看到的是
+    //    「软件把我刚拖进来的东西吃了」。
+    const sb2 = mkSandbox();
+    const real = sb2.window.P2W_STATE;
+    real.items = [
+      { path: 'C:\\a\\转过的.pdf', ok: true, pages: 5, scan_pages: [] },
+      { path: 'C:\\a\\刚拖进来的.pdf', ok: true, pages: 5, scan_pages: [] },
+    ];
+    real.picked = { 'C:\\a\\转过的.pdf': true, 'C:\\a\\刚拖进来的.pdf': true };
+    real.taskId = 'abc';
+    real.task = { state: 'done', results: [
+      { ok: true, pdf: 'C:\\a\\转过的.pdf', docx: 'C:\\a\\转过的.docx' },
+    ] };
+    sb2.window.P2W_ACTS.newBatch();
+    if (real.picked['C:\\a\\转过的.pdf'] !== false) throw new Error('转过且成功的该取消勾选');
+    if (real.picked['C:\\a\\刚拖进来的.pdf'] !== true)
+      throw new Error('没转过的文件被取消勾选了 —— 用户会以为文件被吃了');
+  });
+
+  ck('「再转一批」要把上一批的报告清掉，否则会隔着一批串味', () => {
+    // A 晋升 B（lastResults=A）→ B 转完 → 手动转 C → C 运行中点
+    // 「上一批的报告」看到的是 A，B 整个被跳过。报告是拿去核对 Word 的，
+    // 指错批次等于指错文件。
+    const sb2 = mkSandbox();
+    const real = sb2.window.P2W_STATE;
+    real.items = [];
+    real.taskId = 'abc';
+    real.task = { state: 'done', results: [] };
+    real.lastResults = [{ ok: false, pdf: 'C:\\a\\上上批.pdf', error: 'x' }];
+    real.showLastReport = true;
+    sb2.window.P2W_ACTS.newBatch();
+    if (real.lastResults !== null) throw new Error('上一批的报告没清掉，会串味');
+    if (real.showLastReport !== false) throw new Error('报告开关没关');
+  });
 }
 
 console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
@@ -891,6 +929,38 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     const h = fn(st);
     if (h.includes('已最新')) throw new Error('没查过却说已最新');
     if (!h.includes('data-act="checkDeps"')) throw new Error('没有检查上游的按钮');
+  });
+
+  ck('环境检测页有「生成诊断文件」，而且不再是复制到剪贴板', () => {
+    // 2026-09-08 小蔡定：剪贴板那条路砍掉，任何情况都生成文件 ——
+    // 十行粘微信还行，三百行没人看，而真出问题时要的就是那三百行。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    const h = fn(st);
+    if (!h.includes('data-act="exportDiag"')) throw new Error('没有生成诊断文件的按钮');
+    if (h.includes('data-act="copyDiag"')) throw new Error('剪贴板那条路还在');
+  });
+
+  ck('正在生成诊断文件时按钮禁用，防连点', () => {
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.diagBusy = true;
+    const h = fn(st);
+    if (!h.includes('正在生成')) throw new Error('没给「正在生成」的反馈');
+  });
+
+  ck('生成诊断文件失败时，环境检测页得把原因说出来', () => {
+    // 🔴 st.err 以前全项目只在待转屏渲染，这一屏通篇没有 —— 于是三个位置
+    //    都写不进去时，按钮只是从「正在生成…」闪回原样，一个字的解释都没有。
+    //    一个出问题时才用的功能，自己失败还静默，性质最差。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.err = 'logs、安装目录、临时目录都写不进去';
+    const h = fn(st);
+    if (!h.includes('都写不进去')) throw new Error('失败原因没显示，用户只能干瞪眼');
   });
 
   ck('转换进行中，关于按钮禁用但不消失', () => {
@@ -2106,6 +2176,69 @@ console.log('\n界面状态不许串到下一批：');
     const h = fn(st);
     if (!h.includes('不会存成文件')) throw new Error('该给报告的时候没给');
     if (!h.includes('data-act="copyReport"')) throw new Error('复制按钮没了');
+  });
+
+  // ── 待办队列（转换中加进来的文件，这批转完自动接上）────────────────
+  const runTask = { state: 'running', total: 1, current: 0,
+                    elapsed: 10, remain: 60, results: [],
+                    stage: '逐页识别', stage_cur: 1, stage_total: 3 };
+  const oneItem = [{ path: 'C:\\a.pdf', ok: true, pages: 10, scan_pages: [] }];
+
+  ck('转换中有待办时列出来，每份都能移除', () => {
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.pending = [{ path: 'C:\\b.pdf', ok: true, pages: 7, scan_pages: [] }];
+    const h = fn(st);
+    if (!h.includes('待办 1 份')) throw new Error('没显示待办份数');
+    if (!h.includes('b.pdf')) throw new Error('没列出待办的文件名');
+    if (!h.includes('data-act="delPending"')) throw new Error('没有移除按钮');
+  });
+
+  ck('转换中没待办时，也得让人知道还能加', () => {
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.pending = [];
+    const h = fn(st);
+    if (!h.includes('data-act="pickMore"')) throw new Error('没有「再加几份」入口');
+    if (!h.includes('拖进来')) throw new Error('没告诉用户可以拖');
+  });
+
+  ck('上一批有值得看的东西，才给「上一批的报告」', () => {
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.lastResults = [Object.assign({}, clean, { scan_pages: [3] })];
+    const h = fn(st);
+    if (!h.includes('data-act="toggleLastReport"'))
+      throw new Error('上一批有扫描页却没给报告入口');
+  });
+
+  ck('上一批全干净时，报告页进不去（否则是个没有出口的页面）', () => {
+    // 🔴 主区那个分支以前只判 lastResults.length，不判 worthReport，而退出
+    //    按钮由 pendingBox 里的 worthReport 控制 —— 两个条件不一致时，
+    //    页面进得来、按钮不渲染，用户被困在里面。跟 1513 行那次事故同形。
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.lastResults = [clean];          // 全都干干净净
+    st.showLastReport = true;          // 开关却开着
+    const h = fn(st);
+    if (h.includes('没列出来的不代表一定对'))
+      throw new Error('进了一个没有退出口的报告页');
+  });
+
+  ck('上一批全干净时不给「上一批的报告」—— 那是个死按钮', () => {
+    // 🔴 判据跟主报告同一个 worthReport。先摆按钮、点开才发现没什么可报，
+    //    就是死按钮 —— 这一屏为此栽过一次（见上面「没有退出口的报告页」）。
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.lastResults = [clean];
+    const h = fn(st);
+    if (h.includes('data-act="toggleLastReport"'))
+      throw new Error('上一批干干净净还给了报告按钮');
   });
 
   ck('开新一批时把报告和展开状态都归位', () => {

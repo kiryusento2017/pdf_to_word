@@ -14,6 +14,7 @@ r"""本地 HTTP 服务。Electron 起它，前端跟它说话。
    只有纯查内存字典的（ping / poll / cancel / download_status）才留 async。
 """
 import io
+import json
 import os
 import sys
 import threading
@@ -53,6 +54,17 @@ app.add_middleware(CORSMiddleware, allow_origins=['*'],
 # 任务表。单机单用户，内存里放着就行 —— 存盘反而要处理「上次没跑完的任务」
 # 这种没人关心的状态。软件关掉任务就没了，符合用户预期。
 _TASKS = {}
+
+# 任务表里留几个**已结束**的。
+#
+# 原来永不清理：转一批留一份，每份带着 results 和最多 120 行日志。以前一批
+# 转完就散场，堆几份无所谓；有了待办队列（转换中加的文件攒着、这批转完自动
+# 接上）之后一批接一批，这个数涨得快得多，所以补一道上限。
+#
+# 这纯粹是内存保护，**前端不依赖它**：上一批的报告由前端自己留一份
+# results（见 app.js 的 lastResults），不回头来查这张表。所以留几个都不会
+# 影响功能，5 个是个够查最近几批、又不至于堆着的数。
+_TASKS_KEEP = 5
 
 # 升级下载的状态。跟 _TASKS 一样由 _LOCK 保护。
 _UPG = {}
@@ -979,6 +991,21 @@ def start_convert(req: ConvertReq):
         r = probe.probe_pdf(p)
         pages.append(r['pages'] if r['ok'] and r['pages'] else 0)
     with _LOCK:
+        # 🔴 **只淘汰已结束的，正在跑的一个都不能动。**
+        #
+        #    下模型、清理、依赖升级、安装升级四处都靠
+        #    `any(t['state'] == 'running' for t in _TASKS.values())`
+        #    判断「是不是在转换」。删掉一个 running 的任务，这四道互斥
+        #    当场全部失效 —— 用户能在转换中装 torch，而那会儿 torch 的
+        #    dll 正被 MinerU 子进程占着。
+        #
+        #    按 started 排序取最老的删。
+        _done = [(k, v) for k, v in _TASKS.items()
+                 if v.get('state') in ('done', 'cancelled')]
+        if len(_done) > _TASKS_KEEP:
+            _done.sort(key=lambda kv: kv[1].get('started') or 0)
+            for _k, _v in _done[:len(_done) - _TASKS_KEEP]:
+                del _TASKS[_k]
         _est, _w = _estimate(pages)
         _TASKS[tid] = {'state': 'running', 'total': len(req.paths), 'current': 0,
                        'current_name': '', 'stage': '', 'stage_cur': 0,
@@ -1169,6 +1196,258 @@ def deps_local():
     return {'ok': True, 'versions': deps.local_versions(),
             'models_ready': paths.models_ready(),
             'models_size': paths.models_size()}
+
+
+# 诊断文件里收多少条转换历史。小蔡 2026-09-08 定 50 —— 200 条太长，
+# 最近一次又太少（那是「复制」时代的量）。
+DIAG_RUNS = 50
+
+
+class DiagExportReq(BaseModel):
+    r"""前端那一小包 —— **只有它拿得到的东西**，后端够不着。"""
+    # 前端已经拼好的那十行摘要（pages.js 的 diagText）。原样放文件开头，
+    # 后端**不重拼一遍** —— 重拼就是两处逻辑，改了一处忘另一处，
+    # 这个项目最常栽的就是这种。一份逻辑，两个出口。
+    summary: str = ''
+    errors: list = []       # JS 报错（window.onerror 抓的）
+    ua: str = ''            # Electron / Chrome 版本
+    screen: str = ''        # 窗口实际尺寸
+    task: dict = {}         # 当前任务
+    pending: list = []      # 待办队列
+
+
+def _kv(L, k, fn):
+    r"""收一项，**独立兜底**。
+
+    🔴 这份文件恰恰是在机器出问题时才生成的，那时候本来就有东西读不到 ——
+    显卡驱动挂了 `gpu.detect()` 就失败，模型目录没了扫描就报错。
+    **「读不到」本身就是最值钱的线索**，让整份文件因为它失败等于把线索扔了。
+    所以每一行各兜各的，谁也拖不垮谁。
+    """
+    try:
+        v = fn()
+    except Exception as e:
+        v = '（读不到：%s: %s）' % (type(e).__name__, str(e)[:70])
+    L.append('  %-20s %s' % (k, v))
+
+
+def _tail(path, n):
+    """日志的最后 n 行。文件不在、读不了都不抛异常。
+
+    大文件只从尾部读 512 KB —— convert.log 转一天能到几十 MB，
+    整个读进来纯属浪费。
+    """
+    try:
+        if not os.path.isfile(path):
+            return ['（没有这个文件）']
+        size = os.path.getsize(path)
+        with io.open(path, 'rb') as f:
+            if size > 512 * 1024:
+                f.seek(size - 512 * 1024)
+                head = f.tell()
+                f.readline()          # 丢掉开头那半行残句
+                # 🔴 **这 512 KB 里一个换行都没有时，别丢。**
+                #    tqdm 刷新用的是 \r 不是 \n，日志里出现「几百 KB 一整行」
+                #    很常见。那种情况下 readline 会把整段吃光，最后报
+                #    「（空的）」—— 明明有几十 MB，却把人往错方向带。
+                if f.tell() >= size:
+                    f.seek(head)
+            raw = f.read()
+        return raw.decode('utf-8', 'replace').splitlines()[-n:] or ['（空的）']
+    except Exception as e:
+        return ['（读不到：%s: %s）' % (type(e).__name__, str(e)[:70])]
+
+
+def _slurp(path, limit=4000):
+    """读一个小配置文件，压成一行。**用 with** —— 这是全文件唯一一处
+    以前裸 open 的地方，CPython 下靠引用计数也能收，但不该赌。
+    """
+    with io.open(path, encoding='utf-8', errors='replace') as f:
+        return f.read(limit).replace(chr(10), ' ')
+
+
+def _write_diag(text):
+    r"""写文件。**三级兜底**，返回 (路径, 错误)。
+
+    小蔡 2026-09-08：「那就不让他失败」。做不到 100%，但可以让它极难失败 ——
+    三个位置全军覆没时，这台电脑基本已经没法用了。
+
+    🔴 **utf-8-sig + CRLF**：老师是拿记事本打开的。不带 BOM 中文会乱码，
+       不是 CRLF 整个文件会连成一行 —— 那样文件生成了也等于没生成。
+    """
+    import tempfile
+    # 🔴 **先洗一遍孤立代理字符，再动笔。**
+    #
+    #    Electron 里的 JS 字符串允许孤立代理（\ud800-\udfff），
+    #    JSON.stringify 会原样输出，Python 的 json.loads 照单全收 ——
+    #    然后写盘时 UnicodeEncodeError，三个位置全部一样失败，一个字都拿不到。
+    #    文件名编码坏掉的 PDF（U 盘、网盘同步过来的）真能触发。
+    #
+    #    更坏的是 TextIOWrapper 是边编码边刷的：炸之前已经刷出去的部分留在盘上，
+    #    三个目录各留一个**半截**的诊断文件 —— 用户很可能就把半截那份发出来。
+    #    洗在这里，三级兜底才是干净的。
+    text = text.encode('utf-8', 'replace').decode('utf-8')
+    # 秒级重名会互相截断（两个软件实例同时点）。带上毫秒，一行的事。
+    _t = time.time()
+    name = '诊断_%s_%03d.txt' % (
+        time.strftime('%Y%m%d_%H%M%S', time.localtime(_t)), int(_t * 1000) % 1000)
+    last = ''
+    # 🔴 **三个位置传的是「怎么拿」，不是「拿到的值」。**
+    #
+    #    原来写的是 `for d in (paths.LOGS, paths.ROOT, tempfile.gettempdir())` ——
+    #    元组在进循环**之前**整体求值，`gettempdir()` 一抛异常，循环一次都
+    #    不执行，前两级明明可能是能写的。而它恰恰在 TEMP 被指到不存在的盘、
+    #    磁盘满、权限被组策略锁死时才抛 —— **正是这个函数唯一存在的场景**。
+    #    三级兜底在最需要它的时候变成零级。
+    for get_dir in (lambda: paths.LOGS, lambda: paths.ROOT,
+                    tempfile.gettempdir):
+        try:
+            d = get_dir()
+            paths.ensure(d)
+            p = os.path.join(d, name)
+            with io.open(p, 'w', encoding='utf-8-sig', newline='\r\n',
+                         errors='replace') as f:
+                f.write(text)
+            return p, ''
+        except Exception as e:
+            last = '%s: %s' % (type(e).__name__, str(e)[:60])
+    return '', last
+
+
+def _diag_text(req):
+    """把能拿到的一切拼成人看的文本。**先在内存里收齐，最后一次性写** ——
+    中途失败也不会留下半截文件。
+    """
+    import platform
+    L = []
+    L.append('=' * 60)
+    L.append(req.summary or '（摘要没拿到 —— 环境检测页还没渲染过）')
+    L.append('=' * 60)
+    L.append('生成于 ' + time.strftime('%Y-%m-%d %H:%M:%S'))
+
+    L.append('')
+    L.append('【环境细节】')
+    # 🔴 **一律用 lambda 包一层。** 直接传 `paths.python_exe` 的话，属性访问
+    #    发生在 `_kv` 的 try **外面** —— 哪天这个符号被改名或挪走，别的行会
+    #    老老实实打印「读不到：AttributeError」，这几行却会让整份诊断 500。
+    #    兜底必须是均匀的，否则「每一行各兜各的」就是句空话。
+    _kv(L, 'python.exe', lambda: paths.python_exe())
+    _kv(L, 'mineru 可用', lambda: paths.mineru_available())
+    _kv(L, 'CUDA 通道', lambda: '%s（驱动 %s）' % (
+        torchdep.pick_channel(torchdep.current_driver())[0],
+        torchdep.current_driver()))
+    _kv(L, 'GPU 运行库', lambda: torchdep.why())
+    _kv(L, 'torch 详情', lambda: json.dumps(torchdep.info(), ensure_ascii=False))
+    _kv(L, 'Office XSL', lambda: tomath.find_xsl() or '（找不到，公式转不了）')
+    _kv(L, 'node', lambda: '有' if tomath.node_available() else '没有')
+    _kv(L, 'pandoc', lambda: todocx.PANDOC if todocx.pandoc_available() else '没有')
+    _kv(L, 'C++ 运行库', lambda: '装过' if vcredist.already_done() else '没装过')
+
+    L.append('')
+    L.append('【路径与编码】')
+    # 🔴 这一组是给「中文路径」那类问题准备的。发行版的中文路径补丁
+    #    曾经一次都没生效过，当时要是诊断里有这几行，根本不用查那么久。
+    _kv(L, '安装目录', lambda: paths.ROOT)
+    _kv(L, '  含非 ASCII', lambda: '是' if any(ord(c) > 127 for c in paths.ROOT) else '否')
+    _kv(L, '  含空格', lambda: '是' if ' ' in paths.ROOT else '否')
+    _kv(L, '用户名', lambda: os.environ.get('USERNAME', '?'))
+    _kv(L, '  含非 ASCII', lambda: '是' if any(
+        ord(c) > 127 for c in os.environ.get('USERNAME', '')) else '否')
+    _kv(L, 'TEMP(环境变量)', lambda: os.environ.get('TEMP', '?'))
+    _kv(L, 'TEMP(系统算的)', lambda: __import__('tempfile').gettempdir())
+    _kv(L, '默认编码', lambda: '%s / %s' % (sys.getdefaultencoding(),
+                                            sys.getfilesystemencoding()))
+    _kv(L, 'CPU', lambda: platform.processor() or '?')
+    _kv(L, '逻辑核心', lambda: str(os.cpu_count()))
+
+    L.append('')
+    L.append('【模型】')
+    _kv(L, '就绪', lambda: '是' if models.ready() else '否')
+    # ★ 指到别的项目去了这种事，光看界面发现不了
+    _kv(L, '实际位置', lambda: models.where() or '（没找到）')
+    _kv(L, '占用', lambda: '%.2f GB' % (paths.models_size() / 1024.0 ** 3))
+    _kv(L, '学到的总量', lambda: str(models.learned_total()))
+    _kv(L, 'mineru.json', lambda: _slurp(paths.CONFIG))
+
+    L.append('')
+    L.append('【占用明细】')
+    _kv(L, '各项', lambda: ' / '.join(
+        '%s %.2fGB' % (x['label'].split('（')[0], x['size'] / 1024.0 ** 3)
+        for x in (maint.scan().get('items') or [])))
+
+    L.append('')
+    L.append('【升级状态】')
+    _kv(L, '待装的', lambda: json.dumps(upgrade.pending(), ensure_ascii=False))
+    _kv(L, '状态机', lambda: json.dumps(upgrade.read_state(), ensure_ascii=False))
+    _kv(L, '备份', lambda: ' / '.join(
+        '%s %.2fGB' % (b.get('name', '?'), b.get('size', 0) / 1024.0 ** 3)
+        for b in upgrade.list_backups()) or '（没有）')
+
+    L.append('')
+    L.append('【当前任务】')
+    _kv(L, '状态', lambda: json.dumps(
+        {k: v for k, v in (req.task or {}).items()
+         if k not in ('lines', 'results')}, ensure_ascii=False)[:600])
+    _kv(L, '待办队列', lambda: ' / '.join(
+        os.path.basename(x.get('path', '')) for x in (req.pending or [])) or '（空）')
+
+    L.append('')
+    L.append('【界面】')
+    _kv(L, 'UA', lambda: req.ua or '?')
+    _kv(L, '窗口', lambda: req.screen or '?')
+
+    L.append('')
+    L.append('【JS 报错】最近 %d 条' % len(req.errors or []))
+    # 🔴 后端出事有 convert.log 兜着，前端出事以前**一个字都不留** ——
+    #    界面就那么卡死，除了让用户重启没别的办法。这一段是补那个窟窿的。
+    for e in (req.errors or [])[:20]:
+        L.append('  ' + str(e)[:300])
+    if not req.errors:
+        L.append('  （没有 —— 这是好事）')
+
+    L.append('')
+    L.append('【转换历史】最近 %d 条（路径完整保留，路径本身常是病根）' % DIAG_RUNS)
+    try:
+        for r in maint.runs(DIAG_RUNS):
+            L.append('  %s  %s  %s  %s页  公式%s  %s秒' % (
+                r.get('time', ''), '✓' if r.get('ok') else '✗',
+                r.get('file', ''), r.get('pages', 0),
+                r.get('formulas', '?'), r.get('took_sec', 0)))
+            L.append('      ' + (r.get('pdf') or ''))
+            if not r.get('ok'):
+                L.append('      错误：' + (r.get('error_full') or r.get('error') or ''))
+    except Exception as e:
+        L.append('  （读不到：%s）' % e)
+
+    for fn, n in (('convert.log', 200), ('torch_install.log', 100),
+                  ('model_download.log', 100)):
+        L.append('')
+        L.append('【%s】最后 %d 行' % (fn, n))
+        for ln in _tail(os.path.join(paths.LOGS, fn), n):
+            L.append('  ' + ln)
+
+    L.append('')
+    L.append('（上游版本未查 —— 那要联网，会让这一下从 1 秒变成半分钟）')
+    return chr(10).join(L)
+
+
+@app.post('/api/diag/export')
+def export_diag(req: DiagExportReq):
+    r"""一键生成诊断文件。返回文件路径，前端拿它弹资源管理器。
+
+    小蔡 2026-09-08 定：**不要复制到剪贴板那条路了，任何情况都生成文件。**
+    理由是老师把十行粘进微信还行，粘三百行就没人看了；发个文件是一次拖拽。
+    """
+    text = _diag_text(req)
+    path, err = _write_diag(text)
+    if not path:
+        # 三个位置都写不进去。**不静默** —— 这个项目吃过静默失败的亏。
+        return JSONResponse(
+            {'detail': 'logs、安装目录、临时目录都写不进去（%s）' % err},
+            status_code=500)
+    return {'ok': True, 'path': path,
+            'bytes': len(text.encode('utf-8', 'replace')),
+            'lines': text.count(chr(10)) + 1}
 
 
 @app.get('/api/diag')

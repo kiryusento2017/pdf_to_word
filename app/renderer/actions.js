@@ -94,6 +94,75 @@
     });
   }
 
+  // 转换进行中加进来的文件 —— 进待办队列，不碰正在跑的那批。
+  //
+  // 走的是跟 addPaths 同一个 /api/scan（体检拿页数），只是落点不同。
+  // 🔴 **去重要比三样**：待办里已有的、正在转的这批（st.items）。用户很
+  //    可能把已经在转的某份又拖一次，那份转出来会覆盖同一个 .docx，
+  //    白跑一趟 GPU。addPaths 原来只比 st.items 一样，这里得比全。
+  function addPending(paths) {
+    if (!paths || !paths.length) { render(); return; }
+    st.pendingBusy = true;
+    st.err = '';
+    render();
+    HTTP.post('/api/scan', { paths: paths }).then(function (d) {
+      var seen = {};
+      st.pending.forEach(function (x) { seen[x.path] = true; });
+      st.items.forEach(function (x) { seen[x.path] = true; });
+      (d.items || []).forEach(function (x) {
+        // 体检不过的不进待办 —— 它在主队列里同样会当场失败，
+        // 提前挡掉比让用户等到晋升之后才看见一个红叉好。
+        if (x.ok && !seen[x.path]) { st.pending.push(x); seen[x.path] = true; }
+      });
+      st.pendingBusy = false;
+      // 🔴 **体检的这十几秒里，这一批可能已经转完了。**
+      //
+      //    /api/scan 扫一个文件夹要十几秒（456 份实测 16 秒）。等它回来时
+      //    poll 可能早就拿到 done 了 —— 而那一刻 st.pending 还是空的，
+      //    所以 poll 走的是「没有待办」那条路：停轮询、不晋升。
+      //    轮询全项目只在 start() 里启动一处，之后再没有任何东西会碰
+      //    这些文件：既不转、也不显示（done 时待办列表整块不渲染）、
+      //    连「移除」都点不到，而且会一直躺着，等用户下次手动开一批
+      //    转完时被突然拉起来 —— 那时他早忘了自己拖过什么。
+      //
+      //    所以体检回来必须自己补一次判断，不能指望 poll。
+      if (st.task && st.task.state === 'done' && st.pending.length) {
+        promotePending();
+        return;
+      }
+      if (st.task && st.task.state === 'cancelled' && st.pending.length) {
+        mergePendingToItems();
+      }
+      render();
+    }).catch(function (e) {
+      st.pendingBusy = false;
+      st.err = String(e && e.message || e);
+      render();
+    });
+  }
+
+  // 待办晋升成主队列。**这批转完的那一刻自动调，不问用户。**
+  //
+  // 复用 start() 起新任务，不另写一条发起转换的路 —— start() 里已经把
+  // progMax / showReport / openStage 三样归位了（那是「上一批的界面状态
+  // 不许串到新一批」的既有教训，front_check 里有一条源码扫描钉着它）。
+  // 另起一条路等于把那三行漏掉，而且测试扫不到。
+  function promotePending() {
+    // 上一批的结果留一份，报告要靠它。放在改 items 之前 —— 下面那句
+    // 一改，st.task 还在但列表已经是新一批的了。
+    st.lastResults = (st.task && st.task.results) || null;
+    // 待办变成新的待转清单。picked 一并重建：待办里的都是要转的，
+    // 老的 picked 是上一批的勾选状态，留着会串。
+    st.items = st.pending.slice();
+    st.picked = {};
+    st.items.forEach(function (x) { st.picked[x.path] = true; });
+    st.pending = [];
+    // 自引用照抄文件里既有的写法（startDownload / downloadUpdate 都是这么调的）。
+    // front_check 那条「不许用不存在的全局」会跳过 P2W_ACTS，因为本文件
+    // 自己就有 `window.P2W_ACTS = `。
+    window.P2W_ACTS.start();
+  }
+
   // ── 下载模型的轮询。跟转换那个分开：两者可以先后发生，
   //    共用一个计时器会在切换时互相踩。
   var dlPoller = null;
@@ -198,11 +267,39 @@
     });
   }
 
+  // 用户摁了停止 —— 待办不清掉、也不问，并回待转清单，下次点「开始转换」
+  // 时一起转。勾选状态设成勾上：他刚拖进来的，本来就是要转的。
+  function mergePendingToItems() {
+    var seen = {};
+    st.items.forEach(function (x) { seen[x.path] = true; });
+    st.pending.forEach(function (x) {
+      if (!seen[x.path]) { st.items.push(x); st.picked[x.path] = true; }
+    });
+    st.pending = [];
+  }
+
   function poll() {
     if (!st.taskId) return;
     HTTP.get('/api/convert/' + st.taskId).then(function (d) {
       st.task = d;
-      if (d.state === 'done' || d.state === 'cancelled') stopPolling();
+      if (d.state === 'done' || d.state === 'cancelled') {
+        stopPolling();
+        // 🔴 主队列结束 → 待办自动晋升成主队列，**不问，直接开始**。
+        //
+        //    只有 done 才晋升。cancelled 是用户主动摁的停止，那会儿
+        //    再自动开一批等于没停成 —— 待办改为并回待转清单。
+        //
+        //    ⚠️ 转换失败时 state 仍然是 done（只是多个 error，见 _work
+        //    的兜底分支），所以**失败也照常晋升**。理由：一批失败不代表
+        //    下一批也失败，待办里的文件跟失败原因通常无关。要是想让
+        //    环境级失败拦住后面几批，条件加在这儿。
+        if (d.state === 'cancelled') {
+          if (st.pending.length) mergePendingToItems();
+        } else if (st.pending.length) {
+          promotePending();
+          return;              // start() 自己会 render，别再来一次
+        }
+      }
       render();
     }).catch(function () {
       // 单次轮询失败不必惊动用户（服务正忙），下一轮还会问
@@ -298,21 +395,58 @@
     // 于是「再转一批」对全成功的人是清爽的空勾选，对有失败的人正好是一键重试。
     newBatch: function () {
       var failed = {};
+      var ran = {};
       ((st.task && st.task.results) || []).forEach(function (r) {
+        ran[r.pdf] = true;
         if (!r.ok) failed[r.pdf] = true;
       });
-      st.items.forEach(function (x) { st.picked[x.path] = !!failed[x.path]; });
+      // 🔴 **只重设这一批真转过的那些。**
+      //
+      //    原来是 `st.picked[x.path] = !!failed[x.path]` 一律重设。但自从
+      //    有了待办队列，`st.items` 里可能混着**根本没转过**的文件：
+      //    摁停止时并回来的待办、晋升时 start() 失败留下的那批。
+      //    它们在 results 里没有记录，于是被一律设成未勾选 ——
+      //    用户看到的是「软件把我刚拖进来的东西吃了」。
+      st.items.forEach(function (x) {
+        if (ran[x.path]) st.picked[x.path] = !!failed[x.path];
+      });
       st.task = null;
       st.taskId = '';
       st.err = '';
+      // 🔴 手动开新一批 = 不再关心上一批。不清的话 lastResults 会**隔着一批
+      //    串味**：A 晋升 B（lastResults 记的是 A）→ B 转完没有待办 →
+      //    点「再转一批」手动转 C → C 运行中点「上一批的报告」，看到的是 A，
+      //    B 整个被跳过。报告是拿去核对 Word 的清单，指错批次等于指错文件。
+      st.lastResults = null;
+      st.showLastReport = false;
       stopPolling();
       render();
     },
 
     addPaths: addPaths,
+    addPending: addPending,
 
     pickFiles: function () {
       window.api.pickFiles().then(addPaths);
+    },
+
+    // 转换中的「再加几份」。跟 pickFiles 走同一个原生对话框，
+    // 只是收进待办队列。
+    pickMore: function () {
+      window.api.pickFiles().then(addPending);
+    },
+
+    // 从待办里去掉一份（加错了、或者临时不想转了）。
+    delPending: function (p) {
+      st.pending = st.pending.filter(function (x) { return x.path !== p; });
+      render();
+    },
+
+    // 看上一批的报告 / 收起。跟主报告共用 showReport 这个开关不行 ——
+    // 那个是「当前这批」的，两批的报告会互相顶掉。单开一个。
+    toggleLastReport: function () {
+      st.showLastReport = !st.showLastReport;
+      render();
     },
 
     pickDir: function () {
@@ -369,10 +503,14 @@
         stopPolling();
         // 一秒一问。转换本身以分钟计，问得再勤也只是多耗电。
         st.progMax = 0;      // 新一批开始，总进度从头算
-        // 这两个是上一批留下的界面状态，不归位会串到新一批：
+        // 这几个是上一批留下的界面状态，不归位会串到新一批：
         // 报告页会自己冒出来，展开过的那一行也还开着。
         st.showReport = false;
         st.openStage = null;
+        // 「上一批的报告」也一样要收起来。不收的话：看着 A 的报告时
+        // B 转完、C 晋升，lastResults 换成了 B，而开关还开着 ——
+        // 界面会自己弹出一份用户没点开的报告。
+        st.showLastReport = false;
         poller = setInterval(poll, 1000);
         poll();
       }).catch(function (e) {
@@ -685,8 +823,9 @@
       render();
     },
 
-    // 复制报告。跟 copyDiag 同一套写法（新剪贴板 API 不行就退回
-    // textarea + execCommand），只是文本换成报告那份。
+    // 复制转换报告到剪贴板：新剪贴板 API 不行就退回 textarea + execCommand。
+    // （诊断信息那边原本也是这套写法，2026-09-08 改成生成文件了，
+    //   现在整个前端只剩这一处还在用剪贴板。）
     copyReport: function () {
       var text = st.reportText || '';
       if (!text) return;
@@ -707,24 +846,54 @@
       } catch (e) { /* 复制失败就算了，文本还在屏幕上 */ }
     },
 
-    copyDiag: function () {
-      var text = st.diagText || '';
-      if (!text) return;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text);
-        } else {
-          var ta = document.createElement('textarea');
-          ta.value = text;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand('copy');
-          document.body.removeChild(ta);
+    // 生成诊断文件。**取代了原来的「复制诊断信息」**（小蔡 2026-09-08：
+    // 「干脆一点，复制的按钮直接改生成，任何事情都生成」）。
+    //
+    // 剪贴板那条路砍掉的理由：十行粘进微信还行，三百行就没人看了；
+    // 而真出问题时要的恰恰是那三百行（日志尾部、50 条历史、JS 报错）。
+    // 发个文件是一次拖拽，比粘一堵墙强。
+    exportDiag: function () {
+      if (st.diagBusy) return;              // 防连点，生成要一两秒
+      st.diagBusy = true;
+      st.err = '';
+      render();
+      // 🔴 fetch 没有超时。后端要是卡住不返回，promise 永不 settle，
+      //    diagBusy 就永远是 true —— 按钮卡在「正在生成…」，只能重启软件。
+      //    30 秒后强行解禁：正常一两秒就好，到这个点基本可以断定它不回来了。
+      setTimeout(function () {
+        if (st.diagBusy) {
+          st.diagBusy = false;
+          st.err = '生成诊断文件超时了（30 秒没有回应），可以再点一次试试。';
+          render();
         }
-        st.copied = true;
+      }, 30000);
+      HTTP.post('/api/diag/export', {
+        // 🔴 摘要用**前端已经拼好的那份**（pages.js 的 diagText），
+        //    后端不重拼一遍 —— 重拼就是两处逻辑，改一处忘另一处。
+        //    它在渲染环境检测页时算好存进 st，而这个按钮就在那一屏，
+        //    所以点得到它的时候必然已经有值。
+        //    ⚠️ 哪天把这个按钮挪到别的屏，记得先触发一次收集。
+        summary: st.diagText || '',
+        errors: st.jsErrors || [],
+        ua: navigator.userAgent,
+        screen: window.innerWidth + 'x' + window.innerHeight,
+        task: st.task || {},
+        pending: st.pending || [],
+      }).then(function (d) {
+        st.diagBusy = false;
+        var made = (d && d.path) || '';
         render();
-        setTimeout(function () { st.copied = false; render(); }, 2000);
-      } catch (e) { /* 复制失败就算了，文本还在屏幕上 */ }
+        // 🔴 **弹资源管理器并选中它** —— 「一键」成不成立全看这一步。
+        //    少了它，老师看到「已生成」然后就卡住了：他不知道去哪找。
+        //    main.js 的 open-path 对文件走 showItemInFolder，会打开目录
+        //    并把文件高亮选中，直接拖进微信就行。
+        if (made) window.api.openPath(made);
+      }).catch(function (e) {
+        st.diagBusy = false;
+        // 不静默 —— 后端三个位置都写不进去时会把原因带上来。
+        st.err = '生成诊断文件失败：' + String(e && e.message || e);
+        render();
+      });
     },
 
     // 展开/收起完整的更新说明。默认只给摘要那几行 —— 620x440 的

@@ -26,9 +26,33 @@ var state = {
   dragging: false,
   taskId: '',
   task: null,
+  // ── 待办队列 ──────────────────────────────────────────────────────
+  // 软件永远只有两个队列：正在跑的（task）和攒着的（pending）。
+  // 转换中拖进来 / 选进来的文件不塞进正在跑的那批 —— 那批的倒计时和
+  // 进度条是开工时估死的，中途改会让它们当场失真。攒在这儿，等这批
+  // 全部转完，整批当成一个全新任务接上（见 actions 的 promotePending）。
+  pending: [],          // 待办清单，元素结构跟 items 一样（体检结果）
+  pendingBusy: false,   // 待办正在体检（/api/scan 往返那一两秒）
+  // 上一批的逐份结果。待办晋升那一刻留一份 —— 界面立刻换成新一批的进度，
+  // 而上一批的报告还得看得到（那是一张校对清单，指着哪几页最该核对）。
+  //
+  // 只留 results 这一个数组，不留整个 task：报告只用得上它，而 task 里
+  // 还挂着最多 120 行日志。也不改成「只记 task_id 回头查后端」——
+  // 报告按钮该不该显示要当场判断（worthReport），而那个函数在 pages.js
+  // 内部，actions.js 够不到它（front_check 只认 app.js 定义过的全局）。
+  lastResults: null,
+  // 在看上一批的报告。**不跟 showReport 共用** —— 那个是「当前这批」的，
+  // 一个开关管两批的话，两边会互相顶掉。
+  showLastReport: false,
   starting: false,
   err: '',
   port: 0,
+  // JS 报错。**这是以前完全空白的一块** —— 后端出事有 logs\convert.log
+  // 兜着，前端出事一个字都不留：界面就那么卡死，除了让用户重启没别的办法
+  // （actions.js 里记着 2026-09-02 那次，写了个不存在的函数，点下去抛异常、
+  // 轮询没启动，界面永远停在「正在装」）。这些进诊断文件。
+  jsErrors: [],
+  diagBusy: false,      // 正在生成诊断文件
   // 首次使用那一屏：源清单、选中的源、下载进度
   runs: [],             // 转换历史，进「历史」那一屏时拉
   upgPending: null,     // 有没有下好等着装的升级（开机问一次）
@@ -212,6 +236,36 @@ function render() {
   }
 }
 
+// ── JS 报错留痕 ────────────────────────────────────────────────────────
+// 🔴 **不改变任何行为，只记一笔。** 不弹窗、不打断、不 render ——
+//    出错的时候界面往往已经不对劲了，再弹个框只会让老师更慌。
+//    悄悄记下来，等他点「生成诊断文件」时一起交出去。
+//
+//    只留最近 20 条：真出问题时同一个错会疯狂重复（每秒轮询一次就报一次），
+//    留太多的话最早那条真正的病根反而被挤出去了 —— 所以**留最早的 20 条**，
+//    不是最近的。第一条通常就是病根，后面全是它的回声。
+function noteJsError(kind, msg, extra) {
+  try {
+    if (state.jsErrors.length >= 20) return;
+    state.jsErrors.push(new Date().toLocaleTimeString() + ' [' + kind + '] '
+      + String(msg).slice(0, 240) + (extra ? '  @' + extra : ''));
+  } catch (e) { /* 记录出错本身绝不能再抛 */ }
+}
+window.addEventListener('error', function (e) {
+  // 🔴 **资源加载失败（img/script 404）也走这个事件，但它没有 message**，
+  //    `String(e)` 会落成一句没用的 `[object Event]`。20 个格子被这种噪音
+  //    占满之后，真正的崩溃一条也记不下 —— 而那才是要留的东西。
+  if (!e || !e.message) return;
+  noteJsError('error', e.message,
+    e.filename ? (e.filename.split('/').pop() + ':' + e.lineno) : '');
+});
+window.addEventListener('unhandledrejection', function (e) {
+  // Promise 里抛的错不会触发上面那个 —— 而这个软件几乎所有网络请求
+  // 都是 Promise，漏了它等于漏掉一大半。
+  var r = e && e.reason;
+  noteJsError('promise', (r && (r.stack || r.message)) || r, '');
+});
+
 // 事件委托：所有按钮走 data-act，页面重绘也不用重新绑
 document.addEventListener('click', function (e) {
   var t = e.target.closest('[data-act]');
@@ -224,8 +278,16 @@ document.addEventListener('click', function (e) {
 
 // ── 拖放 ───────────────────────────────────────────────────────────────
 // 阻止默认是必须的：不拦的话 Electron 会用当前窗口打开那个 PDF，页面直接没了。
+// 🔴 **转换中不再拦拖放。** 原来这里是 `|| isRunning(state)`，转换中拖进来
+//    的文件连个提示都没有就被丢掉。现在改成照收，只是收进待办队列而不是
+//    正在跑的那批（见下面 drop 里的分流）。
+//    仍然拦「不在主页时」—— 环境检测、历史那些页面接了文件也没处放。
+//
+//    ⚠️ 只动这个函数，**不动 isRunning 本身**。它还被另外 5 处共用
+//    （底栏的「关于」按钮、环境检测页的三个按钮、主界面形态判断），
+//    改它等于顺手放开了「转换中禁用清理 / 检查更新 / 升级」那几道闸。
 function dropBusy() {
-  return state.page !== 'main' || isRunning(state);
+  return state.page !== 'main';
 }
 window.addEventListener('dragover', function (e) {
   e.preventDefault();
@@ -246,8 +308,18 @@ window.addEventListener('drop', function (e) {
     var p = window.api.pathForFile(files[i]);
     if (p) paths.push(p);
   }
-  if (paths.length) window.P2W_ACTS.addPaths(paths);
-  else render();
+  // 转换中收进待办，其余照旧进待转清单。分流放在这儿而不是 addPaths 里面：
+  // addPaths 还被「选择 PDF 文件」「从这里挑」两个按钮共用，那两个在转换中
+  // 本来就摸不到（主界面那时是进度屏），口径混在一起反而说不清。
+  // 🔴 `|| state.starting` 不能少。isRunning 只认「st.task 已经是 running」，
+  //    而从点下「开始转换」到第一次轮询回来之间（以及待办晋升时 start()
+  //    的请求还在飞的那段），st.task 还是 null 或上一批的旧快照 ——
+  //    那时拖进来的文件会走 addPaths 塞进待转清单，而这一批的 paths
+  //    早就算完发出去了，它们会一直显示「未处理」，永远不转。
+  if (paths.length) {
+    if (isRunning(state) || state.starting) window.P2W_ACTS.addPending(paths);
+    else window.P2W_ACTS.addPaths(paths);
+  } else render();
 });
 
 // ── 启动 ───────────────────────────────────────────────────────────────

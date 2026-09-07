@@ -1170,9 +1170,19 @@ function envCheckView(st) {
           { off: !picked || st.maintBusy || installing || isRunning(st),
             title: installing ? '正在安装，装完再清理'
                  : (isRunning(st) ? '正在转换，转完再清理' : '') })
-    + btn('copyDiag', st.copied ? '已复制' : '复制诊断信息')
+    // 生成诊断文件。取代了原来的「复制诊断信息」—— 文件比剪贴板装得下
+    // 日志尾部、50 条历史、JS 报错，而那些才是真出问题时要看的东西。
+    + btn('exportDiag', st.diagBusy ? '正在生成…' : '生成诊断文件',
+          { off: st.diagBusy })
     + btn('openAbout', '返回')
-    + '</div></div>';
+    + '</div>'
+    // 🔴 **这一屏以前不显示任何错误。** st.err 全项目只在待转屏渲染，
+    //    于是「生成诊断文件」三个位置都写不进去时，按钮只是从「正在生成…」
+    //    闪回原样，用户得不到一个字的解释 —— 一个出问题时才用的功能，
+    //    自己失败还静默，性质最差。
+    + (st.err ? '<div class="f-bad" style="margin-top:6px;font-size:11px">'
+                + esc(st.err) + '</div>' : '')
+    + '</div>';
 }
 
 
@@ -1256,8 +1266,11 @@ function pageMain(st) {
                    botBar(st, btn('closeAbout', '返回', { cls: 'link' })));
     }
     if (st.about === 'env') {
-      // 诊断文本算好存进 state，copyDiag 直接读 —— 不用隐式全局，
+      // 诊断摘要算好存进 state，exportDiag 直接读 —— 不用隐式全局，
       // 那个前端检查专门在防（2026-09-02 栽过）。
+      // 🔴 **这十行是诊断文件的开头**，后端不会再拼一遍。所以这一句
+      //    必须在按钮所在的这一屏渲染时执行到 —— 哪天把「生成诊断文件」
+      //    挪到别的屏，记得先触发一次收集，否则文件开头会是空的。
       st.diagText = diagText(st);
       return shell('<span class="f-dim" style="padding:0 4px">环境检测</span>',
                    envCheckView(st), envLine(st));
@@ -1361,6 +1374,62 @@ function mainPick(st) {
 }
 
 // ── 主屏 · 转换中 / 结果 ───────────────────────────────────────────────
+// ── 待办队列 ───────────────────────────────────────────────────────────
+//
+// 软件永远只有两个队列：正在跑的（task）和攒着的（pending）。这块显示后者。
+//
+// 为什么待办不并进正在跑的那批：那批的倒计时和总进度条是开工时估死的
+// （小蔡 2026-09-06 定的「一开始是多少就老实倒数」），中途往里加文件会让
+// 倒计时走到 0 还在转、进度条因为分母变大而卡住不动。攒着、等这批转完
+// 整批接上，两个数各自都是诚实的。
+//
+// 🔴 这里每个 data-act 都必须在 P2W_ACTS 里有对应函数，否则 front_check
+//    的「页面上每个按钮都有处理器，没有死按钮」那条会挂。用到的三个
+//    pickMore / delPending / toggleLastReport 都已注册。
+function pendingBox(st, done) {
+  var ps = st.pending || [];
+  // 🔴 上一批的报告按钮**先判断有没有内容再决定显不显示**，不能先摆出来
+  //    等人点。判据跟主报告同一个 worthReport —— 全都干干净净就没什么可
+  //    报的（小蔡：「要是全都转换成功，为什么要报告呢」）。
+  var lastOk = !!(st.lastResults && st.lastResults.length
+                  && worthReport({ results: st.lastResults }));
+  var lastBtn = lastOk
+    ? btn('toggleLastReport',
+          st.showLastReport ? '返回列表' : '上一批的报告', { cls: 'link' })
+    : '';
+  // 🔴 **转完之后这一块只剩「上一批的报告」。**
+  //    那时待办要么已经晋升成新一批、要么本来就没有，`ps` 必然是空的；
+  //    而「再加几份」在结果页没有意义 —— 顶上已经有「再转一批」，那是
+  //    回待转清单的正路，两个入口做同一件事只会让人犹豫。
+  //    拖拽提示同理：结果页拖进来走的是待转清单，不是待办。
+  if (done) {
+    return lastOk
+      ? '<div style="display:flex;padding:4px 6px;font-size:11px">'
+        + '<span class="grow"></span>' + lastBtn + '</div>'
+      : '';
+  }
+  var acts = btn('pickMore', '再加几份', { cls: 'link' }) + lastBtn;
+  var head = '<div class="f-dim" style="display:flex;align-items:center;'
+    + 'gap:6px;padding:4px 6px;font-size:11px">'
+    + (st.pendingBusy
+        ? '<span>正在看这几份…</span>'
+        : ps.length
+          ? '<span>待办 ' + ps.length + ' 份，这批转完自动接上</span>'
+          : '<span>转换中也可以把 PDF 拖进来，排在这批后面转</span>')
+    + '<span class="grow"></span>' + acts + '</div>';
+  if (!ps.length) return head;
+  return head + '<div style="padding:0 6px 4px">'
+    + ps.map(function (x) {
+        return '<div style="display:flex;align-items:center;gap:6px;'
+          + 'font-size:11px;padding:1px 0">'
+          + '<span class="ell" style="flex:1">' + esc(F.base(x.path)) + '</span>'
+          + '<span class="f-dim">' + (x.pages || 0) + ' 页</span>'
+          + btn('delPending', '移除', { cls: 'link', arg: x.path })
+          + '</div>';
+      }).join('')
+    + '</div>';
+}
+
 function mainRun(st) {
   var t = st.task;
   if (!t) {
@@ -1554,7 +1623,32 @@ function mainRun(st) {
     return shell(top, main, bot);
   }
 
-  return shell(top, rows || '<div class="fill"><div class="f-dim">没有要转的文件</div></div>', bot);
+  // 上一批的报告。待办晋升之后，列表已经换成新一批了，但上一批那张校对
+  // 清单还得看得到 —— 它指着哪几份失败、哪几页是扫描件最该核对，而那些
+  // Word 已经躺在用户硬盘里了。占主区，跟当前这批的报告一个待遇。
+  // 🔴 判据必须跟按钮的显示条件**一模一样**（都带 worthReport）。
+  //    只判 length 的话：上一批全都干干净净时，这一屏进得来，而退出按钮
+  //    由 pendingBox 里的 worthReport 控制、此时不渲染 —— 又是一个
+  //    没有出口的报告页，跟 1513 行记的那次事故同形。
+  if (st.showLastReport && st.lastResults && st.lastResults.length
+      && worthReport({ results: st.lastResults })) {
+    return shell(top,
+      '<div class="fill" style="justify-content:flex-start;gap:6px">'
+      + '<div class="log"><span class="l">'
+      + esc(reportText(st, { results: st.lastResults }))
+          .split(chr10()).join('</span><span class="l">')
+      + '</span></div></div>'
+      // 🔴 **报告页必须带着退出口一起渲染。** 返回按钮在 pendingBox 里，
+      //    少这一句就是把用户丢进一个出不来的页面 —— 1513 行那条注释
+      //    记着的正是同一个形状的事故（2026-09-07 实测复现过）。
+      + pendingBox(st, done),
+      bot);
+  }
+
+  return shell(top,
+    (rows || '<div class="fill"><div class="f-dim">没有要转的文件</div></div>')
+      + pendingBox(st, done),
+    bot);
 }
 
 // ── 下载模型（首次使用，只出现一次）────────────────────────────────────

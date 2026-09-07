@@ -341,6 +341,66 @@ class Test转换任务(unittest.TestCase):
     def test_查不存在的任务给404(self):
         self.assertEqual(client.get('/api/convert/nope').status_code, 404)
 
+    def test_转换进行中也能生成诊断文件(self):
+        r"""🔴 **这才是诊断文件最真实的使用场景** —— 用户是在转换卡住、
+        出怪事的时候才去点那个按钮的。
+
+        而那会儿 `logs/convert.log` 正被转换线程用 append 模式开着，
+        诊断要去读它的尾部。Windows 上同一个文件能不能一边写一边读，
+        不是想当然的事，得钉住。
+        """
+        self._fake_convert(delay=0.4)
+        tid = client.post('/api/convert',
+                          json={'paths': [self.pdf]}).json()['task_id']
+        r = client.post('/api/diag/export', json={'summary': '转换中'})
+        self.assertEqual(r.status_code, 200, r.text)
+        p = r.json()['path']
+        self.addCleanup(lambda: os.path.isfile(p) and os.remove(p))
+        self._wait(tid)
+        txt = io.open(p, encoding='utf-8-sig').read()
+        self.assertIn('【convert.log】', txt)
+        self.assertIn('转换中', txt)
+
+    def test_任务表只留最近几个已结束的(self):
+        r"""任务表原来永不清理。有了待办队列（这批转完自动接上）之后一批
+        接一批，不设上限会一直堆着 —— 每份带着 results 和最多 120 行日志。
+        """
+        self._fake_convert()
+        self.addCleanup(srv._TASKS.clear)
+        srv._TASKS.clear()
+        for i in range(srv._TASKS_KEEP + 2):
+            srv._TASKS['old%d' % i] = {'state': 'done', 'started': 1000.0 + i}
+        tid = client.post('/api/convert',
+                          json={'paths': [self.pdf]}).json()['task_id']
+        self._wait(tid)
+        left = sorted(k for k in srv._TASKS if k.startswith('old'))
+        self.assertEqual(len(left), srv._TASKS_KEEP)
+        # 删的是最老的那两个，留下的是最近的
+        self.assertNotIn('old0', srv._TASKS)
+        self.assertNotIn('old1', srv._TASKS)
+        self.assertIn('old%d' % (srv._TASKS_KEEP + 1), srv._TASKS)
+
+    def test_淘汰不许碰正在跑的任务(self):
+        r"""🔴 这条是整个淘汰逻辑最危险的地方。
+
+        下模型、清理、依赖升级、安装升级**四处**都靠
+        `any(t['state'] == 'running' for t in _TASKS.values())`
+        判断「是不是在转换」。删掉一个 running 的任务，这四道互斥当场
+        全部失效 —— 用户能在转换中装 torch，而那会儿 torch 的 dll 正被
+        MinerU 子进程占着。
+        """
+        self._fake_convert()
+        self.addCleanup(srv._TASKS.clear)
+        srv._TASKS.clear()
+        for i in range(srv._TASKS_KEEP + 3):
+            srv._TASKS['run%d' % i] = {'state': 'running', 'started': 1000.0 + i}
+        tid = client.post('/api/convert',
+                          json={'paths': [self.pdf]}).json()['task_id']
+        self._wait(tid)
+        for i in range(srv._TASKS_KEEP + 3):
+            self.assertIn('run%d' % i, srv._TASKS,
+                          '正在跑的任务被淘汰了，四处互斥判断会当场失效')
+
     def test_取消在两份之间生效(self):
         r"""MinerU 那步是子进程，中途硬杀会留半截产物，比多等一会儿麻烦。"""
         p2 = os.path.join(WORK, 'b.pdf')
@@ -471,6 +531,103 @@ class Test环境检测的接口(unittest.TestCase):
     不了是谁干的（pip 缓存藏在隐藏文件夹、文件名是哈希、扩展名是
     .body）。**看得到，才谈得上删不删。**
     """
+
+    def _export(self, **kw):
+        r = client.post('/api/diag/export', json=kw)
+        self.assertEqual(r.status_code, 200, r.text)
+        p = r.json()['path']
+        self.addCleanup(
+            lambda: os.path.isfile(p) and os.remove(p))
+        return p, io.open(p, encoding='utf-8-sig').read()
+
+    def test_诊断文件真的生成而且该有的都在(self):
+        p, txt = self._export(summary='摘要那十行', errors=['boom at foo.js'])
+        self.assertTrue(os.path.isfile(p))
+        self.assertTrue(os.path.basename(p).startswith('诊断_'))
+        # 前端给的摘要原样在开头 —— 后端不重拼一遍，一份逻辑两个出口
+        self.assertIn('摘要那十行', txt)
+        self.assertIn('boom at foo.js', txt)
+        for sec in ('【环境细节】', '【路径与编码】', '【模型】', '【升级状态】',
+                    '【JS 报错】', '【转换历史】', '【convert.log】'):
+            self.assertIn(sec, txt)
+
+    def test_记事本打得开(self):
+        r"""老师是拿记事本打开的：没 BOM 中文乱码，不是 CRLF 全连成一行 ——
+        那样文件生成了也等于没生成。
+        """
+        p, _ = self._export(summary='中文摘要')
+        raw = io.open(p, 'rb').read()
+        self.assertEqual(raw[:3], b'\xef\xbb\xbf', '没有 BOM，记事本会乱码')
+        self.assertIn(b'\r\n', raw, '不是 CRLF，记事本里会连成一行')
+
+    def test_某一项读不到也照样生成(self):
+        r"""🔴 这份文件恰恰是机器出问题时才生成的，那时候本来就有东西读不到。
+        **「读不到」本身就是线索**，不能让它拖垮整份文件。
+        """
+        orig = srv.torchdep.why
+        srv.torchdep.why = lambda: 1 / 0
+        self.addCleanup(setattr, srv.torchdep, 'why', orig)
+        p, txt = self._export(summary='X')
+        self.assertTrue(os.path.isfile(p))
+        self.assertIn('读不到', txt)
+        self.assertIn('ZeroDivisionError', txt)
+        # 坏了一项，其余章节一个不少
+        self.assertIn('【转换历史】', txt)
+
+    def test_临时目录挂了也不能拖垮前两级(self):
+        r"""🔴 原来写的是 `for d in (LOGS, ROOT, tempfile.gettempdir())` ——
+        **元组在进循环之前整体求值**，`gettempdir()` 一抛异常，循环一次都
+        不执行，前两级明明是能写的。
+
+        而它恰恰在 TEMP 指向不存在的盘、磁盘满、权限被组策略锁死时才抛 ——
+        **正是这份文件唯一存在的场景**。三级兜底在最需要它的时候变成零级。
+        """
+        import tempfile as _tf
+        orig = _tf.gettempdir
+        _tf.gettempdir = lambda: (_ for _ in ()).throw(
+            FileNotFoundError('没有可用的临时目录'))
+        self.addCleanup(setattr, _tf, 'gettempdir', orig)
+        p, txt = self._export(summary='临时目录挂了')
+        self.assertTrue(os.path.isfile(p))
+        self.assertIn('临时目录挂了', txt)
+
+    def test_孤立代理字符不能让三级全灭(self):
+        r"""🔴 Electron 的 JS 字符串允许孤立代理（\ud800-\udfff），
+        JSON.stringify 原样输出，Python 的 json.loads 照单全收 —— 然后写盘时
+        UnicodeEncodeError，三个位置一样失败，一个字都拿不到。
+        文件名编码坏掉的 PDF（U 盘、网盘同步过来的）真能触发。
+
+        更坏的是 TextIOWrapper 边编码边刷：炸之前刷出去的部分留在盘上，
+        三个目录各留一个**半截**文件，用户很可能就把半截那份发出来。
+        """
+        p, err = srv._write_diag('正常内容' + chr(0xd800) + '后面还有')
+        self.assertTrue(p, '孤立代理让三级兜底全灭了：' + err)
+        self.addCleanup(lambda: os.path.isfile(p) and os.remove(p))
+        txt = io.open(p, encoding='utf-8-sig').read()
+        self.assertIn('正常内容', txt)
+        self.assertIn('后面还有', txt)      # 坏字符后面的内容没被截掉
+
+    def test_日志整段没换行也读得出来(self):
+        r"""tqdm 刷新用的是 \r 不是 \n，日志里出现「几百 KB 一整行」很常见。
+        原来那种情况下 readline 会把整段吃光，最后报「（空的）」——
+        明明有几十 MB，却把人往错方向带。
+        """
+        d = tempfile.mkdtemp(prefix='p2w_tail_')
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, 'big.log')
+        with io.open(p, 'wb') as f:
+            f.write(b'x' * (700 * 1024))       # 700 KB，一个换行都没有
+        lines = srv._tail(p, 200)
+        self.assertNotEqual(lines, ['（空的）'], '整段无换行时把内容全丢了')
+        self.assertTrue(lines and lines[0].startswith('x'))
+
+    def test_logs写不进去就退到安装目录(self):
+        orig = srv.paths.LOGS
+        srv.paths.LOGS = 'Z:/nope/deeper'
+        self.addCleanup(setattr, srv.paths, 'LOGS', orig)
+        p, _ = self._export(summary='X')
+        self.assertTrue(os.path.isfile(p))
+        self.assertEqual(os.path.dirname(p), os.path.abspath(srv.paths.ROOT))
 
     def test_扫占用给得出四类(self):
         r = client.get('/api/maint/scan')
