@@ -71,7 +71,17 @@ MIN_LIST_BYTES = 1024 * 1024
 # TEMP 里那些 pip 残骸，最后动过的时间在这个小时数以内就不碰 ——
 # 可能是正在跑的安装用着的。下 2.7 GB 的 torch 本身要几十分钟，
 # 门槛太短会撞上正在解包的目录。
-TEMP_PIP_MIN_AGE_H = 6
+# 扫描时的年龄底线。**只是一道兜住竞态的短底线，不是主判据。**
+#
+# 🔴 原来是 6 小时，那是拿时间猜「还有没有人在用」，两头都不准：
+#    下载超过 6 小时的大包（torch 2.5 GB 走慢线路完全可能）会被误删；
+#    而刚产生的一个都看不见 —— 2026-09-07 小蔡机器上 92 个残骸、
+#    519.7 MB，界面上显示 0，因为都是刚关软件时留下的。
+#
+#    真正的判据是 `can_take()`：**Windows 上被占用的目录改不了名**。
+#    但那要写文件系统，扫描（只读）里不能用，所以留这一分钟兜住极端
+#    竞态 —— 别的 pip 刚建好目录、还没来得及往里写的那一瞬间。
+TEMP_PIP_MIN_AGE_H = 1.0 / 60.0
 
 
 def _dir_size(path):
@@ -186,6 +196,38 @@ def scan_pip_cache(detail=True):
     out['items'] = rows
     out['ours_total'] = sum(r['size'] for r in rows if r['ours'])
     return out
+
+
+def can_take(d):
+    r"""这个目录还有没有人在用？没人用才返回 True。
+
+    **判据是「能不能改名」** —— Windows 上只要目录里有文件被打开着、
+    正在被写、或者被某个进程当作工作目录，改名就会失败。2026-09-07
+    实测五种情况全对：
+
+        没人用            → 能改名
+        里面的文件被打开  → 改不了名
+        正在往里写        → 改不了名   ← pip 下载中就是这个样子
+        被当成工作目录    → 改不了名
+
+    比「多久没动过」准得多：那个两头都不靠，慢线路上下了 6 小时的大包
+    会被误删，刚产生的残骸又一个都看不见。
+
+    🔴 **试探完必须把名字还回去。** 留在 .trylock 上的话，前缀对不上，
+       下次扫描反而永远看不到它，成了真正的孤儿。
+    """
+    tmp = d + '.trylock'
+    try:
+        os.rename(d, tmp)
+    except OSError:
+        return False
+    try:
+        os.rename(tmp, d)
+    except OSError:
+        # 极罕见：改过去了却改不回来。目录还在（没丢东西），但名字变了。
+        # 宁可返回 False —— 这一轮别动它，下一轮它已经不叫 pip- 了。
+        return False
+    return True
 
 
 def _is_link(p):
@@ -380,8 +422,9 @@ def scan():
         {'key': 'temp_pip',
          'label': 'pip 安装残留（装到一半中断留下的）',
          'size': tmp_pip['total'],
-         'note': ('%d 个目录，%d 小时内动过的不算'
-                  % (tmp_pip['count'], TEMP_PIP_MIN_AGE_H))
+         # 说明文字跟着判据走：现在拦的是「有没有人在用」，
+         # 不是「多久没动过」（见 can_take）。
+         'note': ('%d 个目录，正在用的会跳过' % tmp_pip['count'])
                  if tmp_pip['count'] else '没有',
          'cleanable': True},
         {'key': 'logs', 'label': '日志', 'size': logs['logs'],
@@ -523,6 +566,19 @@ def clean(keys=(), pip_paths=()):
         #    里已经把前缀、链接、父目录、年龄四道判据全过了一遍，
         #    所以这里不用碰下面那段 pip_paths 的白名单校验。
         for _r in temp_pip_dirs():
+            # 🔴 **先问一句「还有没有人在用」。**
+            #
+            #    不问的话，删是「一个文件一个文件试」：被打开的那个删不掉，
+            #    而**同目录里没被打开的其它文件已经删掉了** —— 留下一个
+            #    残缺的目录。pip 正在用它，缺了文件之后那次安装多半直接
+            #    失败，用户什么都不知道，只看到「清理完成」。
+            #
+            #    can_take 靠「能不能改名」判断，比时间准：Windows 上只要
+            #    里面有文件被打开、正在被写、或者被当作工作目录，改名就
+            #    会失败（2026-09-07 实测五种情况全对）。
+            if not can_take(_r['path']):
+                failed.append('%s（正在用，跳过了）' % _r['name'])
+                continue
             rm_tree_safe(_r['path'])
     if 'pip_cache' in keys and not pip_paths:
         # 没指定具体文件 = 清掉本软件的那些（不碰别人的）

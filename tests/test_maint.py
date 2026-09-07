@@ -314,13 +314,30 @@ class TestTEMP里的pip残骸(unittest.TestCase):
         self.assertEqual([r['name'] for r in maint.temp_pip_dirs()],
                          ['pip-unpack-abc'])
 
-    def test_刚动过的不碰(self):
-        r"""下 2.7 GB 的 torch 要几十分钟，正在解包的目录必须躲开。"""
+    def test_正在写的目录不碰(self):
+        r"""下 2.7 GB 的 torch 要几十分钟，正在解包的目录必须躲开。
+
+        🔴 **这条原来用「1 小时前动过」来模拟「正在解包」，那个假设不成立**：
+           正在解包的目录，里面最新那个文件的时间应该是**几秒前**；
+           一小时一动不动的，pip 早就不在了（或者卡死了）。
+           配合 6 小时门槛时看不出问题，2026-09-07 把门槛降到 1 分钟
+           之后就露馅了 —— 它挡的其实是「一小时前的老残骸」，不是
+           「正在进行的下载」。
+
+           现在按真实形状造：正在写的目录 mtime 就是此刻。
+        """
         self._mk('pip-unpack-old', 8)
-        self._mk('pip-install-fresh', 1)
+        self._mk('pip-install-fresh', 0)      # 此刻还在写
         names = [r['name'] for r in maint.temp_pip_dirs()]
         self.assertIn('pip-unpack-old', names)
         self.assertNotIn('pip-install-fresh', names)
+
+    def test_一小时没动过的会被列出来交给占用判据(self):
+        r"""扫描只是「列出来给用户看」，删不删由 can_take 说了算 ——
+        所以这里不该再拿时间去猜「是不是还在用」。"""
+        self._mk('pip-unpack-1h', 1)
+        self.assertIn('pip-unpack-1h',
+                      [r['name'] for r in maint.temp_pip_dirs()])
 
     def test_目录时间没变但文件在写就不算老残骸(self):
         r"""🔴 往目录里**已有的**文件追加内容，目录的 mtime **一动不动**
@@ -621,6 +638,135 @@ class Test下好的升级包不该混在转换临时文件里(unittest.TestCase)
     def test_明确勾了升级包才删它(self):
         maint.clean(keys=['upgrade_cache'])
         self.assertFalse(os.path.isdir(self.cache), '勾了却没删')
+
+
+class Test判断残骸还有没有人在用(unittest.TestCase):
+    r"""🔴 原来的判据是「目录里最新的文件超过 6 小时没动过」。那是拿时间
+    猜「还有没有人在用」，两头都不准：
+
+      · 下载超过 6 小时的大包（torch 2.5 GB 走慢线路完全可能）会被误删
+      · **刚产生的一个都看不见** —— 2026-09-07 小蔡机器上 92 个残骸、
+        519.7 MB，界面上显示 0，因为都是刚关软件时留下的
+
+    换成直接问「这个目录还有没有人在用」：**Windows 上被占用的目录改不了
+    名**。实测五种情况全对：没人用能改名；里面的文件被打开、正在往里写、
+    被当成工作目录，三种都改不了。
+
+    分工：
+      · **扫描**（temp_pip_dirs）只看一道很短的年龄底线，纯只读 ——
+        改名会写文件系统，万一中途崩了目录会留在 .trylock 那个名字上，
+        下次反而扫不到
+      · **删除**（rm_tree_safe）先试改名，改不动就跳过并报给用户
+    """
+
+    def setUp(self):
+        self.w = tempfile.mkdtemp(prefix='p2w_lock_')
+        self.d = os.path.join(self.w, 'pip-fake')
+        os.makedirs(self.d)
+        self.f = os.path.join(self.d, 'a.bin')
+        io.open(self.f, 'wb').write(b'x' * 1000)
+
+    def tearDown(self):
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def test_没人用时判定为可以删(self):
+        self.assertTrue(maint.can_take(self.d))
+
+    def test_里面的文件被打开着就不许删(self):
+        h = io.open(self.f, 'rb')
+        try:
+            self.assertFalse(maint.can_take(self.d))
+        finally:
+            h.close()
+
+    def test_正在往里写的时候不许删(self):
+        r"""pip 下载中就是这个样子 —— 这条是防误删的关键。"""
+        h = io.open(self.f, 'wb')
+        try:
+            self.assertFalse(maint.can_take(self.d))
+        finally:
+            h.close()
+
+    def test_试探完目录名要原样还回去(self):
+        r"""🔴 扫描/判断不能留下痕迹。改完名没还回来的话，目录就叫
+        .trylock 了，下次前缀对不上、反而永远扫不到。"""
+        maint.can_take(self.d)
+        self.assertTrue(os.path.isdir(self.d), '目录名没还回来')
+        self.assertTrue(os.path.isfile(self.f), '里面的文件也得还在')
+
+    def test_目录根本不存在时不炸(self):
+        self.assertFalse(maint.can_take(os.path.join(self.w, '没有这个')))
+
+    def test_年龄底线只剩一分钟不再是六小时(self):
+        r"""刚产生的残骸也要能看见 —— 小蔡那 92 个就是刚产生的。"""
+        self.assertLessEqual(maint.TEMP_PIP_MIN_AGE_H * 60, 1.01,
+                             '年龄门槛还是太长，刚产生的残骸看不见')
+
+
+class Test删残骸前要先问有没有人在用(unittest.TestCase):
+    r"""🔴 光有 `can_take()` 没人调等于没做 —— 这一轮已经在
+    「接口对但没人调」上栽过三次了（下好不装、下完不刷新、状态没落盘）。
+    """
+
+    def setUp(self):
+        self.w = tempfile.mkdtemp(prefix='p2w_clean_')
+        self._gtd = maint.tempfile.gettempdir
+        maint.tempfile.gettempdir = lambda: self.w
+        self.busy = os.path.join(self.w, 'pip-busy')
+        self.free = os.path.join(self.w, 'pip-free')
+        for d in (self.busy, self.free):
+            os.makedirs(d)
+            f = os.path.join(d, 'x.whl')
+            io.open(f, 'wb').write(b'x' * 1000)
+            old = time.time() - 3600
+            os.utime(f, (old, old))
+            os.utime(d, (old, old))
+
+    def tearDown(self):
+        maint.tempfile.gettempdir = self._gtd
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def test_有人用的删不掉没人用的删得掉(self):
+        h = io.open(os.path.join(self.busy, 'x.whl'), 'rb')
+        try:
+            maint.clean(keys=['temp_pip'])
+        finally:
+            h.close()
+        self.assertTrue(os.path.isdir(self.busy), '正被占用的残骸被删了')
+        self.assertFalse(os.path.isdir(self.free), '没人用的残骸没删掉')
+
+    def test_有人用的目录要整个躲开不能删掉里面别的文件(self):
+        r"""🔴 **这条才是 can_take 的价值所在。**
+
+        不先判断的话，删是「一个文件一个文件试」：被打开的那个删不掉，
+        **同目录里没被打开的其它文件已经删掉了** —— 留下一个残缺的目录。
+        pip 正在用它，缺了文件之后那次安装多半直接失败，而用户什么都
+        不知道，只看到「清理完成」。
+
+        先问一句「还有没有人在用」，有人用就整个躲开，一个字节都不动。
+        """
+        d = self.busy
+        other = os.path.join(d, 'other.whl')
+        io.open(other, 'wb').write(b'y' * 500)
+        old = time.time() - 3600
+        os.utime(other, (old, old))
+        os.utime(d, (old, old))
+        h = io.open(os.path.join(d, 'x.whl'), 'rb')
+        try:
+            maint.clean(keys=['temp_pip'])
+        finally:
+            h.close()
+        self.assertTrue(os.path.isfile(other),
+                        '同目录里没被占用的文件被删了，留下一个残缺目录')
+
+    def test_删不掉的要报给用户别悄悄跳过(self):
+        h = io.open(os.path.join(self.busy, 'x.whl'), 'rb')
+        try:
+            r = maint.clean(keys=['temp_pip'])
+        finally:
+            h.close()
+        self.assertTrue(any('pip-busy' in str(x) for x in (r.get('failed') or [])),
+                        '删不掉却一声不吭，用户看到的空间对不上：%r' % (r.get('failed'),))
 
 
 if __name__ == '__main__':
