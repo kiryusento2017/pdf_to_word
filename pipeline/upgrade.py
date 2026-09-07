@@ -566,6 +566,43 @@ def rollback(backup_dir=''):
             'picked': picked}
 
 
+def prune_backups(keep=1):
+    r"""删掉旧的升级备份，**默认留最新一份**。返回 {removed, freed, why}。
+
+    🔴 `install()` 装之前会把 site-packages 里那几个包整份备份下来，
+       **装成功也不删** —— 回滚要靠它。代价是一次 4 GB 量级（torch 整份
+       拷贝）：2026-09-07 小蔡机器上两份就 8.26 GB、28092 个文件，而
+       `list_backups()` 早就写好、接口也有，**界面上却没有这一项、也没有
+       任何地方能删**，8 GB 就那么躺着。
+
+    **为什么默认留一份而不是全清**：多留 4 GB，换一次「装完发现不对还能
+    退回去」的机会。想全清传 `keep=0`。
+
+    🔴 **phase=installing 时一份都不删。** 那意味着上次装到一半断了，
+       下次开机要靠备份回滚 —— 这时候删备份等于把回头路砍了。
+    """
+    st = read_state() or {}
+    if st.get('phase') == 'installing':
+        return {'removed': 0, 'freed': 0,
+                'why': '上次装到一半断了，回滚还要用这些备份，'
+                       '一份都没删。等它装完或者回滚完再来。'}
+
+    rows = list_backups()          # 已经按时间倒序（新的在前）
+    doomed = rows[max(int(keep), 0):]
+    removed = freed = 0
+    for r in doomed:
+        d = r.get('dir') or os.path.join(BACKUP, r.get('name', ''))
+        if not os.path.isdir(d):
+            continue
+        try:
+            shutil.rmtree(d)
+        except OSError:
+            continue
+        removed += 1
+        freed += r.get('size', 0)
+    return {'removed': removed, 'freed': freed, 'why': ''}
+
+
 def list_backups():
     """有哪些备份。给环境检测那一屏列出来让用户清。"""
     out = []

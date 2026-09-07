@@ -9,4 +9,8 @@ models/
 mineru.json
 dist/
 logs/
+# 升级前的 site-packages 备份，**一次 4 GB 量级**（torch 整份拷贝）。
+# 装成功也不删 —— 回滚要靠它。2026-09-07 实测本机两份就 8.26 GB、
+# 28092 个文件，而 GitHub 单文件上限 2 GiB：一句 git add -A 就完蛋。
+backup/
 vc_done.json

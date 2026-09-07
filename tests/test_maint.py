@@ -779,5 +779,48 @@ class Test删残骸前要先问有没有人在用(unittest.TestCase):
                         '删不掉却一声不吭，用户看到的空间对不上：%r' % (r.get('failed'),))
 
 
+class Test升级备份要能看见也能清(unittest.TestCase):
+    r"""🔴 2026-09-07 查出来：`upgrade.list_backups()` 早就写好、
+    `/api/upgrade/backups` 接口也有，**清理面里却没有这一项**，
+    也没有任何地方能删 —— 小蔡机器上 8.26 GB、28092 个文件就那么躺着。
+
+    又一个「做好了没人调」。
+    """
+
+    def setUp(self):
+        self._bak = maint.upgrade.BACKUP
+        self._state = maint.upgrade.STATE
+        self.w = tempfile.mkdtemp(prefix='p2w_bakui_')
+        maint.upgrade.BACKUP = os.path.join(self.w, 'backup')
+        maint.upgrade.STATE = os.path.join(self.w, 'st.json')
+        for name in ('20260905_120000', '20260907_142606'):
+            d = os.path.join(maint.upgrade.BACKUP, name, 'torch')
+            os.makedirs(d)
+            io.open(os.path.join(d, 'x.pyd'), 'wb').write(b'x' * 4000)
+
+    def tearDown(self):
+        maint.upgrade.BACKUP, maint.upgrade.STATE = self._bak, self._state
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _items(self):
+        return {i['key']: i for i in maint.scan()['items']}
+
+    def test_清理面里看得见这一项(self):
+        it = self._items()
+        self.assertIn('upgrade_backup', it, '升级备份没列出来，用户看不见')
+        self.assertGreater(it['upgrade_backup']['size'], 7000)
+
+    def test_没勾就一份都不许删(self):
+        maint.clean(keys=['logs'])
+        self.assertEqual(len(os.listdir(maint.upgrade.BACKUP)), 2,
+                         '没勾这一项却把备份删了')
+
+    def test_勾了才删而且留最新一份(self):
+        maint.clean(keys=['upgrade_backup'])
+        left = os.listdir(maint.upgrade.BACKUP)
+        self.assertEqual(left, ['20260907_142606'],
+                         '该留最新那一份，剩下的：%r' % left)
+
+
 if __name__ == '__main__':
     unittest.main()

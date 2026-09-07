@@ -51,6 +51,7 @@ import zipfile
 
 import models
 import paths
+import upgrade
 
 # 本软件会装的 pip 包。用来判断缓存里哪个 wheel 是我们下的。
 # 跟 tools/build_release.py 的 DEPS 保持一致，外加 torch 那两个
@@ -401,11 +402,13 @@ UPGRADE_CACHE = os.path.join(paths.TMP, 'upgrade_cache')
 
 
 def scan_logs():
-    """日志、转换临时文件、下好的升级包，各自多大。"""
+    """日志、转换临时文件、下好的升级包、升级备份，各自多大。"""
     up = _dir_size(UPGRADE_CACHE)
     return {'logs': _dir_size(paths.LOGS),
             'tmp': max(_dir_size(paths.TMP) - up, 0),
-            'upgrade_cache': up}
+            'upgrade_cache': up,
+            'upgrade_backup': sum(r.get('size', 0)
+                                  for r in upgrade.list_backups())}
 
 
 def scan():
@@ -445,6 +448,14 @@ def scan():
         {'key': 'upgrade_cache', 'label': '下好的升级包（等重启安装）',
          'size': logs['upgrade_cache'],
          'note': '清了要重新下一次' if logs['upgrade_cache'] else '没有',
+         'cleanable': True},
+        # 🔴 一次升级备份就是 4 GB 量级（torch 整份拷贝），装成功也不删 ——
+        #    回滚要靠它。2026-09-07 小蔡机器上两份 8.26 GB，而 list_backups()
+        #    早就写好、接口也有，**界面上却没有这一项**，用户看不见更清不掉。
+        {'key': 'upgrade_backup', 'label': '升级备份（装成功后就没用了）',
+         'size': logs['upgrade_backup'],
+         'note': '会留最新一份，方便万一要退回去'
+                 if logs['upgrade_backup'] else '没有',
          'cleanable': True},
         {'key': 'models', 'label': '识别模型', 'size': models,
          'note': '清了要重下 4.6 GB，一般别动', 'cleanable': False},
@@ -572,6 +583,12 @@ def clean(keys=(), pip_paths=()):
                 rm_file(p)
     if 'upgrade_cache' in keys:
         rm_tree(UPGRADE_CACHE, keep_root=False)
+    if 'upgrade_backup' in keys:
+        # 默认留最新一份 —— 多留 4 GB，换一次「装完发现不对还能退回去」。
+        # prune_backups 自己会拦「上次装到一半」那种情况。
+        _p = upgrade.prune_backups()
+        if _p.get('why'):
+            failed.append(_p['why'])
     if 'temp_pip' in keys:
         # 🔴 路径由后端自己列，**不接受前端传进来的**。temp_pip_dirs()
         #    里已经把前缀、链接、父目录、年龄四道判据全过了一遍，

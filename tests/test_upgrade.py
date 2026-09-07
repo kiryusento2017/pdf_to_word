@@ -519,6 +519,72 @@ class Test下好的包还在不在(unittest.TestCase):
 
 
 
+class Test清理升级备份(unittest.TestCase):
+    r"""🔴 `install()` 装之前会把 site-packages 里那几个包整份备份下来，
+    **装成功也不删** —— 回滚要靠它。一次 4 GB 量级（torch 整份拷贝）。
+
+    2026-09-07 小蔡机器上两份就 **8.26 GB、28092 个文件**，而
+    `list_backups()` 早就写好、接口也有，**界面上却没有这一项，也没有任何
+    地方能删** —— 又一个「做好了没人调」。
+
+    **默认保留最新一份**：多留 4 GB，换一次「装完发现不对还能退回去」的
+    机会，划算。
+    """
+
+    def setUp(self):
+        self._bak = upgrade.BACKUP
+        self._state = upgrade.STATE
+        self.w = tempfile.mkdtemp(prefix='p2w_bak_')
+        upgrade.BACKUP = os.path.join(self.w, 'backup')
+        upgrade.STATE = os.path.join(self.w, 'st.json')
+        for name in ('20260901_100000', '20260905_120000', '20260907_142606'):
+            d = os.path.join(upgrade.BACKUP, name, 'torch')
+            os.makedirs(d)
+            io.open(os.path.join(d, 'x.pyd'), 'wb').write(b'x' * 3000)
+
+    def tearDown(self):
+        upgrade.BACKUP, upgrade.STATE = self._bak, self._state
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _left(self):
+        return sorted(os.listdir(upgrade.BACKUP))
+
+    def test_默认留最新一份把老的删掉(self):
+        r = upgrade.prune_backups()
+        self.assertEqual(self._left(), ['20260907_142606'])
+        self.assertEqual(r['removed'], 2)
+        self.assertGreater(r['freed'], 5000)
+
+    def test_装到一半的时候一份都不许删(self):
+        r"""🔴 phase=installing 意味着上次装到一半断了，**回滚全靠备份**。
+        这时候删备份等于把回头路砍了。"""
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'installing', 'picked': ['torch'],
+                        'backup': os.path.join(upgrade.BACKUP, '20260907_142606')}))
+        r = upgrade.prune_backups()
+        self.assertEqual(len(self._left()), 3, '装到一半还把备份删了')
+        self.assertEqual(r['removed'], 0)
+        self.assertIn('装到一半', r.get('why', ''))
+
+    def test_只有一份时什么都不删(self):
+        for n in ('20260901_100000', '20260905_120000'):
+            shutil.rmtree(os.path.join(upgrade.BACKUP, n))
+        r = upgrade.prune_backups()
+        self.assertEqual(len(self._left()), 1)
+        self.assertEqual(r['removed'], 0)
+
+    def test_一份都没有时不炸(self):
+        shutil.rmtree(upgrade.BACKUP)
+        r = upgrade.prune_backups()
+        self.assertEqual(r['removed'], 0)
+
+    def test_想全清也可以(self):
+        r = upgrade.prune_backups(keep=0)
+        self.assertEqual(self._left(), [])
+        self.assertEqual(r['removed'], 3)
+
+
+
 if __name__ == '__main__':
     unittest.main()
 
