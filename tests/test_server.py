@@ -926,6 +926,31 @@ class Test转换历史有出口(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()['rows'], [])
 
+    def test_默认要把存着的都给出来别只给一半(self):
+        r"""🔴 2026-09-07 小蔡报「但是怎么只有 50 份」。
+
+        存 200（`maint.RUNS_KEEP`）、接口默认给 50、前端也只要 50 ——
+        于是界面上那句「共 N 份」写的是**拿回来的条数**，不是存了多少，
+        用户看到的永远是 50。三处必须对齐。
+        """
+        rows = ','.join('{"file": "%d.pdf"}' % i for i in range(200))
+        io.open(srv.maint.RUNS, 'w', encoding='utf-8').write('[' + rows + ']')
+        d = client.get('/api/runs').json()
+        self.assertEqual(len(d['rows']), srv.maint.RUNS_KEEP,
+                         '存了 %d 条，默认只给出 %d 条'
+                         % (srv.maint.RUNS_KEEP, len(d['rows'])))
+
+    def test_前端要的条数跟存的对齐(self):
+        r"""光后端放开没用 —— 前端写死 limit=50 的话照样只显示 50。"""
+        src = io.open(os.path.join(ROOT, 'app', 'renderer', 'actions.js'),
+                      encoding='utf-8').read()
+        i = src.find('/api/runs?limit=')
+        self.assertGreater(i, 0, '前端没在拉历史')
+        n = int(src[i + len('/api/runs?limit='):].split("'")[0].split('"')[0])
+        self.assertGreaterEqual(n, srv.maint.RUNS_KEEP,
+                                '前端只要 %d 条，而存着 %d 条'
+                                % (n, srv.maint.RUNS_KEEP))
+
     def test_能限制条数(self):
         rows = ','.join('{"file": "%d.pdf"}' % i for i in range(30))
         io.open(srv.maint.RUNS, 'w', encoding='utf-8').write('[' + rows + ']')

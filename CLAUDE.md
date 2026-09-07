@@ -92,11 +92,46 @@ rep 里叫 `formulas` / `formulas_xsl` —— 诊断报告那一格**永远是 `
 写测试时，构造的数据结构必须跟真实调用方**同一个来源**。手编 dict 之前
 先去看生产方到底吐什么字段。
 
+#### 2026-09-07 一天之内又栽了四次，形状各不相同
+
+**同一个坑反复踩，说明光记住「测试绿≠代码对」没用。** 这四种骗法都
+**只有变异测试抓得出来**，肉眼看都是绿的、都很合理：
+
+| 骗法 | 具体 |
+|---|---|
+| 断言写错，永远不抛 | `!r.port \|\| r.port === 1234 ? false : true` —— 括号优先级让它恒为假分支 |
+| 断言的东西本来就在 | 只验页面上有没有「作业.pdf」，而文件名在行首那列本来就显示着 |
+| 拿着旧对象断言 | 重绘会把容器换成**新元素**，旧对象的 scrollTop 永远是刚才自己设的值 |
+| 源码字符串匹配 | 查「函数里有没有 `loadUpgPending`」，变异把那行**注释掉**之后字符串照样在 |
+
+最后一种最阴：`// loadUpgPending();` 里的字符串跟活代码一模一样。
+**源码匹配分不清活代码和注释掉的代码**，只能当补充，不能当主力。
+
+#### 还有一种：造出来的场景验不了真实场景
+
+判据 `can_take()`（改名试探）造场景实测五种情况全绿，看着扎实 ——
+但**占用是自己造的**（打开文件不关）。真跑一次 `pip download` 探测：
+**5 个临时目录里 4 个在 pip 正用着的时候被判成「可以删」**，因为 pip
+大部分时间只是「目录建着」，文件写完就关。
+
+那次真实验证只花几十秒，结论却完全推翻前面五条。
+**验一个判据，就得拿真实的东西验。**
+
 ### 5. 行尾是**混着的**，`sed -i` 会把整个文件冲掉
 
-不是全 CRLF 也不是全 LF —— `pipeline/*.py`、`app/renderer/*.js`、
-`tests/front_check.js` 是 CRLF，而 `tests/test_update.py`、`README.md`、
-`docs/*.md` 是 LF。**别凭印象猜，动手前先跑这条**（把 <文件> 换成目标）：
+不是全 CRLF 也不是全 LF，**而且同一个目录里就是混的** —— 2026-09-07
+实测（这份清单以前写成「`pipeline/*.py` 是 CRLF」，照那么批量改会把
+一半文件冲掉）：
+
+| 位置 | 行尾 |
+|---|---|
+| `app/renderer/*.js`、`tests/front_check.js`、`server/*.py` | 全 CRLF |
+| `README.md`、`CLAUDE.md`、`docs/*.md` | 全 LF |
+| `pipeline/*.py` | **混的** —— convert / todocx / extract / gpu / paths / probe / torchdep 是 CRLF；maint / models / deps / sources / upgrade 是 LF |
+| `tests/*.py`、`tools/*.py` | **混的** —— 逐个查 |
+
+**别凭印象猜，也别信上面这张表**（改动会让它过时），动手前先跑这条
+（把 <文件> 换成目标）：
 
 ```
 .venv\Scripts\python.exe -c "import io,sys;b=io.open(sys.argv[1],'rb').read();c=b.count(bytes([13,10]));print('CRLF' if c else 'LF', c, b.count(bytes([10]))-c)" <文件>

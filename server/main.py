@@ -1088,8 +1088,12 @@ async def cancel(task_id: str):
 
 
 @app.get('/api/runs')
-def list_runs(limit: int = 50):
+def list_runs(limit: int = maint.RUNS_KEEP):
     r"""转换历史。最新的在最前面。
+
+    🔴 **默认给满 RUNS_KEEP 条，别写死一个更小的数。** 存 200、给 50 的话，
+       界面上那句「共 N 份」写的是拿回来的条数、不是存了多少 —— 2026-09-07
+       小蔡报「但是怎么只有 50 份」就是这么来的。
 
     小蔡要它干四件事（2026-09-06 问过）：找回转好的 Word 存哪了、确认某份
     转没转过成没成、失败的一键重转、出事时翻当时到底报了什么。

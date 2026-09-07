@@ -63,7 +63,10 @@
   // 拉转换历史。主屏空着的时候显示它 —— 打开软件就看得见上次转了什么。
   // **读不出来就当没有**，不打扰用户：历史是锦上添花，不能让它挡住主流程。
   function loadRuns() {
-    HTTP.get('/api/runs?limit=50').then(function (d) {
+    // 🔴 要满 200 条 —— 跟后端 RUNS_KEEP 对齐。写 50 的话界面上那句
+    //    「共 N 份」写的是拿回来的条数、不是存了多少（2026-09-07 小蔡报
+    //    「但是怎么只有 50 份」）。
+    HTTP.get('/api/runs?limit=200').then(function (d) {
       st.runs = (d && d.rows) || [];
       render();
     }).catch(function () { /* 没有历史就算了 */ });

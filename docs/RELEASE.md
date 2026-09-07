@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 567 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 569 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
 node tests\front_check.js                                   # 190 条
 ```
@@ -741,10 +741,24 @@ watch 线程加 taskkill /T，别再把检查写进会阻塞的读取循环里�
 它解压后 4.2 GB（wheel 约 2.8 GB），打进去包会从 291 MB 涨到 1.5~2 GB，
 逼近 GitHub 单文件 2 GiB 上限，而且没显卡的人也得跟着下。
 
-**下哪个 CUDA 版本由用户的驱动决定，不写死**（`torchdep.pick_channel`）：
-驱动 ≥570 用 cu128、≥525 用 cu126、其余用 cu118。写死最新的 cu128 会让
-驱动低于 570 的机器在 `import torch` 时报 WinError 1114，而 modelscope
-的 import 链里有 `import torch` —— **连模型下载都一起废**。
+**下哪个 CUDA 版本由「驱动够不够」和「这张卡的机器码在不在里面」一起
+决定，不写死**（`torchdep.pick_channel`）。写死最新的会让驱动低的机器在
+`import torch` 时报 WinError 1114，而 modelscope 的 import 链里有
+`import torch` —— **连模型下载都一起废**。
+
+🔴 **两条容易想当然的**（2026-09-06 实测）：
+
+- **CUDA 号大 ≠ torch 新。** cu128 停在 2.11.0（官方已停更）、cu129 只到
+  2.9.0，而 cu126 / cu130 / cu132 都在 2.14.0。按 CUDA 号从大到小挑的话，
+  驱动 572 的用户会拿到比低一档还旧三个次版本的 torch。表按「官方还在不在
+  维护」排序：cu132 → cu130 → cu126 → cu128 → cu129 → cu118。
+- **只看驱动不够，还要看显卡型号。** 各线路编进去的机器码是交叉的：
+  cu126 有老卡（5.0~9.0）没新卡，cu13x 反过来。1080Ti（算力 6.1）配新驱动
+  只看驱动会命中 cu128，而那里没有 6.1 的码 —— import 能过、检测显卡也说
+  「有」，**只有真跑起来才报「找不到这张卡的机器码」**。
+
+**torchvision 必须跟 torch 一起升**（`upgrade.pair_up`）：它是编译期绑死
+torch 版本的，只升一个装完就是坏的。
 
 装完还要**真 import 一次**才算装好；验不过就把 torch 卸掉，退回
 「干净的没装」状态。留着一个「在、但加载不了」的 torch 比没装更糟：
