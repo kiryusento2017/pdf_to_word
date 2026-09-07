@@ -697,10 +697,20 @@ class Test判断残骸还有没有人在用(unittest.TestCase):
     def test_目录根本不存在时不炸(self):
         self.assertFalse(maint.can_take(os.path.join(self.w, '没有这个')))
 
-    def test_年龄底线只剩一分钟不再是六小时(self):
-        r"""刚产生的残骸也要能看见 —— 小蔡那 92 个就是刚产生的。"""
-        self.assertLessEqual(maint.TEMP_PIP_MIN_AGE_H * 60, 1.01,
-                             '年龄门槛还是太长，刚产生的残骸看不见')
+    def test_年龄底线要短到能看见几小时前的残骸(self):
+        r"""🔴 **这道底线才是防误删的主防线**，不是 can_take。
+
+        2026-09-07 真跑 pip download 实测：新建的 5 个临时目录，4 个被
+        can_take 判成「可以删」，而它们一个都没进清理清单 —— 挡住它们的
+        正是这道底线（刚建的，最新文件时间就是此刻）。
+
+        所以它要满足两头：
+          · 短到能看见几小时前的老残骸（小蔡那 92 个）
+          · 长到能挡住正在跑的 pip，外加给「卡住不动」留点余量
+        """
+        m = maint.TEMP_PIP_MIN_AGE_H * 60
+        self.assertGreaterEqual(m, 30, '底线太短，pip 卡一会儿就可能被误删')
+        self.assertLessEqual(m, 60, '底线太长，几小时前的残骸也该看得见')
 
 
 class Test删残骸前要先问有没有人在用(unittest.TestCase):
