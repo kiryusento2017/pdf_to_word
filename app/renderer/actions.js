@@ -13,6 +13,14 @@
       render();
       if (d && d.state === 'running') {
         setTimeout(pollUpgrade, 1000);
+      } else {
+        // 🔴 **下完必须重新问一次**。按钮显示什么取决于 st.upgPending，
+        //    而那是开机时问的那一次 —— 当时还没下载，结果是「没有待装的」。
+        //    不在这儿刷新的话，用户看到「下载完成」却等不到「立即重启」，
+        //    要关掉软件重开才冒出来。
+        //    2026-09-07 小蔡实测撞上：「显示下载完成，要重启，但是没有
+        //    重启按钮。」跟同一轮刚修完的「接口对 ≠ 有人调」一个形状。
+        loadUpgPending();
       }
     }).catch(function () {
       setTimeout(pollUpgrade, 3000);

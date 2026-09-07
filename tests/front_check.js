@@ -2392,6 +2392,41 @@ console.log('\n下好的升级要能被发现、能装上：');
     }
   });
 
+  ck('下载一完成就重新问一次，别让「立即重启」等到下次开机才出现', () => {
+    // 🔴 2026-09-07 小蔡实测：「我点了，他显示下载完成，要重启，
+    //    但是没有重启按钮。」
+    //
+    //    按钮显示什么取决于 st.upgPending，而那是**开机时**问的那一次 ——
+    //    当时还没下载，结果自然是「没有待装的」。下载完成后没有任何人
+    //    再问一次，界面就一直停在原来那两个按钮上，得关掉软件重开才冒出来。
+    //
+    // ⚠️ **这条必须是行为测试，不能查源码字符串**：第一版写的是
+    //    「函数体里有没有 loadUpgPending」，而变异把那行改成注释
+    //    `// loadUpgPending();` 之后，字符串照样在，测试照样绿 ——
+    //    源码匹配分不清活代码和注释掉的代码。
+    const sb2 = mkSandbox();
+    const asked = [];
+    // HTTP 是 actions.js 加载时捕获的同一个对象，换它的方法有效。
+    sb2.window.P2W_HTTP.get = function (p) {
+      asked.push(String(p));
+      const body = String(p).indexOf('/api/upgrade/download') >= 0
+        ? { state: 'done', ok: true } : { action: 'install', picked: ['torch'] };
+      return { then: function (f) { f(body); return { catch: function () {} }; },
+               catch: function () {} };
+    };
+    sb2.window.P2W_HTTP.post = function () {
+      return { then: function (f) { f({}); return { catch: function () {} }; },
+               catch: function () {} };
+    };
+    sb2.window.P2W_STATE.port = 1234;
+    sb2.window.P2W_STATE.upgPick = { torch: true };
+    sb2.window.P2W_ACTS.startUpgrade();
+    if (!asked.some((u) => u.indexOf('/api/upgrade/pending') >= 0)) {
+      throw new Error('下完没有重新问 pending，「立即重启」不会出现。问过的：'
+                      + JSON.stringify(asked));
+    }
+  });
+
   ck('有下好等着装的时候，那两个按钮换成「立即重启」', () => {
     // 小蔡定的：不弹窗，就在升级区原地替换，也不要「稍后重启」。
     const h = fn(envSt({ action: 'install', picked: ['torch', 'torchvision'] }));
