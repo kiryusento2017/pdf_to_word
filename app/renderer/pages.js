@@ -993,17 +993,59 @@ function upgradeBox(st) {
     }
   }
 
+  // 底下那排按钮长什么样，取决于「有没有下好等着装的」。
+  //
+  // 🔴 小蔡 2026-09-07 定：**不弹窗，就在这儿原地替换那两个按钮**，
+  //    而且**不要「稍后重启」** —— 想稍后就直接不点，关掉软件下次开还在。
+  //    点「立即重启」= 装 + 重启一气呵成（见 actions.installUpgrade）。
+  var pend = st.upgPending || {};
+  var ins = st.upgIns;
+  var foot;
+
+  if (ins && ins.state === 'running') {
+    // 正在装。**不给任何按钮** —— 这会儿点什么都是添乱。
+    var last = (ins.lines || []).slice(-1)[0] || '';
+    foot = '<div class="f-dim" style="font-size:11px">正在安装，装完会自动重启'
+      + '</div>'
+      + (last ? '<div class="f-dim ell" style="font-size:11px;max-width:94%">'
+          + esc(last) + '</div>' : '');
+  } else if (ins && ins.state === 'done' && !ins.ok) {
+    // 装失败。**必须说清楚已经回滚**，否则用户以为环境废了。
+    foot = '<div class="f-bad" style="font-size:11px;max-width:94%">'
+      + esc(ins.error || '安装失败') + '</div>'
+      + '<div class="f-dim" style="font-size:11px">'
+      + (ins.rolled_back ? '已经回到升级前的版本，转换不受影响'
+                         : '已经回到升级前的版本') + '</div>'
+      + '<div style="display:flex;gap:8px;margin-top:3px">'
+      + btn('startUpgrade', '重新下载') + '</div>';
+  } else if (pend.action === 'install') {
+    foot = '<div class="f-dim" style="font-size:11px">'
+      + esc((pend.picked || []).join('、')) + ' 已经下好了，重启就装上'
+      + '</div>'
+      + '<div style="display:flex;gap:8px;margin-top:3px">'
+      + btn('installUpgrade', '立即重启', { cls: 'primary' })
+      + '</div>';
+  } else if (pend.action === 'redownload') {
+    // CACHE 住在 paths.TMP 底下，用户点一下「清理转换临时文件」就没了。
+    foot = '<div class="f-dim" style="font-size:11px;max-width:94%">'
+      + '下好的安装包已被清理（' + esc((pend.missing || []).join('、'))
+      + '），要重新下一次</div>'
+      + '<div style="display:flex;gap:8px;margin-top:3px">'
+      + btn('startUpgrade', '重新下载') + '</div>';
+  } else {
+    foot = '<div style="display:flex;gap:8px;margin-top:3px">'
+      + btn('planUpgrade', st.upgBusy ? '正在算…' : '看看会动哪些包',
+            { off: !picked || st.upgBusy })
+      + btn('startUpgrade', '下载并升级',
+            { off: !picked || !(pl && pl.ok),
+              title: !(pl && pl.ok) ? '先看一眼会动哪些包' : '' })
+      + '</div>';
+  }
+
   return '<div style="width:96%;text-align:left">'
     + '<div class="f-dim" style="font-size:11px">可以升级的：</div>'
     + '<table style="font-size:12px">' + rows.join('') + '</table>'
-    + plan + dl
-    + '<div style="display:flex;gap:8px;margin-top:3px">'
-    + btn('planUpgrade', st.upgBusy ? '正在算…' : '看看会动哪些包',
-          { off: !picked || st.upgBusy })
-    + btn('startUpgrade', '下载并升级',
-          { off: !picked || !(pl && pl.ok),
-            title: !(pl && pl.ok) ? '先看一眼会动哪些包' : '' })
-    + '</div></div>';
+    + plan + dl + foot + '</div>';
 }
 
 

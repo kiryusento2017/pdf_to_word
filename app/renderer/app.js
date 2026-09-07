@@ -30,7 +30,9 @@ var state = {
   err: '',
   port: 0,
   // 首次使用那一屏：源清单、选中的源、下载进度
-  runs: [],             // 转换历史，主屏没有待转文件时显示
+  runs: [],             // 转换历史，进「历史」那一屏时拉
+  upgPending: null,     // 有没有下好等着装的升级（开机问一次）
+  upgIns: null,         // 正在装 / 装完了
   showReport: false,    // 转完之后在看报告
   reportText: '',       // 报告正文，只在内存里，不落盘
   openStage: null,      // 展开了哪一行的步骤清单，null = 都收着
@@ -259,6 +261,10 @@ window.addEventListener('DOMContentLoaded', function () {
     //    loadRuns 自己的 catch 静默吞掉，于是「开机看不到历史」而且一声不吭。
     //    调用位置错 + catch 吃掉证据，两个错叠一起才成了哑巴 bug。
     try { window.P2W_ACTS.loadRuns(); } catch (e) { /* 历史拉不到不挡主流程 */ }
+    // 有没有上次下好、还没装的升级。**这一句以前没有** —— 后端
+    // install() 和 /api/upgrade/pending 都是好的，就是没人问，于是
+    // 用户下了 2.5 GB、界面说「重启后生效」，重启之后什么都没发生。
+    try { window.P2W_ACTS.loadUpgPending(); } catch (e) { /* 同上，不挡主流程 */ }
     return get('/api/env');
   }).then(function (d) {
     state.env = d;

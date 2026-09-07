@@ -338,9 +338,21 @@ def scan_temp_pip(min_age_h=TEMP_PIP_MIN_AGE_H):
             'count': len(rows), 'items': rows}
 
 
+# 下好的升级包住在这儿（跟 upgrade.CACHE 是同一个地方）。
+#
+# 🔴 它在 paths.TMP 底下，但**不能算进「转换临时文件」那一行** ——
+#    2026-09-07 小蔡下好 2.5 GB 的 torch，界面上只显示一行「转换临时
+#    文件」，点一下清理就全没了，而状态文件在 logs/ 下毫发无损、仍写着
+#    「已下好」，于是重启后装不上还得重下。让用户看得见自己在删什么。
+UPGRADE_CACHE = os.path.join(paths.TMP, 'upgrade_cache')
+
+
 def scan_logs():
-    """日志和转换临时文件有多大。"""
-    return {'logs': _dir_size(paths.LOGS), 'tmp': _dir_size(paths.TMP)}
+    """日志、转换临时文件、下好的升级包，各自多大。"""
+    up = _dir_size(UPGRADE_CACHE)
+    return {'logs': _dir_size(paths.LOGS),
+            'tmp': max(_dir_size(paths.TMP) - up, 0),
+            'upgrade_cache': up}
 
 
 def scan():
@@ -376,6 +388,10 @@ def scan():
          'note': '', 'cleanable': True},
         {'key': 'tmp', 'label': '转换临时文件', 'size': logs['tmp'],
          'note': '', 'cleanable': True},
+        {'key': 'upgrade_cache', 'label': '下好的升级包（等重启安装）',
+         'size': logs['upgrade_cache'],
+         'note': '清了要重新下一次' if logs['upgrade_cache'] else '没有',
+         'cleanable': True},
         {'key': 'models', 'label': '识别模型', 'size': models,
          'note': '清了要重下 4.6 GB，一般别动', 'cleanable': False},
     ]
@@ -485,7 +501,23 @@ def clean(keys=(), pip_paths=()):
         #    界面上写的只是「日志」—— 用户点一下就没了，界面上一个字都没提。
         rm_tree(paths.LOGS, keep=(os.path.basename(RUNS), SIZE_FILE_NAME))
     if 'tmp' in keys:
-        rm_tree(paths.TMP)
+        # 🔴 **绕开下好的升级包** —— 它虽然住在 TMP 底下，但界面上是
+        #    单独一行，用户没勾就不能删（见 UPGRADE_CACHE 的注释）。
+        try:
+            names = os.listdir(paths.TMP)
+        except OSError:
+            names = []
+        keep_at = os.path.abspath(UPGRADE_CACHE)
+        for name in names:
+            p = os.path.join(paths.TMP, name)
+            if os.path.abspath(p) == keep_at:
+                continue
+            if os.path.isdir(p):
+                rm_tree(p, keep_root=False)
+            else:
+                rm_file(p)
+    if 'upgrade_cache' in keys:
+        rm_tree(UPGRADE_CACHE, keep_root=False)
     if 'temp_pip' in keys:
         # 🔴 路径由后端自己列，**不接受前端传进来的**。temp_pip_dirs()
         #    里已经把前缀、链接、父目录、年龄四道判据全过了一遍，

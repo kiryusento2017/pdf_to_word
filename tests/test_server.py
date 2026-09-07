@@ -933,5 +933,86 @@ class Test转换历史有出口(unittest.TestCase):
 
 
 
+class Test安装下好的升级(unittest.TestCase):
+    r"""🔴 2026-09-07 小蔡实测：torch 2.14 下好了、界面也说「重启后生效」，
+    重启之后**什么都没发生**，版本还是 2.11。
+
+    查下来：后端 `install()` 逻辑完整、`--dry-run` 实测能装、
+    `/api/upgrade/pending` 接口也写好了 —— **但前端从来没调过它，
+    也没有任何地方去调 install**。整条链在「谁按下那个装」这一环断了，
+    而界面还理直气壮地说「重启后生效」。
+
+    跟历史那个哑巴 bug 同一个形状：**接口对 ≠ 有人调**。
+    """
+
+    def setUp(self):
+        srv._UPGI.clear()
+        srv._UPGI.update({'state': 'idle'})
+        self._install = srv.upgrade.install
+
+    def tearDown(self):
+        srv.upgrade.install = self._install
+        srv._TASKS.clear()
+        srv._UPGI.clear()
+        srv._UPGI.update({'state': 'idle'})
+
+    def test_点安装真的会去调后端的install(self):
+        r"""不许 mock 成「返回成功但什么都没干」—— 那正是这个 bug 的形状。"""
+        called = {}
+
+        def fake_install(on_log=None):
+            called['yes'] = True
+            return {'ok': True, 'error': ''}
+
+        srv.upgrade.install = fake_install
+        r = client.post('/api/upgrade/install')
+        self.assertEqual(r.status_code, 200)
+        for _ in range(50):
+            if srv._UPGI.get('state') == 'done':
+                break
+            time.sleep(0.05)
+        self.assertTrue(called.get('yes'), '接口返回了 200，却没真去装')
+        self.assertTrue(srv._UPGI.get('ok'))
+
+    def test_转换中不许装(self):
+        r"""torch 的 dll 正被 MinerU 子进程占着，这时候装必然出事。"""
+        srv._TASKS['t1'] = {'state': 'running'}
+        r = client.post('/api/upgrade/install')
+        self.assertEqual(r.status_code, 409)
+
+    def test_正在装的时候再点一次会被挡住(self):
+        srv._UPGI.update({'state': 'running'})
+        r = client.post('/api/upgrade/install')
+        self.assertEqual(r.status_code, 409)
+
+    def test_装失败要把原因带回来不能假装成功(self):
+        srv.upgrade.install = lambda on_log=None: {
+            'ok': False, 'error': '装失败：磁盘满了', 'rolled_back': True}
+        client.post('/api/upgrade/install')
+        for _ in range(50):
+            if srv._UPGI.get('state') == 'done':
+                break
+            time.sleep(0.05)
+        self.assertFalse(srv._UPGI.get('ok'))
+        self.assertIn('磁盘满', srv._UPGI.get('error', ''))
+
+    def test_装的时候抛异常也要收住不能让线程默默死掉(self):
+        def boom(on_log=None):
+            raise RuntimeError('site-packages 被占用')
+        srv.upgrade.install = boom
+        client.post('/api/upgrade/install')
+        for _ in range(50):
+            if srv._UPGI.get('state') == 'done':
+                break
+            time.sleep(0.05)
+        self.assertFalse(srv._UPGI.get('ok'))
+        self.assertIn('site-packages', srv._UPGI.get('error', ''))
+
+    def test_能查安装进度(self):
+        d = client.get('/api/upgrade/install').json()
+        self.assertIn('state', d)
+
+
+
 if __name__ == '__main__':
     unittest.main()

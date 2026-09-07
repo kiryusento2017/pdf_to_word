@@ -74,6 +74,7 @@ mineru 的包里自带 `torch<3,>=2.6.0`。用户只勾了 mineru 时，pip 解
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -138,6 +139,30 @@ def local_version(pkg):
         return md.version(pkg)
     except Exception:
         return ''
+
+
+# torch 和 torchvision 必须同进同退。
+#
+# 🔴 torchvision 是**编译期绑死 torch 版本**的：0.26.0 配的是 torch 2.11，
+#    装上 torch 2.14 之后它多半加载不了（典型是 import 时报 undefined
+#    symbol）。所以「只升其中一个」这件事本身就是错的，不该让用户勾得出来。
+#
+#    2026-09-07 小蔡实测撞上：只勾了 torch，constraints_for 就把
+#    torchvision 钉死在当前版本（那是「只升 A 不动 B」的有意设计），
+#    于是下好的 2.5 GB 里根本没有 torchvision —— 就算装上 torch，
+#    环境也是坏的。
+#
+#    配对放在**后端**做，不放前端：不管界面上怎么勾、将来谁调这个函数，
+#    出来的组合都是自洽的。mineru 跟它俩没有这种绑定，不受影响。
+_PAIRED = ('torch', 'torchvision')
+
+
+def pair_up(picked):
+    """把必须同进同退的包补齐。顺序按 ALLOWED，去重。"""
+    got = set(p for p in (picked or ()) if p in ALLOWED)
+    if got & set(_PAIRED):
+        got |= set(_PAIRED)
+    return [p for p in ALLOWED if p in got]
 
 
 def constraints_for(picked):
@@ -239,7 +264,7 @@ def plan(picked, targets=None, on_log=None):
     ok=False 并说明 —— 那时候前端要退化成「不预览、只警告」，
     不能让整个功能废掉。
     """
-    picked = [p for p in (picked or ()) if p in ALLOWED]
+    picked = pair_up(picked)      # torch / torchvision 必须同进同退
     if not picked:
         return {'ok': False, 'changes': [], 'error': '没选要升级的包', 'cmd': ''}
 
@@ -303,7 +328,7 @@ def download(picked, targets=None, on_log=None, on_progress=None):
 
     返回 {ok, error, cmd}。下好的 wheel 留在 CACHE 里，等重启时装。
     """
-    picked = [p for p in (picked or ()) if p in ALLOWED]
+    picked = pair_up(picked)      # torch / torchvision 必须同进同退
     if not picked:
         return {'ok': False, 'error': '没选要升级的包', 'cmd': ''}
 
@@ -576,5 +601,34 @@ def pending():
         return {'action': 'rollback', 'backup': st.get('backup', ''),
                 'picked': st.get('picked', [])}
     if phase == 'downloaded':
-        return {'action': 'install', 'picked': st.get('picked', [])}
+        picked = st.get('picked') or []
+        missing = missing_wheels(picked)
+        if missing:
+            # 🔴 状态说下好了，硬盘上却没有 —— **最常见的原因是用户点了
+            #    环境检测页的「清理转换临时文件」**：CACHE 就住在
+            #    paths.TMP 底下，那一下把 2.5 GB 一起带走了，而状态文件
+            #    在 logs/ 下毫发无损。
+            #    这时候绝不能说「能装」：pip 带着 --no-index 找不到 wheel，
+            #    装失败还要回滚一次，用户白等一场且看不懂。
+            return {'action': 'redownload', 'picked': picked,
+                    'missing': missing}
+        return {'action': 'install', 'picked': picked}
     return {'action': 'none'}
+
+
+def _norm(name):
+    """包名规范化，跟 pip 落盘时一个规矩：小写，- . 都当 _。"""
+    return re.sub(r'[-_.]+', '_', str(name or '').strip().lower())
+
+
+def missing_wheels(picked):
+    """这几个包里，哪些在 CACHE 里找不到 wheel。返回缺的那些名字。"""
+    try:
+        files = [f for f in os.listdir(CACHE) if f.lower().endswith('.whl')]
+    except OSError:
+        return list(picked or ())          # 目录都没了，等于全缺
+    have = set()
+    for f in files:
+        # wheel 文件名是 `名字-版本-...whl`，名字那段按上面的规矩规范化过
+        have.add(_norm(f.split('-')[0]))
+    return [p for p in (picked or ()) if _norm(p) not in have]

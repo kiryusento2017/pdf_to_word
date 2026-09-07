@@ -56,6 +56,9 @@ _TASKS = {}
 
 # 升级下载的状态。跟 _TASKS 一样由 _LOCK 保护。
 _UPG = {}
+# 装下好的那批。跟 _UPG（下载）分开 —— 下载可以跟转换并行，
+# **安装不行**：torch 的 dll 那会儿正被 MinerU 子进程占着。
+_UPGI = {'state': 'idle'}
 _LOCK = threading.Lock()
 
 
@@ -1267,6 +1270,61 @@ def upgrade_download(req: UpgradeReq):
 def upgrade_download_status():
     with _LOCK:
         return dict(_UPG)
+
+
+@app.post('/api/upgrade/install')
+def upgrade_install():
+    r"""装下好的那批。**这个接口以前不存在。**
+
+    🔴 2026-09-07 小蔡实测：torch 2.14 下好了、界面说「重启后生效」，
+       重启之后什么都没发生。查下来 `upgrade.install()` 逻辑完整、
+       `--dry-run` 实测能装、`/api/upgrade/pending` 也写好了 ——
+       **但没有任何地方去调 install**。整条链在「谁按下那个装」断了，
+       而界面还理直气壮说「重启后生效」。
+
+    **转换中拒绝**：torch 的 dll 那会儿正被 MinerU 子进程占着，
+    这时候装必然出事。服务进程自己不 import torch（只 import
+    torchdep，纯逻辑），所以只要没有转换在跑，文件就是干净的。
+    """
+    with _LOCK:
+        if _UPGI.get('state') == 'running':
+            return JSONResponse({'detail': '已经在装了'}, status_code=409)
+        busy = (any(t.get('state') == 'running' for t in _TASKS.values())
+                or _DL.get('state') == 'running'
+                or _UPG.get('state') == 'running'
+                or _UPD.get('state') in ('running', 'installing'))
+        if busy:
+            return JSONResponse({'detail': '正在转换或下载，完成后再安装'},
+                                status_code=409)
+        _UPGI.clear()
+        _UPGI.update({'state': 'running', 'lines': [], 'error': '', 'ok': False})
+
+    def work():
+        def on_log(line):
+            with _LOCK:
+                _UPGI['lines'].append(line[-300:])
+                if len(_UPGI['lines']) > 400:
+                    del _UPGI['lines'][0:len(_UPGI['lines']) - 400]
+        try:
+            r = upgrade.install(on_log=on_log)
+        except Exception as e:
+            # 🔴 线程里抛异常没人接的话，state 会永远停在 running，
+            #    界面就一直转圈。宁可把原因原样带回去。
+            r = {'ok': False, 'error': '%s: %s' % (type(e).__name__, e)}
+        with _LOCK:
+            _UPGI['state'] = 'done'
+            _UPGI['ok'] = bool(r.get('ok'))
+            _UPGI['error'] = r.get('error', '')
+            _UPGI['rolled_back'] = bool(r.get('rolled_back'))
+
+    threading.Thread(target=work, daemon=True).start()
+    return {'ok': True}
+
+
+@app.get('/api/upgrade/install')
+def upgrade_install_status():
+    with _LOCK:
+        return dict(_UPGI)
 
 
 @app.get('/api/upgrade/pending')

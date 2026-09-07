@@ -25,6 +25,33 @@
     if (poller) { clearInterval(poller); poller = null; }
   }
 
+  // 问一句：有没有下好、还没装的升级。开机调一次，装完再调一次。
+  function loadUpgPending() {
+    HTTP.get('/api/upgrade/pending').then(function (d) {
+      st.upgPending = d || null;
+      render();
+    }).catch(function () { /* 问不到就当没有，不挡主流程 */ });
+  }
+
+  // 装的过程要轮询 —— 2.5 GB 解压落盘要几分钟，不能让界面停在那儿。
+  function pollUpgIns() {
+    HTTP.get('/api/upgrade/install').then(function (d) {
+      st.upgIns = d;
+      render();
+      if (d && d.state === 'running') {
+        setTimeout(pollUpgIns, 1000);
+      } else if (d && d.ok) {
+        // 🔴 **装成功就直接重启**，不再问一次。小蔡定的：只有「立即重启」
+        //    一个按钮，点了就把整件事走完 —— 装完还要用户再点一次的话，
+        //    又回到了「谁按下那一下」没人管的坑里。
+        //    新版本的 torch 要重启进程才真正生效（旧的还在内存里）。
+        window.api.restart();
+      } else {
+        loadUpgPending();     // 装失败了，重新问一次状态好显示按钮
+      }
+    }).catch(function () { setTimeout(pollUpgIns, 3000); });
+  }
+
   // 拉转换历史。主屏空着的时候显示它 —— 打开软件就看得见上次转了什么。
   // **读不出来就当没有**，不打扰用户：历史是锦上添花，不能让它挡住主流程。
   function loadRuns() {
@@ -880,6 +907,22 @@
     },
 
     loadRuns: loadRuns,
+    loadUpgPending: loadUpgPending,
+
+    // 装下好的那批。**点「立即重启」走的是这条**：先装，装完再重启。
+    // 🔴 顺序不能反 —— 先重启的话，重启之后还得有人来按一次「装」，
+    //    又回到了原来那个「谁按下那个装」没人管的坑里。
+    installUpgrade: function () {
+      st.upgIns = { state: 'running', lines: [] };
+      render();
+      HTTP.post('/api/upgrade/install', {})
+        .then(function () { pollUpgIns(); })
+        .catch(function (e) {
+          st.upgIns = { state: 'done', ok: false,
+                        error: String(e && e.message || e) };
+          render();
+        });
+    },
 
     openFile: function (p) { window.api.openFile(p); },
     openPath: function (p) { window.api.openPath(p); },

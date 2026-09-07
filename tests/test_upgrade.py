@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -74,15 +75,24 @@ class Test开机时怎么办(unittest.TestCase):
     r"""🔴 下载中断电和安装中断电，处理方式完全不同。"""
 
     def setUp(self):
-        self._state = upgrade.STATE
+        self._state, self._cache = upgrade.STATE, upgrade.CACHE
         if os.path.isdir(WORK):
             shutil.rmtree(WORK, ignore_errors=True)
         os.makedirs(WORK)
         upgrade.STATE = os.path.join(WORK, 'state.json')
+        # CACHE 也隔离：pending 现在要看硬盘上 wheel 在不在，
+        # 不隔离的话会去读开发目录里真实的 upgrade_cache。
+        upgrade.CACHE = os.path.join(WORK, 'cache')
+        os.makedirs(upgrade.CACHE)
 
     def tearDown(self):
-        upgrade.STATE = self._state
+        upgrade.STATE, upgrade.CACHE = self._state, self._cache
         shutil.rmtree(WORK, ignore_errors=True)
+
+    def _wheel_for(self, *names):
+        for n in names:
+            io.open(os.path.join(upgrade.CACHE,
+                                 '%s-1.0-py3-none-any.whl' % n), 'wb').write(b'x')
 
     def _state_is(self, d):
         io.open(upgrade.STATE, 'w', encoding='utf-8').write(
@@ -99,6 +109,7 @@ class Test开机时怎么办(unittest.TestCase):
 
     def test_下好了没装就提示装(self):
         self._state_is({'phase': 'downloaded', 'picked': ['mineru']})
+        self._wheel_for('mineru')      # 包真在硬盘上，才谈得上「能装」
         r = upgrade.pending()
         self.assertEqual(r['action'], 'install')
         self.assertEqual(r['picked'], ['mineru'])
@@ -327,6 +338,147 @@ class Test超时对卡死的pip也要生效(unittest.TestCase):
         rc, out = upgrade._pip(['install', 'x'], timeout=30)
         self.assertFalse(self.fake.killed, '正常结束的进程被误杀了')
         self.assertNotIn('已中止', out)
+
+
+class Testtorch和torchvision必须一起升(unittest.TestCase):
+    r"""🔴 torchvision 是**编译期绑死 torch 版本**的：0.26.0 配的是
+    torch 2.11，装上 torch 2.14 之后它多半加载不了。
+
+    2026-09-07 小蔡实测撞上：只勾了 torch，`constraints_for` 就把
+    torchvision 钉死在 0.26.0+cu128（那是「只升 A 不动 B」的有意设计），
+    于是下好的 2.5 GB 里根本没有 torchvision —— 就算装上 torch 2.14，
+    环境也是坏的。
+
+    所以这两个包**在后端强制配对**，不管前端怎么勾：
+    有 torch 就带 torchvision，有 torchvision 就带 torch。
+    mineru 不受影响，单升 mineru 时这两个照旧钉死。
+    """
+
+    def test_只勾torch也要把torchvision带上(self):
+        self.assertEqual(set(upgrade.pair_up(['torch'])), {'torch', 'torchvision'})
+
+    def test_只勾torchvision也要把torch带上(self):
+        self.assertEqual(set(upgrade.pair_up(['torchvision'])), {'torch', 'torchvision'})
+
+    def test_单升mineru不牵连那两个(self):
+        self.assertEqual(upgrade.pair_up(['mineru']), ['mineru'])
+
+    def test_三个一起勾就原样(self):
+        self.assertEqual(set(upgrade.pair_up(['torch', 'torchvision', 'mineru'])),
+                         {'torch', 'torchvision', 'mineru'})
+
+    def test_配对之后约束文件里不许再钉死torchvision(self):
+        r"""这条是根子：钉死了就下不到新的 torchvision，装完环境是坏的。"""
+        txt = upgrade.constraints_for(upgrade.pair_up(['torch']))
+        self.assertNotIn('torchvision', txt,
+                         '约束里还钉着 torchvision，它就升不上去了：%r' % txt)
+
+    def test_单升mineru时那两个仍然要钉住(self):
+        txt = upgrade.constraints_for(upgrade.pair_up(['mineru']))
+        self.assertIn('torch', txt, '只升 mineru 时 torch 该被钉住不动')
+
+    def test_plan和download真的用了配对不是光有函数(self):
+        r"""🔴 光写个 pair_up 没人调等于没做。这条盯住两个入口都接上了。
+        install 故意不接 —— 它只照状态文件执行，那份已经配过对了。"""
+        import inspect
+        src = inspect.getsource(upgrade)
+        for fn in ('def plan(', 'def download('):
+            at = src.index(fn)
+            seg = src[at:at + 900]
+            self.assertIn('pair_up(picked)', seg, '%s 没接上配对' % fn)
+
+    def test_空的和乱七八糟的输入不炸(self):
+        self.assertEqual(upgrade.pair_up([]), [])
+        self.assertEqual(upgrade.pair_up(None), [])
+
+
+
+class Test下好的包还在不在(unittest.TestCase):
+    r"""🔴 `pending()` 原来只读状态文件就说「能装」，不看硬盘。
+
+    而 `CACHE = paths.TMP/upgrade_cache`，用户在环境检测页点一下
+    **「清理转换临时文件」**（界面上就这么写的），`rm_tree(paths.TMP)`
+    会把下好的 2.5 GB 一起删掉 —— 状态文件在 logs/ 下不受影响，仍然
+    写着 downloaded。于是重启后信心满满地去装，pip 带着 `--no-index`
+    找不到 wheel，装失败、回滚，用户白等一场还看不懂为什么。
+
+    所以「能不能装」必须以**硬盘上真有那几个 wheel** 为准。
+    """
+
+    def setUp(self):
+        self.w = tempfile.mkdtemp(prefix='p2w_pend_')
+        self._cache, self._state = upgrade.CACHE, upgrade.STATE
+        upgrade.CACHE = os.path.join(self.w, 'cache')
+        upgrade.STATE = os.path.join(self.w, 'upgrade_state.json')
+        os.makedirs(upgrade.CACHE)
+
+    def tearDown(self):
+        upgrade.CACHE, upgrade.STATE = self._cache, self._state
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _state_downloaded(self, picked):
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'downloaded', 'picked': picked}))
+
+    def _wheel(self, name, ver):
+        p = os.path.join(upgrade.CACHE,
+                         '%s-%s-cp312-cp312-win_amd64.whl' % (name, ver))
+        io.open(p, 'wb').write(b'x' * 100)
+
+    def test_包齐了就说能装(self):
+        self._state_downloaded(['torch', 'torchvision'])
+        self._wheel('torch', '2.14.0+cu126')
+        self._wheel('torchvision', '0.27.0+cu126')
+        r = upgrade.pending()
+        self.assertEqual(r['action'], 'install')
+
+    def test_包被清理掉了要说重新下不能说能装(self):
+        self._state_downloaded(['torch'])
+        # CACHE 是空的 —— 正是「点了清理转换临时文件」之后的样子
+        r = upgrade.pending()
+        self.assertEqual(r['action'], 'redownload',
+                         '包都没了还说能装，装到一半才失败')
+
+    def test_只少一个包也算不齐(self):
+        r"""torch 在、torchvision 没下全 —— 装上去环境是坏的。"""
+        self._state_downloaded(['torch', 'torchvision'])
+        self._wheel('torch', '2.14.0+cu126')
+        r = upgrade.pending()
+        self.assertEqual(r['action'], 'redownload')
+
+    def test_缺哪个包要说出来(self):
+        self._state_downloaded(['torch', 'torchvision'])
+        self._wheel('torch', '2.14.0+cu126')
+        r = upgrade.pending()
+        self.assertIn('torchvision', str(r.get('missing') or ''))
+
+    def test_缓存目录整个不见了也要说重下(self):
+        r"""🔴 用户点「清理」走的是 `rm_tree`，**删的是整个目录**，
+        不是把它清空 —— 所以「目录不存在」才是清理之后的真实样子。
+        2026-09-07 变异抓到：这条不写的话，`except OSError: return []`
+        改成「当成包都在」也没人发现。"""
+        self._state_downloaded(['torch'])
+        shutil.rmtree(upgrade.CACHE, ignore_errors=True)
+        r = upgrade.pending()
+        self.assertEqual(r['action'], 'redownload')
+        self.assertIn('torch', str(r.get('missing') or ''))
+
+    def test_装到一半断电照旧回滚不受影响(self):
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'installing', 'picked': ['torch'],
+                        'backup': 'D:/x'}))
+        self.assertEqual(upgrade.pending()['action'], 'rollback')
+
+    def test_没状态文件就是没事(self):
+        self.assertEqual(upgrade.pending()['action'], 'none')
+
+    def test_包名带下划线或大小写也认得出(self):
+        r"""pip 落盘时会把包名规范化，别因为大小写判成「没下」。"""
+        self._state_downloaded(['torch'])
+        p = os.path.join(upgrade.CACHE, 'Torch-2.14.0-cp312-cp312-win_amd64.whl')
+        io.open(p, 'wb').write(b'x' * 100)
+        self.assertEqual(upgrade.pending()['action'], 'install')
+
 
 
 if __name__ == '__main__':

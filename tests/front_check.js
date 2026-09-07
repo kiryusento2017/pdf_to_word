@@ -2358,6 +2358,104 @@ console.log('\n重绘不许把任何滚动区弹回顶部：');
 }
 
 
+console.log('\n下好的升级要能被发现、能装上：');
+{
+  // 🔴 2026-09-07 小蔡实测：torch 2.14 下好了、界面说「重启后生效」，
+  //    重启之后什么都没发生，版本还是 2.11，再点检查又要重下一遍。
+  //    后端 install() 和 /api/upgrade/pending 都是好的 —— **前端从来
+  //    没调过它们**。整条链在「谁按下那个装」这一环断了。
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const envSt = (pend) => {
+    const st = Object.assign(ready(sb), { about: 'env' });
+    st.upgPending = pend;
+    st.deps = { torch: { local: '2.11.0+cu128', latest: '2.14.0+cu126' } };
+    return st;
+  };
+
+  ck('开机时会去问「有没有下好等着装的」', () => {
+    const sb2 = mkSandbox();
+    const seen = [];
+    sb2.fetch = (u) => {
+      seen.push({ url: String(u), port: sb2.window.P2W_STATE.port });
+      return { then: () => ({ then: () => ({ catch: () => {} }) }) };
+    };
+    sb2.api.getPort = () => ({
+      then: (f) => { f(1234); return { then: () => ({ catch: () => {} }) }; },
+    });
+    sb2._on['DOMContentLoaded']();
+    const hit = seen.filter((x) => x.url.indexOf('/api/upgrade/pending') >= 0);
+    if (!hit.length) throw new Error('开机压根没问，发出去的：' + JSON.stringify(seen.map(x => x.url)));
+    // 🔴 跟拉历史一样，必须在拿到 port 之后 —— 否则 URL 里是 127.0.0.1:0
+    for (const h of hit) {
+      if (h.port !== 1234) throw new Error('端口还没就位就问了：' + h.url);
+    }
+  });
+
+  ck('有下好等着装的时候，那两个按钮换成「立即重启」', () => {
+    // 小蔡定的：不弹窗，就在升级区原地替换，也不要「稍后重启」。
+    const h = fn(envSt({ action: 'install', picked: ['torch', 'torchvision'] }));
+    // 🔴 按钮写着「立即重启」，动作却是 installUpgrade —— 故意的：
+    //    点一下要把「装 + 重启」一气呵成，裸的 restartApp 只重启不装，
+    //    重启完还得有人再按一次「装」，就回到原来那个坑了。
+    if (!h.includes('data-act="installUpgrade"')) throw new Error('没有「立即重启」');
+    if (!h.includes('立即重启')) throw new Error('按钮文案不对');
+    if (h.includes('data-act="startUpgrade"')) throw new Error('「下载并升级」还在');
+    if (h.includes('data-act="planUpgrade"')) throw new Error('「看看会动哪些包」还在');
+    if (h.includes('稍后')) throw new Error('不该有「稍后重启」');
+  });
+
+  ck('没下过东西时还是原来那两个按钮', () => {
+    const h = fn(envSt({ action: 'none' }));
+    if (!h.includes('data-act="startUpgrade"')) throw new Error('「下载并升级」不见了');
+  });
+
+  ck('下好的包被清理掉了，要说重下而不是让人白等', () => {
+    // 用户点过「清理转换临时文件」——CACHE 就住在 paths.TMP 底下
+    const h = fn(envSt({ action: 'redownload', picked: ['torch'],
+                         missing: ['torch'] }));
+    if (!h.includes('已被清理')) throw new Error('没说包被清理了');
+    if (h.includes('data-act="restartApp"')) throw new Error('包都没了还让人重启');
+    if (!h.includes('data-act="startUpgrade"')) throw new Error('该给「重新下载」');
+  });
+
+  ck('正在装的时候显示进度，不显示按钮', () => {
+    const st = envSt({ action: 'install', picked: ['torch'] });
+    st.upgIns = { state: 'running', lines: ['Processing torch.whl'] };
+    const h = fn(st);
+    if (!h.includes('正在安装')) throw new Error('没说在装');
+    if (h.includes('data-act="restartApp"')) throw new Error('装着呢还给重启按钮');
+  });
+
+  ck('装成功之后会自己重启，不用再点一次', () => {
+    // 🔴 小蔡定的：只有「立即重启」一个按钮，点了就把整件事走完。
+    //    装完还要用户再点一次的话，又回到「谁按下那一下」没人管的坑里。
+    //
+    // ⚠️ **这条是源码断言，测不到运行时行为** —— 装完重启这件事挂在
+    //    fetch → json → then 的异步链末端，而这里的 ck 是同步的，
+    //    撑不起那个链。所以它只能保证「ok 分支里确实写了 restart」，
+    //    不能保证那个分支真的会被走到。别把它当成行为测试。
+    const src = require('fs').readFileSync(
+      'D:/claude_code_workspace/pdf_to_word/app/renderer/actions.js', 'utf8');
+    const at = src.indexOf('function pollUpgIns');
+    if (at < 0) throw new Error('找不到安装轮询');
+    const seg = src.slice(at, at + 1200);
+    if (!/d\.ok[\s\S]{0,400}window\.api\.restart\(\)/.test(seg)) {
+      throw new Error('装成功之后没有重启，用户得自己再点一次');
+    }
+  });
+
+  ck('装失败要把原因摆出来，并说明已经回滚', () => {
+    const st = envSt({ action: 'install', picked: ['torch'] });
+    st.upgIns = { state: 'done', ok: false, error: '装失败：磁盘满了',
+                  rolled_back: true };
+    const h = fn(st);
+    if (!h.includes('磁盘满了')) throw new Error('原因没摆出来');
+    if (!h.includes('已经回到升级前')) throw new Error('没说清楚回滚了，用户会以为环境坏了');
+  });
+}
+
+
 // 🔴 **这个判断必须待在文件最末尾。** 它原来在中间（跑完前 115 条
 //    就 exit），后面还有三个测试块 —— 那 15 条失败了退出码照样是 0，
 //    末尾那句「前端全部通过」也照常打印。发版门禁认的就是这句话，

@@ -571,5 +571,57 @@ def paths_LOGS_backup():
     return maint.paths.LOGS
 
 
+class Test下好的升级包不该混在转换临时文件里(unittest.TestCase):
+    r"""🔴 2026-09-07 小蔡实测踩到：下好 2.5 GB 的 torch，界面上却只有
+    一行**「转换临时文件」**——因为 `CACHE = paths.TMP/upgrade_cache`，
+    它就住在那底下。用户点一下清理，2.5 GB 没了，而状态文件在 logs/ 下
+    毫发无损，仍写着「已下好」，于是重启后装不上、还得重下一次。
+
+    单独列一行，让用户看得见自己在删什么。
+    """
+
+    def setUp(self):
+        self._tmp, self._uc = maint.paths.TMP, maint.UPGRADE_CACHE
+        self.w = tempfile.mkdtemp(prefix='p2w_upgi_')
+        maint.paths.TMP = self.w
+        self.cache = os.path.join(self.w, 'upgrade_cache')
+        # UPGRADE_CACHE 是模块级常量（跟 RUNS 一个风格，运行时 TMP 不变），
+        # 测试里要跟 paths.TMP 一起换掉。
+        maint.UPGRADE_CACHE = self.cache
+        os.makedirs(self.cache)
+        io.open(os.path.join(self.cache, 'torch-2.14.0.whl'), 'wb').write(b'x' * 5000)
+        os.makedirs(os.path.join(self.w, 'extract'))
+        io.open(os.path.join(self.w, 'extract', 'a.md'), 'wb').write(b'y' * 100)
+
+    def tearDown(self):
+        maint.paths.TMP, maint.UPGRADE_CACHE = self._tmp, self._uc
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _items(self):
+        return {i['key']: i for i in maint.scan()['items']}
+
+    def test_升级包单独一行看得见(self):
+        it = self._items()
+        self.assertIn('upgrade_cache', it, '下好的安装包没单独列出来')
+        self.assertGreater(it['upgrade_cache']['size'], 4000)
+
+    def test_转换临时文件那行不再把升级包算进去(self):
+        r"""不然用户看到「转换临时文件 2.5 GB」，根本想不到那是安装包。"""
+        it = self._items()
+        self.assertLess(it['tmp']['size'], 4000,
+                        '升级包还被算在「转换临时文件」里')
+
+    def test_清转换临时文件不许连坐删掉升级包(self):
+        maint.clean(keys=['tmp'])
+        self.assertTrue(os.path.isfile(os.path.join(self.cache, 'torch-2.14.0.whl')),
+                        '下好的 2.5 GB 被「清理转换临时文件」带走了')
+        self.assertFalse(os.path.isfile(os.path.join(self.w, 'extract', 'a.md')),
+                         '该清的转换临时文件没清掉')
+
+    def test_明确勾了升级包才删它(self):
+        maint.clean(keys=['upgrade_cache'])
+        self.assertFalse(os.path.isdir(self.cache), '勾了却没删')
+
+
 if __name__ == '__main__':
     unittest.main()
