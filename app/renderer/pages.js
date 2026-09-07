@@ -179,7 +179,7 @@ function historyView(st) {
     + 'gap:6px;height:100%;box-sizing:border-box">'
     + '<div class="f-dim" style="font-size:11px">共 ' + rows.length + ' 份 · '
     + '鼠标停在失败那行上能看完整报错</div>'
-    + '<div style="flex:1;min-height:0;overflow:auto">'
+    + '<div data-keep-scroll="history" style="flex:1;min-height:0;overflow:auto">'
     + rows.map(runRow).join('')
     + '</div></div>';
 }
@@ -203,7 +203,7 @@ function btn(act, text, opt) {
 // 三段外壳。页面函数只管填这三块，高度分配由 CSS 保证。
 function shell(top, main, bot) {
   return '<div class="chrome-top">' + top + '</div>'
-    + '<div class="main">' + main + '</div>'
+    + '<div class="main" data-keep-scroll="main">' + main + '</div>'
     + '<div class="chrome-bot">' + bot + '</div>';
 }
 
@@ -801,7 +801,8 @@ function updateView(st) {
     + '<div class="f-dim">当前 ' + esc(u.local)
     + (u.published ? '　·　发布于 ' + esc(u.published) : '')
     + (u.asset && u.asset.size ? '　·　' + F.gb(u.asset.size) : '') + '</div>'
-    + (notes ? '<div class="f-dim" style="max-width:90%;text-align:left;'
+    + (notes ? '<div class="f-dim" data-keep-scroll="updnotes" '
+        + 'style="max-width:90%;text-align:left;'
         + 'line-height:1.6;max-height:' + (notesOpen ? '150' : '110')
         + 'px;overflow:auto">' + notes + '</div>' : '')
     + (hasMore ? '<div data-act="toggleUpdNotes" class="f-dim" '
@@ -954,7 +955,8 @@ function upgradeBox(st) {
       var head2 = '这次会动 ' + cs.length + ' 个包';
       // 🔴 默认折叠 —— 一次升级动十几个包很正常，全摊开会吓着人。
       var body = st.upgDetail
-        ? '<div style="max-height:80px;overflow:auto;font-size:11px;'
+        ? '<div data-keep-scroll="upgchanges" '
+          + 'style="max-height:80px;overflow:auto;font-size:11px;'
           + 'text-align:left">' + cs.map(function (c) {
             return esc(c.name) + ' ' + esc(c.from || '(新增)')
               + ' → ' + esc(c.to);
@@ -1067,8 +1069,9 @@ function envCheckView(st) {
       //    归 0 —— render() 靠这个 id 把位置放回去。
       //    2026-09-07 小蔡报「展开明细往下滑，自己跳回最顶上」就是漏了这处
       //    （当时只保住了 .main 和 #dllog 两个容器）。
-      + (st.cacheOpen ? '<div id="cachelist" style="max-height:96px;overflow:auto;'
-        + 'font-size:11px;text-align:left"><table>' + rows + '</table></div>' : '');
+      + (st.cacheOpen ? '<div data-keep-scroll="cachelist" '
+        + 'style="max-height:96px;overflow:auto;font-size:11px;text-align:left">'
+        + '<table>' + rows + '</table></div>' : '');
   }
 
   // 清理结果

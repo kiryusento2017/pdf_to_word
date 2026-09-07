@@ -14,7 +14,7 @@
 ```
 .venv\Scripts\python.exe -m unittest discover -s tests -q   # 528 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
-node tests\front_check.js                                   # 177 条
+node tests\front_check.js                                   # 181 条
 ```
 
 **红一条都不许发。** 不存在「这条测试早就坏了不用管」——

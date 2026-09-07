@@ -34,30 +34,35 @@ function mkSandbox() {
   // 里面的 .main 是**一个新元素**，scrollTop 从 0 开始 —— 滚动位置丢失
   // 那个 bug 就出在这里，不模拟这一点就测不出来。
   const appEl = (function () {
-    let mainEl = { scrollTop: 0 };
     let logEl = null;
-    let cacheEl = null;
+    let keepEls = {};
     return {
       set innerHTML(v) {
         this._html = v;
-        mainEl = { scrollTop: 0 };
-        // 日志区跟 .main 一样，innerHTML 换掉之后是**新元素**。
-        // 给出 scrollHeight/clientHeight，粘底判据才算得出来。
+        // 日志区 innerHTML 换掉之后是**新元素**。给出 scrollHeight /
+        // clientHeight，粘底判据才算得出来。它不走通用那套 —— 它要的是
+        // 「贴底就跟着滚」，不是「留在原处」。
         logEl = v.indexOf('id="dllog"') >= 0
           ? { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 } : null;
-        // 缓存明细展开后是**第三个**滚动容器（max-height + overflow:auto）。
-        // 跟上面两个一样，innerHTML 换掉之后是新元素、scrollTop 从 0 开始 ——
-        // 不模拟这一点就测不出「明细一滑就跳回顶部」。
-        cacheEl = v.indexOf('id="cachelist"') >= 0
-          ? { scrollTop: 0, scrollHeight: 600, clientHeight: 96 } : null;
+        // 🔴 **凡是带 data-keep-scroll 的都是新元素、scrollTop 从 0 开始。**
+        //    不模拟这一点就测不出「一滑就跳回顶部」那一类 bug。
+        keepEls = {};
+        const re = /data-keep-scroll="([^"]+)"/g;
+        let m;
+        while ((m = re.exec(v)) !== null) {
+          const key = m[1];
+          keepEls[key] = {
+            scrollTop: 0, scrollHeight: 600, clientHeight: 96,
+            getAttribute: (a) => (a === 'data-keep-scroll' ? key : null),
+          };
+        }
       },
       get innerHTML() { return this._html || ''; },
-      querySelector: (s) => (s === '.main' ? mainEl
-                           : (s === '#dllog' ? logEl
-                           : (s === '#cachelist' ? cacheEl : null))),
-      get _main() { return mainEl; },
+      querySelector: (s) => (s === '#dllog' ? logEl : null),
+      querySelectorAll: (s) => (s === '[data-keep-scroll]'
+        ? Object.keys(keepEls).map((k) => keepEls[k]) : []),
       get _log() { return logEl; },
-      get _cache() { return cacheEl; },
+      get _keep() { return keepEls; },
     };
   }());
   const sb = {
@@ -212,10 +217,10 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
     st.items = Array.from({ length: 40 }, (_, i) => (
       { path: 'C:\\a\\' + i + '.pdf', ok: true, pages: 10, scan_pages: [] }));
     sb2.window.P2W_RENDER();
-    el._main.scrollTop = 500;          // 用户滚到中间
+    el._keep.main.scrollTop = 500;     // 用户滚到中间
     sb2.window.P2W_RENDER();           // 勾一下 / 轮询一次都会走到这
-    if (el._main.scrollTop !== 500) {
-      throw new Error('滚动位置丢了，弹回了 ' + el._main.scrollTop);
+    if (el._keep.main.scrollTop !== 500) {
+      throw new Error('滚动位置丢了，弹回了 ' + el._keep.main.scrollTop);
     }
   });
 
@@ -223,7 +228,7 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
     const sb2 = mkSandbox();
     const el = sb2.document.getElementById('app');
     sb2.window.P2W_RENDER();
-    if (el._main.scrollTop !== 0) throw new Error('本来在顶部，却被挪到了别处');
+    if (el._keep.main.scrollTop !== 0) throw new Error('本来在顶部，却被挪到了别处');
   });
 
   ck('每种状态都吐完整三段，主区才能铺满', () => {
@@ -2246,43 +2251,92 @@ console.log('\n开机那一刻的顺序：');
 }
 
 
-console.log('\n缓存明细展开后，重绘不许把它滚回顶部：');
+console.log('\n重绘不许把任何滚动区弹回顶部：');
 {
-  // 🔴 2026-09-07 小蔡报的：环境检测页展开缓存明细往下滑，自己跳回最顶上，
-  //    **只在「更新组件」进行时出现**。
+  // 🔴 2026-09-07 一天之内在同一件事上栽了两回：
+  //    先是小蔡报「环境检测页展开缓存明细往下滑，自己跳回最顶上，只在
+  //    更新组件时」—— 那个框是 max-height + overflow:auto 的独立滚动容器，
+  //    而 render() 当时只按写死的选择器保住 .main 和 #dllog 两个；
+  //    修完当天又在新做的历史屏里造了个一模一样的。
   //
-  //    根因不是「恢复得不准」，是**根本没恢复**：明细展开后自己是一个
-  //    `max-height:96px; overflow:auto` 的独立滚动框，用户滑的是它；
-  //    而 render() 当时只保存/恢复 .main 和 #dllog 两个容器 —— 写那段时
-  //    这个框还不存在，后来加明细的人没想起来还有这么一处。
-  //    升级期间 pollUpgrade 每秒 render 一次，于是一秒归零一次。
+  //    所以改成认 data-keep-scroll：标记跟容器写在一起，加滚动区的时候
+  //    顺手就带上了，不用记得回来改 render()。下面这组按标记逐个盯。
   const sb = mkSandbox();
   const el = sb.document.getElementById('app');
+  const st = sb.window.P2W_STATE;
 
-  ck('明细框滚到一半，重绘之后还在原处', () => {
-    const st = sb.window.P2W_STATE;
-    Object.assign(st, ready(sb));
-    st.about = 'env';
-    st.cacheOpen = true;
-    st.maint = { ok: true, pip: { items: [
-      { name: 'torch', size: 2600000000, ours: true },
-      { name: 'numpy', size: 40000000, ours: false },
-    ] } };
-    sb.window.P2W_RENDER();
-    if (!el._cache) throw new Error('明细框没渲染出来（是不是没给 id）');
-    el._cache.scrollTop = 42;          // 用户往下滑
-    sb.window.P2W_RENDER();            // 升级期间每秒来这么一次
-    if (el._cache.scrollTop !== 42) {
-      throw new Error('明细被滚回了 ' + el._cache.scrollTop + '，该留在 42');
-    }
-  });
+  // 每一项：名字 → 把状态摆成「那个滚动区出现」的样子
+  const spots = {
+    cachelist: () => {
+      Object.assign(st, ready(sb));
+      st.about = 'env';
+      st.cacheOpen = true;
+      st.maint = { ok: true, pip: { items: [
+        { name: 'torch', size: 2600000000, ours: true },
+        { name: 'numpy', size: 40000000, ours: false }] } };
+    },
+    history: () => {
+      Object.assign(st, ready(sb));
+      st.about = 'history';
+      st.runs = [{ time: '2026-09-06 10:30:42', file: 'a.pdf', ok: true,
+                   pages: 10, took_sec: 60, pdf: 'D:\a.pdf', docx: 'D:\a.docx' }];
+    },
+    upgchanges: () => {
+      Object.assign(st, ready(sb));
+      st.about = 'env';
+      st.upgDetail = true;
+      st.deps = { torch: { local: '2.9.1', latest: '2.14.0' } };
+      st.upd = null;
+      st.upgPlan = { ok: true, changes: [{ name: 'torch', from: '2.9.1', to: '2.14.0' }] };
+    },
+    updnotes: () => {
+      Object.assign(st, ready(sb));
+      st.upd = { ok: true, has_update: true, local: '0.2.6', latest: '0.2.7',
+                 notes: '一些说明\n第二行',
+                 asset: { url: 'http://x/y.zip', size: 1000 } };
+    },
+  };
 
-  ck('明细收起来时不因为找不到它而出错', () => {
-    const st = sb.window.P2W_STATE;
+  for (const name of Object.keys(spots)) {
+    ck('「' + name + '」滚到一半，重绘之后还在原处', () => {
+      spots[name]();
+      sb.window.P2W_RENDER();
+      if (!el._keep[name]) {
+        throw new Error('这个滚动区没渲染出来。页面开头：'
+          + el.innerHTML.slice(0, 200).replace(/\s+/g, ' '));
+      }
+      el._keep[name].scrollTop = 42;     // 用户往下滑
+      sb.window.P2W_RENDER();            // 轮询期间每秒来这么一次
+      // 🔴 **重绘之后必须重新取一次**，不能拿着重绘前的那个对象断言 ——
+      //    重绘会把容器换成新元素，旧对象的 scrollTop 永远是刚才自己设的
+      //    42，跟恢复逻辑跑没跑完全无关。第一版就是这么写的，四条全是
+      //    假绿的，靠变异（把恢复改成不按名字配对）才抓出来。
+      const after = el._keep[name];
+      if (!after) throw new Error('重绘之后这个滚动区没了');
+      if (after.scrollTop !== 42) {
+        throw new Error('被滚回了 ' + after.scrollTop + '，该留在 42');
+      }
+    });
+  }
+
+  ck('滚动区不在时不因为找不到它而出错', () => {
     Object.assign(st, ready(sb));
     st.about = 'env';
     st.cacheOpen = false;
-    sb.window.P2W_RENDER();            // 不抛就算过
+    sb.window.P2W_RENDER();              // 不抛就算过
+  });
+
+  ck('日志区不走这套 —— 它要的是贴底跟着滚，不是留在原处', () => {
+    // 🔴 别顺手把日志区也改成 data-keep-scroll：它有自己的规矩
+    //    （用户翻上去看历史就别拽他，贴着底就跟着新行走）。
+    const src = require('fs').readFileSync(
+      'D:/claude_code_workspace/pdf_to_word/app/renderer/pages.js', 'utf8');
+    const at = src.indexOf('id="dllog"');
+    if (at < 0) throw new Error('日志区不见了');
+    const seg = src.slice(at - 200, at + 200);
+    if (seg.includes('data-keep-scroll')) {
+      throw new Error('日志区被并进通用那套了，它的贴底行为会丢');
+    }
   });
 }
 

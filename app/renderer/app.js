@@ -154,13 +154,28 @@ function render() {
   var el = document.getElementById('app');
   if (!el) return;
 
-  // 🔴 重绘是把整个 DOM 推倒重来（innerHTML 整体赋值），滚动容器跟着被换掉，
-  //    scrollTop 归零 —— 表现就是：列表拉到下面，随便点个勾就弹回最顶上，
-  //    转换中每秒一次的轮询更是一秒弹一次。
-  //    所以画之前记下滚动位置，画完放回去。
-  //    querySelector 做了容错：测试用的假 window 没有它。
-  var prev = el.querySelector ? el.querySelector('.main') : null;
-  var top = prev ? prev.scrollTop : 0;
+  // 🔴 重绘是把整个 DOM 推倒重来（innerHTML 整体赋值），**每一个**滚动容器
+  //    都跟着被换成新元素、scrollTop 归零 —— 表现就是：列表拉到下面，随便
+  //    点个勾就弹回最顶上，转换中每秒一次的轮询更是一秒弹一次。
+  //    所以画之前把位置记下来，画完放回去。
+  //
+  //    **认 data-keep-scroll，不写死选择器。** 原来是一个容器写一段
+  //    （.main 一段、缓存明细一段），结果 2026-09-07 连着漏了两回：先是
+  //    环境检测页的缓存明细（小蔡报「展开往下滑自己跳回顶部」），修完当天
+  //    又在新做的历史屏里造了个一模一样的。只要新加滚动区的人不记得回来
+  //    改这里，就会有下一个。现在标记跟容器写在一起，加的时候顺手就带上了。
+  //
+  //    日志区**不走这套**：它要的是「贴底就跟着滚」，不是「留在原处」，
+  //    见下面那段。
+  //    querySelectorAll 做了容错：测试用的假 window 没有它。
+  var keep = {};
+  if (el.querySelectorAll) {
+    var olds = el.querySelectorAll('[data-keep-scroll]');
+    for (var i = 0; i < olds.length; i++) {
+      var k = olds[i].getAttribute('data-keep-scroll');
+      if (k) keep[k] = olds[i].scrollTop;
+    }
+  }
 
   // 🔴 日志区**只在用户本来就贴着底部时**才跟着滚。
   //    原来是无条件 scrollTop = scrollHeight，而转换和下载期间每秒重绘
@@ -177,14 +192,6 @@ function render() {
       || (sh - logTop - ch) <= 3;
   }
 
-  // 缓存明细展开后是**第三个**滚动容器，跟上面两个一样得把位置记下来。
-  // 🔴 2026-09-07 小蔡报「展开明细往下滑，自己跳回最顶上，只在更新组件时」
-  //    —— 根因不是恢复得不准，是这一处**根本没人管**：写上面那两段时这个框
-  //    还不存在，后来加明细的人没想起来。升级期间每秒重绘一次，于是一秒
-  //    归零一次。
-  var prevCache = el.querySelector ? el.querySelector('#cachelist') : null;
-  var cacheTop = prevCache ? prevCache.scrollTop : 0;
-
   var page = window.P2W_PAGES[state.page] || window.P2W_PAGES.main;
   el.innerHTML = page(state);
 
@@ -198,15 +205,13 @@ function render() {
     if (lg) lg.scrollTop = logStick ? lg.scrollHeight : logTop;
   }
 
-  if (top && el.querySelector) {
-    var now = el.querySelector('.main');
-    // 列表变短时浏览器自己会截断到最大值，不用管
-    if (now) now.scrollTop = top;
-  }
-
-  if (cacheTop && el.querySelector) {
-    var nowCache = el.querySelector('#cachelist');
-    if (nowCache) nowCache.scrollTop = cacheTop;
+  // 位置放回去。内容变短时浏览器自己会截断到最大值，不用管。
+  if (el.querySelectorAll) {
+    var news = el.querySelectorAll('[data-keep-scroll]');
+    for (var j = 0; j < news.length; j++) {
+      var k2 = news[j].getAttribute('data-keep-scroll');
+      if (k2 && keep[k2]) news[j].scrollTop = keep[k2];
+    }
   }
 }
 
