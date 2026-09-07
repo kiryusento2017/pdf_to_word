@@ -355,6 +355,47 @@ class Test转换任务(unittest.TestCase):
         self.assertEqual(d['state'], 'cancelled')
         self.assertLess(len(d['results']), 2, '取消了却还是全转完了')
 
+    def _bad_pdf(self, name):
+        """一个打不开的假 PDF。**不 mock probe** —— 走真实体检那条路。"""
+        p = os.path.join(WORK, name)
+        io.open(p, 'wb').write(b'this is not a pdf')
+        return p
+
+    def test_体检不过的那份按0页算(self):
+        r"""🔴 它在 convert 里同样过不了体检（convert.py:44 当场 return），
+        一秒都不花 —— 给它记页数等于凭空往总时长里加一段。
+        原来这里兜底成 10 页。"""
+        self._fake_convert()
+        bad = self._bad_pdf('bad.pdf')
+        tid = client.post('/api/convert',
+                          json={'paths': [self.pdf, bad],
+                                'out_dir': WORK}).json()['task_id']
+        d = self._wait(tid)
+        self.assertEqual(d['pages'], [1, 0],
+                         '体检不过的那份不该占页数：%s' % d['pages'])
+
+    def test_全批体检不过就不给预估(self):
+        r"""🔴 这一条钉的是**老算法还活着**。
+
+        `_remain` 里「估不出总时长时走按真实速率反推的老算法」那个分支，
+        入口条件是 `est_total` 为 0。原来 start_convert 把读不出页数的
+        文件兜底成 10 页，`sum(pages)` 恒大于 0、est 恒非 0，那套老算法
+        连同它守着的「转得越久说要等得越久」几条教训整段成了死代码，
+        而注释还写着它在守着 —— 2026-09-07 审查查出来的。
+
+        ⚠️ 这里**不能手工捏一个没有 est_total 的 dict** 去测老算法：
+        真实的 `_TASKS` 里那个字段一直都在，捏出来的状态生产中不存在，
+        测的就不是同一件事（CLAUDE.md 第 4 条那个形状）。
+        """
+        self._fake_convert()
+        paths = [self._bad_pdf('b1.pdf'), self._bad_pdf('b2.pdf')]
+        tid = client.post('/api/convert',
+                          json={'paths': paths,
+                                'out_dir': WORK}).json()['task_id']
+        d = self._wait(tid)
+        self.assertEqual(d['est_total'], 0,
+                         '一份都体检不过还估出了 %s 秒' % d['est_total'])
+
 
 class Test更新的接缝(unittest.TestCase):
     r"""🔴 后端必须把 digest 传给 download。

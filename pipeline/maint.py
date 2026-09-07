@@ -49,6 +49,7 @@ import tempfile
 import time
 import zipfile
 
+import models
 import paths
 
 # 本软件会装的 pip 包。用来判断缓存里哪个 wheel 是我们下的。
@@ -482,8 +483,7 @@ def clean(keys=(), pip_paths=()):
         #    查当时的报错），models_size.json 是学到的模型总量（下载进度条
         #    的分母）。它们跟 last_run.json 一样住在 logs/ 下，而那一栏在
         #    界面上写的只是「日志」—— 用户点一下就没了，界面上一个字都没提。
-        rm_tree(paths.LOGS, keep=(os.path.basename(RUNS),
-                                  os.path.basename(SIZE_FILE_NAME)))
+        rm_tree(paths.LOGS, keep=(os.path.basename(RUNS), SIZE_FILE_NAME))
     if 'tmp' in keys:
         rm_tree(paths.TMP)
     if 'temp_pip' in keys:
@@ -538,8 +538,14 @@ LAST_ERROR = os.path.join(paths.LOGS, 'last_error.json')
 # 每条的结构跟 last_run 那条一样，只多三个字段（源路径、产物路径、
 # 完整报错），列表最新的在最前面。
 RUNS = os.path.join(paths.LOGS, 'runs.json')
-# 模型总量那份也住在 logs/ 下（models.py 写的），清日志时一并保住。
-SIZE_FILE_NAME = 'models_size.json'
+# 模型总量那份也住在 logs/ 下，清日志时一并保住。
+#
+# 🔴 **名字从 models.py 那边取，不在这里再写一遍。** 原来这里硬编码
+#    'models_size.json'，跟 `models.SIZE_FILE` 是两处各写各的 —— 那边一改名
+#    或换目录，这里的保护当场失效，用户点一次「清理日志」分母就没了，
+#    而且不报任何错。更糟的是测试也引用这个常量，两边一起错就一起绿
+#    （CLAUDE.md 第 4 条那个形状）。现在派生过来，不一致在语法上就不可能。
+SIZE_FILE_NAME = os.path.basename(models.SIZE_FILE)
 RUNS_KEEP = 200          # 小蔡定的。每条带完整路径和完整报错，不设上限会越滚越大
 
 
@@ -577,11 +583,17 @@ def _append_run(row):
 
 
 def runs(limit=None):
-    """读转换历史。最新的在最前面。读不出来返回空列表，不抛异常。"""
+    r"""读转换历史。最新的在最前面。读不出来返回空列表，不抛异常。
+
+    🔴 判据是 `limit is None`，不是 `if limit`。后者把 0 当成「没给上限」，
+    于是 `/api/runs?limit=0`（要 0 条）会拿回全部 200 条 —— 要多少给多少
+    才对，要 0 条就给空的。负数按 Python 切片自己的语义走（`r[:-1]`），
+    界面不会传，也不值得为它多写一层判断。
+    """
     r = _read_json(RUNS)
     if not isinstance(r, list):
         return []
-    return r[:limit] if limit else r
+    return r if limit is None else r[:limit]
 
 
 def note_run(rep, pdf_name='', took_sec=0):

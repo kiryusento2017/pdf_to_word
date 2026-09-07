@@ -113,3 +113,21 @@ class Test两轮识别分得开(unittest.TestCase):
         rep, _got = self._go([('识别中', 4, 56)])
         self.assertEqual((rep['pass1_sec'], rep['pass2_sec'], rep['elements']),
                          (0, 0, 0))
+
+    def test_页数为零时一轮都不认(self):
+        r"""🔴 分母判据全靠页数当参照，页数是 0 就分辨不了 —— 此时第一轮
+        （分母 = 页数 ≠ 0）会掉进 else 被当成第二轮，pass1_sec≈0、
+        pass2_sec≈全程、elements=页数 三个错值一起写进 runs.json。
+        那是「越用越准」的样本池，脏数据会跟着最近 60 条窗口一直影响
+        后面每一次估算，**不是只错这一次**。
+
+        ⚠️ 这不是假想的输入：2026-09-07 实测手工造一个 `/Count 0` 的 PDF，
+        `probe.probe_pdf` 返回 ok=True、pages=0（pymupdf 自己不肯保存 0 页
+        文档，但它打得开别人造的）。认不出来就保持兜底的「识别中」，
+        这一份不学速度 —— 少学一份远好过学一份错的。
+        """
+        rep, got = self._go([('识别中', 4, 56), ('识别中', 9, 1100)], pages=0)
+        self.assertEqual([g[0] for g in got], ['识别中', '识别中'],
+                         '页数是 0 还硬认出了轮次：%s' % [g[0] for g in got])
+        self.assertEqual((rep['pass1_sec'], rep['pass2_sec'], rep['elements']),
+                         (0, 0, 0), '页数是 0 却学到了速度')

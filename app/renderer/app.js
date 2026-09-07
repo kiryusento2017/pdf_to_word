@@ -34,6 +34,7 @@ var state = {
   showReport: false,    // 转完之后在看报告
   reportText: '',       // 报告正文，只在内存里，不落盘
   openStage: null,      // 展开了哪一行的步骤清单，null = 都收着
+  progMax: 0,           // 总进度条到过的最大值，**只涨不退**（见 pages.js 的 convProgress）
   upd: null,            // 检查更新的结果：null=没查过
   updBusy: false,       // 正在查 / 正在下
   updLinesOpen: false,  // 线路表展开了没（默认折叠，只占一行）

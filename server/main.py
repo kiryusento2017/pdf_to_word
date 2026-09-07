@@ -959,12 +959,22 @@ def start_convert(req: ConvertReq):
     if not _find_mineru():
         return JSONResponse({'detail': '找不到 MinerU，还没装好'}, status_code=400)
     tid = uuid.uuid4().hex[:12]
-    # 页数在体检时已经知道了，用它估总时长。一份读不了就按 10 页算，
-    # 不让一个坏文件把整批的预计搞成 0。
+    # 页数在体检时已经知道了，用它估总时长。
+    #
+    # 🔴 **体检不过的那份按 0 页算，不是按 10 页。** 它在 convert 里同样
+    #    过不了体检（convert.py:44 当场 return），一秒都不花 —— 给它记页数
+    #    等于凭空往总时长里加一段。
+    #
+    #    这一行还管着另一件事：**整批都体检不过时 sum 是 0，`_estimate`
+    #    返回的 est_total 就是 0，`_remain` 才走得到那套按真实速率反推的
+    #    老算法。** 原来这里兜底成 10，sum 恒大于 0、est 恒非 0，那套老算法
+    #    连同它守着的几条事故教训整段成了死代码，而它上面的注释还写着
+    #    「估不出总时长时才走下面那套」—— 又一个「注释说的事情已经不成立」。
+    #    （2026-09-07 审查查出来的。）
     pages = []
     for p in req.paths:
         r = probe.probe_pdf(p)
-        pages.append(r['pages'] if r['ok'] and r['pages'] else 10)
+        pages.append(r['pages'] if r['ok'] and r['pages'] else 0)
     with _LOCK:
         _est, _w = _estimate(pages)
         _TASKS[tid] = {'state': 'running', 'total': len(req.paths), 'current': 0,

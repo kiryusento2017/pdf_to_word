@@ -466,6 +466,19 @@ class Test转换历史(unittest.TestCase):
         self.assertEqual(rows[0]['file'], '%d.pdf' % (keep + 4), '最新的没留住')
         self.assertEqual(rows[-1]['file'], '5.pdf', '该扔的没扔掉')
 
+    def test_要几条给几条(self):
+        r"""🔴 `limit=0` 是「一条都不要」，不是「没给上限」。
+
+        判据写成 `if limit` 的话 0 是 falsy，`/api/runs?limit=0` 会拿回
+        全部 200 条 —— 要 0 条给 200 条，接口在做没被要求的事。
+        """
+        for n in ('甲', '乙', '丙'):
+            maint.note_run(self._rep(n), pdf_name='%s.pdf' % n)
+        self.assertEqual(len(maint.runs()), 3, '不给 limit 就是全部')
+        self.assertEqual(len(maint.runs(2)), 2)
+        self.assertEqual(maint.runs(0), [], '要 0 条却给了 %d 条'
+                         % len(maint.runs(0)))
+
     def test_三个新字段都记下来了(self):
         long_err = 'X' * 500
         maint.note_run(self._rep('丁', ok=False, err=long_err), pdf_name='丁.pdf')

@@ -808,7 +808,12 @@ def md_to_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
         if os.path.isfile(out_path):
             dst = degraded_path(out_path)
             try:
-                os.replace(out_path, dst)
+                # 🔴 跟上面四处一样走 replace_retry：杀毒软件 / 索引 / 云盘
+                #    刚写完就来占几百毫秒是常事（见那个函数），退一步就过去了。
+                #    真被 Word 打开着才落到下面 —— 那种占用退避多久都没用，
+                #    最后一次仍失败会照常抛 PermissionError（OSError 的子类），
+                #    这里的 except 接得住，行为跟以前一个样。
+                replace_retry(out_path, dst)
                 rep['degraded'] = dst
             except OSError as e:
                 rep['error'] = (rep.get('error') or '') + (

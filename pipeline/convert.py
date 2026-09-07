@@ -61,7 +61,17 @@ def pdf_to_word(pdf, out_docx, work_dir, on_progress=None, on_log=None,
     _sw = {'pass2_at': None, 'elements': 0, 'stages': []}
 
     def _prog(stage, cur, tot):
-        if stage == '识别中' and tot:
+        # 🔴 **页数为 0 就一轮都不认。** 分母判据全靠 rep['pages'] 当参照，
+        #    它是 0 的话第一轮（分母 = 页数 ≠ 0）会掉进 else 被当成第二轮，
+        #    于是 pass1_sec≈0、pass2_sec≈全程、elements=页数 三个错值一起
+        #    写进 runs.json —— 那是「越用越准」的样本池，脏数据会跟着
+        #    最近 60 条窗口一直影响后面每一次估算，不是只错这一次。
+        #    2026-09-07 实测：手工造一个 /Count 0 的 PDF，`probe_pdf` 返回
+        #    ok=True、pages=0，这条路是真走得到的（pymupdf 自己不肯保存
+        #    0 页文档，但它打得开别人造的）。
+        #    认不出来就保持兜底的「识别中」，这一份不学速度 —— 少学一份
+        #    远好过学一份错的。
+        if stage == '识别中' and tot and rep['pages']:
             if tot == rep['pages']:
                 stage = '逐页识别'
             else:

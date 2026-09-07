@@ -7,7 +7,6 @@ r"""依赖升级。
   · 装到一半断电 → **无条件回滚**，不判断坏没坏
   · 下载中断电 → 不算事，正常进主界面
 """
-import inspect
 import io
 import json
 import os
