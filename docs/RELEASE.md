@@ -12,7 +12,7 @@
 ### 1. 测试全绿
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 577 条
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 584 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
 node tests\front_check.js                                   # 190 条
 ```
@@ -248,6 +248,25 @@ const ROOT = path.basename(path.dirname(__dirname)) === 'resources'
 ---
 
 ## 四、Release 上传
+
+### 🔴🔴 第零条：**发布说明写完，先跑检查，再发**
+
+```
+.venv\Scripts\python.exe tools\check_release.py --notes 发布说明.md
+```
+
+**跑不过就别发。** 它查的就是第五节那些规矩：有没有 `---` 分隔线、
+摘要区每条是不是 `- 新增/修改/修复` 开头、超没超过 6 条、基准版本对不对。
+
+🔴 **2026-09-07 小蔡：「发布说明应该是 -新增 -修复 类似于这种，我已经
+重复很多遍了，但是始终没有一次性做到位，我很绝望。」**
+
+原因不是文档没写 —— **第五节整节都在讲这个，写得清清楚楚**。原因是
+写说明的人（包括 AI）没读到那一节就动手了，而 `check_release` 以前只在
+**发出去之后**才跑，那时候格式错了已经挂在 GitHub 上。
+
+所以把它提到发布**之前**，变成一道过不去就发不了的门。**要么读第五节，
+要么被这道门拦住** —— 两条路都通向同一个格式。
 
 ### 🔴🔴 第一条：**没有百分之百确认过的，一律先发预发行版**
 

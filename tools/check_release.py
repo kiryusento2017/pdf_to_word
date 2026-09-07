@@ -84,6 +84,55 @@ def _vers_in(text):
     return set(re.findall(r'v\d+\.\d+\.\d+', text or ''))
 
 
+def _audit_notes(body, ver, others=None):
+    """只查发布说明本身。audit() 和 check_notes_file() 共用这一段。"""
+    p = []
+    if not any(_is_hr(x) for x in body.split('\n')):
+        p.append('[说明] 没有独占一行的 --- 分隔线 —— 全文会被当成摘要塞进'
+                 '620x440 的面板（v0.2.0 那次是 78 行 1384 字符）')
+
+    br = _brief(body)
+    items = [x.strip() for x in br.split('\n') if x.strip().startswith('- ')]
+    if not items:
+        p.append('[说明] 摘要区一条「- 」条目都没有 —— 界面上那块是空的')
+    if len(items) > MAX_BRIEF:
+        p.append('[说明] 摘要 %d 条，超过 %d 条 —— 面板塞不下，往详细说明里放'
+                 % (len(items), MAX_BRIEF))
+    for it in items:
+        if not any(it[2:].lstrip().startswith(h) for h in HEADS):
+            p.append('[说明] 摘要这条没以 新增/修改/修复 开头：%s' % it[:30])
+
+    if '预发行版' in br:
+        p.append('[说明] 摘要区还留着「预发行版」字样 —— 已经转正了，那句是假的')
+
+    for v in sorted(_vers_in(br) - set([ver])):
+        if (others or {}).get(v):
+            p.append('[说明] 摘要拿 %s 当基准，而它从没转正过、用户看不到它 —— '
+                     '基准应该是转正前的 latest（RELEASE.md 第五节）' % v)
+    return p
+
+
+def check_notes_file(path, ver):
+    r"""发布**之前**查本地那份发布说明。返回问题列表（空 = 可以发）。
+
+    🔴 2026-09-07 小蔡：「发布说明应该是 -新增 -修复 类似于这种，我已经
+       重复很多遍了，但是始终没有一次性做到位，我很绝望。」
+
+       原因不是文档没写 —— RELEASE.md 第五节整节都在讲这个格式。原因是
+       写说明的人（包括 AI）没读到那一节就动手了，而这个脚本以前**只查
+       已经发出去的 Release**，那时候格式错了已经挂在 GitHub 上，改还得
+       `gh release edit`。
+
+       现在能直接查本地文件，`RELEASE.md` 第四节把它定成发布前的一道门：
+       **跑不过就别发**。
+    """
+    try:
+        body = io.open(path, encoding='utf-8').read()
+    except OSError as e:
+        return ['[说明] 找不到发布说明文件：%s（%s）' % (path, e.strerror)]
+    return _audit_notes(body, ver)
+
+
 def audit(ver, rel, latest_tag, tag_sha, local, others):
     r"""纯函数：该查的都查一遍，返回问题列表（空列表 = 全对）。
 
@@ -143,29 +192,7 @@ def audit(ver, rel, latest_tag, tag_sha, local, others):
                      '或者传的根本不是这一份' % (n, a.get('size'), want))
 
     # 7~8. 发布说明
-    body = rel.get('body') or ''
-    if not any(_is_hr(x) for x in body.split('\n')):
-        p.append('[说明] 没有独占一行的 --- 分隔线 —— 全文会被当成摘要塞进'
-                 '620x440 的面板（v0.2.0 那次是 78 行 1384 字符）')
-
-    br = _brief(body)
-    items = [x.strip() for x in br.split('\n') if x.strip().startswith('- ')]
-    if not items:
-        p.append('[说明] 摘要区一条「- 」条目都没有 —— 界面上那块是空的')
-    if len(items) > MAX_BRIEF:
-        p.append('[说明] 摘要 %d 条，超过 %d 条 —— 面板塞不下，往详细说明里放'
-                 % (len(items), MAX_BRIEF))
-    for it in items:
-        if not any(it[2:].lstrip().startswith(h) for h in HEADS):
-            p.append('[说明] 摘要这条没以 新增/修改/修复 开头：%s' % it[:30])
-
-    if '预发行版' in br:
-        p.append('[说明] 摘要区还留着「预发行版」字样 —— 已经转正了，那句是假的')
-
-    for v in sorted(_vers_in(br) - set([ver])):
-        if others.get(v):
-            p.append('[说明] 摘要拿 %s 当基准，而它从没转正过、用户看不到它 —— '
-                     '基准应该是转正前的 latest（RELEASE.md 第五节）' % v)
+    p += _audit_notes(rel.get('body') or '', ver, others)
 
     return p
 
@@ -238,7 +265,18 @@ def check_hashes(ver):
 
 def main(argv):
     full = '--full' in argv
-    args = [a for a in argv if not a.startswith('-')]
+    # --notes 后面跟的是文件名，别把它当成版本号
+    args = []
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == '--notes':
+            skip = True
+            continue
+        if not a.startswith('-'):
+            args.append(a)
     ver = args[0] if args else ''
     if not ver:
         vj = os.path.join(DIST, 'PDF2Word', 'version.json')
@@ -247,6 +285,29 @@ def main(argv):
                   '用法：check_release.py v0.2.2')
             return 1
         ver = json.load(io.open(vj, encoding='utf-8')).get('tag', '')
+
+    # 🔴 --notes：发布**之前**先查本地那份说明，不联网、不要 gh。
+    #    RELEASE.md 第四节把它定成一道门：跑不过就别发。
+    #    （以前只能查已经发出去的 Release —— 那时候格式错了已经挂在
+    #      GitHub 上，改还得 gh release edit。）
+    notes = ''
+    for i, a in enumerate(argv):
+        if a == '--notes' and i + 1 < len(argv):
+            notes = argv[i + 1]
+        elif a.startswith('--notes='):
+            notes = a.split('=', 1)[1]
+    if notes:
+        print('发布说明检查：%s' % notes)
+        print('=' * 60)
+        probs = check_notes_file(notes, ver)
+        if probs:
+            for x in probs:
+                print('  ' + x)
+            print('')
+            print('格式见 RELEASE.md 第五节「发布说明写什么」。')
+            return 1
+        print('  格式没问题，可以发。')
+        return 0
 
     print('Release 状态检查：%s' % ver)
     print('=' * 60)

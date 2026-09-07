@@ -10,8 +10,11 @@ r"""发布后的 Release 状态检查（tools/check_release.py）。
 
 所以这里的每一条都钉着一个「不报错的失败」。
 """
+import io
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -190,6 +193,65 @@ class Test说明里的残留与假版本(unittest.TestCase):
     def test_提到已转正的版本不报(self):
         p = _audit(others={'v0.2.1': False})
         self.assertEqual(p, [])
+
+
+class Test发布说明发之前就能查(unittest.TestCase):
+    r"""🔴 2026-09-07 小蔡：「发布说明应该是 -新增 -修复 类似于这种，
+    我已经重复很多遍了，但是始终没有一次性做到位，我很绝望。」
+
+    原因不是文档没写 —— RELEASE.md 第五节整节都在讲这个格式。原因是
+    写说明的人（包括 AI）没读到那一节就动手了，而 `check_release` 以前
+    **只在发出去之后**才跑，那时候格式错了已经挂在 GitHub 上。
+
+    所以支持直接查本地文件，变成发布**之前**过不去就发不了的一道门。
+    """
+
+    def setUp(self):
+        self.w = tempfile.mkdtemp(prefix='p2w_notes_')
+
+    def tearDown(self):
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _run(self, text):
+        p = os.path.join(self.w, 'notes.md')
+        io.open(p, 'w', encoding='utf-8').write(text)
+        return check_release.check_notes_file(p, 'v0.3.0')
+
+    def test_格式对的时候放行(self):
+        self.assertEqual(self._run(
+            '- 修复 进度条走到 92% 就不动了\n'
+            '- 新增 转换历史\n'
+            '\n---\n\n## 详细说明\n\n上一个正式版是 **v0.2.6**。\n'), [])
+
+    def test_没有分隔线要拦(self):
+        p = self._run('- 修复 某个问题\n- 新增 某个功能\n')
+        self.assertTrue(any('分隔线' in x for x in p), p)
+
+    def test_摘要区一条都没有要拦(self):
+        p = self._run('这一版修了几个问题。\n\n---\n\n## 详细说明\n')
+        self.assertTrue(any('条目' in x or '空的' in x for x in p), p)
+
+    def test_条目没以新增修改修复开头要拦(self):
+        r"""🔴 这条正是小蔡反复强调的那一条。"""
+        p = self._run('- 进度条不动了\n- 加了转换历史\n\n---\n\n## 详细说明\n')
+        self.assertTrue(any('新增' in x for x in p), p)
+
+    def test_散文体没有条目要拦(self):
+        r"""2026-09-07 我写成了「## 修了什么 / ## 新增」的散文体 ——
+        面板上那块会是空的。"""
+        p = self._run('## 修了什么\n\n**下好的 torch 装不上。** 下载完 2.5 GB…\n'
+                      '\n---\n\n## 详细说明\n')
+        self.assertTrue(p, '散文体没被拦住')
+
+    def test_超过六条要拦(self):
+        body = ''.join('- 修复 第 %d 个问题\n' % i for i in range(8))
+        p = self._run(body + '\n---\n\n## 详细说明\n')
+        self.assertTrue(any('超过' in x for x in p), p)
+
+    def test_文件不存在时说清楚(self):
+        p = check_release.check_notes_file(os.path.join(self.w, '没有这个.md'), 'v0.3.0')
+        self.assertTrue(any('找不到' in x for x in p), p)
+
 
 
 if __name__ == '__main__':
