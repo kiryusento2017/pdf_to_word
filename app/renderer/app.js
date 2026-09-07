@@ -30,6 +30,7 @@ var state = {
   err: '',
   port: 0,
   // 首次使用那一屏：源清单、选中的源、下载进度
+  runs: [],             // 转换历史，主屏没有待转文件时显示
   showReport: false,    // 转完之后在看报告
   reportText: '',       // 报告正文，只在内存里，不落盘
   openStage: null,      // 展开了哪一行的步骤清单，null = 都收着
@@ -236,6 +237,9 @@ window.addEventListener('drop', function (e) {
 // ── 启动 ───────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function () {
   render();
+  // 拉一次转换历史 —— 主屏空着的时候显示它，打开软件就看得见
+  // 上次转了什么、存哪了。拉不到就当没有，不打扰主流程。
+  try { window.P2W_ACTS.loadRuns(); } catch (e) { /* 无所谓 */ }
   window.api.getPort().then(function (port) {
     state.port = port;
     return get('/api/env');

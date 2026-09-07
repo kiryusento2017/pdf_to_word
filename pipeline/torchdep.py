@@ -178,14 +178,6 @@ TORCH_INDEX = _BASE + 'cu128'      # 兼容老调用方；实际用 pick_index()
 PACKAGES = ['torch', 'torchvision']
 
 
-def driver_major(ver):
-    """把 '572.83' 解析成 572。读不出来返回 0。"""
-    try:
-        return int(str(ver or '').strip().split('.')[0])
-    except Exception:
-        return 0
-
-
 def driver_num(ver):
     """把 '572.83' 解析成 572.83。读不出来返回 0。
 
@@ -213,7 +205,12 @@ def current_cap():
         val = float(g.get('compute_cap') or 0)
     except Exception:
         val = 0.0
-    _CAP_CACHE.append(val)
+    # 🔴 **读失败不进缓存。** nvidia-smi 被占用、驱动刚装完还没就绪、
+    #    超时 —— 都是一次性的。缓存住 0 的话，这个常驻进程在用户重启
+    #    软件之前会一直认为「没有显卡」，除 cu118 外每条线路都被挡掉，
+    #    而且界面上没有任何提示。宁可下次多跑一次 smi。
+    if val > 0:
+        _CAP_CACHE.append(val)
     return val
 
 
@@ -595,9 +592,14 @@ def explain_load_error(err):
                 % '、'.join(miss))
 
     drv = current_driver()
-    # 🔴 门槛跟着**实际选中的那条线路**走，不写死一个数。原来这里硬编码
-    #    「需要 570 以上」，而 cu118 只要 452.39 —— 驱动 530 的用户会被
-    #    告知一个跟他无关的数字。
+    # 🔴 原来这里硬编码「需要 570 以上」，而 cu118 只要 452.39 ——
+    #    驱动 530 的用户会被告知一个跟他无关的数字。
+    #
+    #    现在取的是**所有线路里最低的那个门槛**，不是实际选中那条：
+    #    这一段是加载失败之后的兜底解释，只想拦住「驱动低到没有任何
+    #    线路能用」这种确定的情况。用选中线路的门槛会把「驱动够 cu118
+    #    但不够 cu126」也说成驱动太低，而那种机器本来就该走 cu118 ——
+    #    宁可少说一句，不要说错。
     n = driver_num(drv)
     _need = min(c[1] for c in TORCH_CHANNELS)
     if n and n < _need:

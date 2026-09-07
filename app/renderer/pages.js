@@ -127,6 +127,39 @@ function reportText(st, t) {
   return L.join(chr10());
 }
 
+// 主屏空着时显示的转换历史。
+//
+// 🔴 **不另开一屏。** app.js 开头那条界面哲学写着「任何时候主体都是那张表」——
+//    没有待转文件时，那张表就显示历史，顺着同一个位置，而且打开软件就看得见
+//    上次转了什么、存哪了。
+//
+// 四件事都在这一行里：找回转好的 Word（打开 / 文件夹）、确认转没转过成没成
+// （✓ / ✗ 和耗时）、失败的一键重转、出事时翻当时的报错（鼠标悬停看全文）。
+function runRow(r) {
+  var ok = !!r.ok;
+  var when = (r.time || '').slice(5, 16);        // 只留 月-日 时:分
+  var name = F.base(r.pdf || '') || (r.file || '');
+  var right = ok
+    ? '<span class="f-dim">' + F.sec(r.took_sec || 0) + '</span>'
+    : '<span class="f-bad ell" style="max-width:150px">'
+      + esc(r.error || '失败') + '</span>';
+  // 失败那条的完整报错挂在 title 上 —— 200 字符的截断版给诊断报告用，
+  // 这里用没截断的那份（error_full）。
+  var tip = ok ? (r.docx || '') : (r.error_full || r.error || '');
+  return '<div class="it" title="' + esc(tip) + '">'
+    + dot(ok ? '#15803d' : '#b91c1c')
+    + '<span class="f-dim" style="width:78px;flex:none;font-size:11px">'
+    + esc(when) + '</span>'
+    + '<span class="grow ell">' + esc(name) + '</span>'
+    + right
+    + (ok && r.docx
+        ? btn('openFile', '打开', { cls: 'link', arg: r.docx })
+          + btn('openPath', '文件夹', { cls: 'link', arg: r.docx })
+        : '')
+    + (r.pdf ? btn('reconvert', '重转', { cls: 'link', arg: r.pdf }) : '')
+    + '</div>';
+}
+
 function chr10() { return String.fromCharCode(10); }
 
 function dot(color) {
@@ -1187,9 +1220,19 @@ function mainPick(st) {
       + '<div style="display:flex;gap:8px;margin-top:4px">'
       + btn('pickFiles', '选文件') + btn('pickDir', '选文件夹') + '</div>'
       + (st.err ? '<div class="f-bad" style="margin-top:6px">' + esc(st.err) + '</div>' : '')
+      + ((st.runs || []).length
+          ? '<div style="width:94%;margin-top:12px;text-align:left">'
+            + '<div class="f-dim" style="font-size:11px;padding-bottom:2px">'
+            + '之前转过的（' + st.runs.length + ' 份）</div>'
+            + '<div style="max-height:132px;overflow:auto">'
+            + st.runs.slice(0, 50).map(runRow).join('')
+            + '</div></div>'
+          : '')
       + '</div>';
     return shell(top, main,
-      botBar(st, '<span class="f-dim">还没有文件</span>'));
+      botBar(st, '<span class="f-dim">'
+        + ((st.runs || []).length ? '还没有文件 · 下面是之前转过的' : '还没有文件')
+        + '</span>'));
   }
 
   var n = 0, pages = 0;
@@ -1392,7 +1435,12 @@ function mainRun(st) {
   // 🔴 日志覆盖主区，但顶部（剩余时间 + 总进度条）留着。
   //    620x440 太小，日志和文件表分屏的话两边都看不清；而整体进度
   //    在顶上，看日志的时候不会「不知道跑到哪了」。
-  if (st.showReport && done) {
+  // 🔴 **worthReport 这个条件不能省。** 只判 st.showReport 的话：上一批
+  //    看过报告、这一批全都干干净净 —— 顶上那个「返回列表」按钮由
+  //    worthReport 控制、此时不渲染，而这一屏照样进得来，用户就被丢进一个
+  //    没有退出口的报告页（只能靠「再转一批」绕出去）。
+  //    2026-09-07 实测复现过。下面 newBatch 里的重置是第二道。
+  if (st.showReport && done && worthReport(t)) {
     st.reportText = reportText(st, t);
     var rmain = '<div class="fill" style="justify-content:flex-start;gap:6px">'
       + '<div class="log"><span class="l">'

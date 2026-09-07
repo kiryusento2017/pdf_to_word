@@ -18,6 +18,7 @@ import io
 import os
 import shutil
 import sys
+import tempfile
 import unittest
 import zipfile
 
@@ -578,6 +579,74 @@ class Test图里的文字不进正文(unittest.TestCase):
         out, n = todocx._strip_details(md)
         self.assertEqual(n, 2)
         self.assertNotIn('<details>', out)
+
+
+class Test被占用时要重试不能当场失败(unittest.TestCase):
+    r"""🔴 `os.replace` 在 Windows 上会偶发「拒绝访问」—— 刚写出来的 .docx
+    常被杀毒软件、搜索索引、云盘同步客户端短暂占住。
+
+    2026-09-07 连跑 40 轮全量测试撞到 2 次（约 5%）。**用户转换时走的是
+    同一条路**：一份已经转好的 Word 在最后一步失败，报错是看不懂的
+    WinError 5，只能重转一遍（四分钟起步）。这也是台账第十节那条
+    「出现过一次、连跑四次没能复现」的根因。
+    """
+
+    def setUp(self):
+        self.w = tempfile.mkdtemp(prefix='p2w_race_')
+        self.src = os.path.join(self.w, 'a.tmp')
+        self.dst = os.path.join(self.w, 'a.docx')
+        io.open(self.src, 'w', encoding='utf-8').write('新的')
+        self._real = todocx.os.replace
+
+    def tearDown(self):
+        todocx.os.replace = self._real
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def test_前两次被占用第三次成功(self):
+        box = {'n': 0}
+        real = self._real
+
+        def flaky(a, b):
+            box['n'] += 1
+            if box['n'] <= 2:
+                raise PermissionError(5, '拒绝访问')
+            return real(a, b)
+
+        todocx.os.replace = flaky
+        todocx.replace_retry(self.src, self.dst, tries=5)
+        self.assertEqual(box['n'], 3, '没重试到第三次')
+        self.assertTrue(os.path.isfile(self.dst), '重试成功了却没落盘')
+
+    def test_一直被占用就照常抛出去不许悄悄吞掉(self):
+        r"""真有人占着不放时，得让上层报给用户 —— 吞掉的话用户会拿到
+        一份内容不对的 Word 却以为成功了。"""
+        def always(a, b):
+            raise PermissionError(5, '拒绝访问')
+
+        todocx.os.replace = always
+        with self.assertRaises(PermissionError):
+            todocx.replace_retry(self.src, self.dst, tries=2)
+
+    def test_没被占用时一次就过不浪费时间(self):
+        box = {'n': 0}
+        real = self._real
+
+        def once(a, b):
+            box['n'] += 1
+            return real(a, b)
+
+        todocx.os.replace = once
+        todocx.replace_retry(self.src, self.dst)
+        self.assertEqual(box['n'], 1, '没被占用却重试了 %d 次' % box['n'])
+
+    def test_出Word那条路真的用了带重试的版本(self):
+        r"""光有 replace_retry 不够 —— 得确认 _fill_placeholders 那几处
+        真的换过来了，不然它就是个没人用的函数。"""
+        import inspect
+        src = inspect.getsource(todocx)
+        self.assertEqual(src.count('os.replace(tmp, docx_path)'), 0,
+                         '还有地方在直接用 os.replace，撞上占用就当场失败')
+        self.assertGreaterEqual(src.count('replace_retry(tmp, docx_path)'), 4)
 
 
 if __name__ == '__main__':

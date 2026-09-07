@@ -2060,6 +2060,107 @@ console.log('\n转换报告：');
 
 
 
+console.log('\n界面状态不许串到下一批：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const clean = { ok: true, pdf: 'C:\a.pdf', docx: 'C:\a.docx', pages: 10,
+                  formulas: 5, formulas_xsl: 5, tables: 0, images: 0,
+                  scan_pages: [], details_dropped: 0, line: '公式 5' };
+
+  ck('上一批看过报告，这一批全干净时不许自己冒出报告页', () => {
+    // 🔴 2026-09-07 实测复现过：只判 st.showReport 的话，这一屏进得来，
+    //    而顶上那个「返回列表」按钮由 worthReport 控制、此时不渲染 ——
+    //    用户被丢进一个没有退出口的报告页。
+    const st = ready(sb);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 10, scan_pages: [] }];
+    st.showReport = true;                       // 上一批留下的
+    st.task = { state: 'done', total: 1, current: 1, elapsed: 60, remain: 0,
+                results: [clean] };
+    const h = fn(st);
+    if (h.includes('不会存成文件')) throw new Error('自己进了报告页');
+  });
+
+  ck('真有东西可报时，报告页还是进得去', () => {
+    const st = ready(sb);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 10, scan_pages: [] }];
+    st.showReport = true;
+    st.task = { state: 'done', total: 1, current: 1, elapsed: 60, remain: 0,
+                results: [Object.assign({}, clean, { scan_pages: [3] })] };
+    const h = fn(st);
+    if (!h.includes('不会存成文件')) throw new Error('该给报告的时候没给');
+    if (!h.includes('data-act="copyReport"')) throw new Error('复制按钮没了');
+  });
+
+  ck('开新一批时把报告和展开状态都归位', () => {
+    const src = require('fs').readFileSync(
+      'D:/claude_code_workspace/pdf_to_word/app/renderer/actions.js', 'utf8');
+    const i = src.indexOf('poller = setInterval(poll, 1000)');
+    if (i < 0) throw new Error('找不到开转那一段');
+    const seg = src.slice(Math.max(0, i - 600), i);
+    for (const k of ['st.progMax = 0', 'st.showReport = false', 'st.openStage = null']) {
+      if (!seg.includes(k)) throw new Error('开新一批没归位：' + k);
+    }
+  });
+}
+
+
+
+console.log('\n主屏空着时显示转换历史：');
+{
+  const sb = mkSandbox();
+  const fn = sb.window.P2W_PAGES.main;
+  const OK = { time: '2026-09-06 10:30:42', file: '讲义.pdf', ok: true,
+               pages: 56, took_sec: 1814, pdf: 'D:\讲义.pdf',
+               docx: 'D:\讲义.docx', error: '', error_full: '' };
+  const BAD = { time: '2026-09-05 19:12:03', file: '作业.pdf', ok: false,
+                pages: 20, took_sec: 3600, pdf: 'D:\作业.pdf', docx: '',
+                error: '超时被掐断', error_full: '超时被掐断，完整的一大段原因写在这里' };
+  const mk = (runs) => Object.assign(ready(sb), { items: [], runs: runs });
+
+  ck('没有历史时跟以前一样，只提示拖文件', () => {
+    const h = fn(mk([]));
+    if (!h.includes('把 PDF 拖进来')) throw new Error('提示没了');
+    if (h.includes('之前转过的')) throw new Error('没历史却摆了个空列表');
+  });
+
+  ck('有历史时列在主屏上，不用另开一屏', () => {
+    // 🔴 界面哲学：任何时候主体都是那张表。没有待转文件时，那张表显示历史。
+    const h = fn(mk([OK, BAD]));
+    if (!h.includes('之前转过的')) throw new Error('历史没显示');
+    if (!h.includes('讲义.pdf')) throw new Error('文件名没显示');
+    if (!h.includes('把 PDF 拖进来')) throw new Error('把拖放提示挤掉了');
+  });
+
+  ck('转成功的那行能打开 Word 和所在文件夹', () => {
+    const h = fn(mk([OK]));
+    if (!h.includes('data-act="openFile"')) throw new Error('没有「打开」');
+    if (!h.includes('data-act="openPath"')) throw new Error('没有「文件夹」');
+  });
+
+  ck('失败的那行不给「打开」，但给完整报错', () => {
+    const h = fn(mk([BAD]));
+    const seg = h.slice(h.indexOf('作业.pdf') - 400, h.indexOf('作业.pdf') + 400);
+    if (seg.includes('data-act="openFile"')) throw new Error('失败的还给打开按钮');
+    if (!h.includes('完整的一大段原因')) throw new Error('完整报错没挂上去（只有截断版没用）');
+  });
+
+  ck('每一行都能一键重转', () => {
+    const h = fn(mk([OK, BAD]));
+    const n = (h.match(/data-act="reconvert"/g) || []).length;
+    if (n !== 2) throw new Error('可重转的行有 ' + n + ' 个，该有 2 个');
+  });
+
+  ck('拖了文件进来之后就不显示历史了', () => {
+    const st = mk([OK]);
+    st.items = [{ path: 'C:\a.pdf', ok: true, pages: 10, scan_pages: [] }];
+    const h = fn(st);
+    if (h.includes('之前转过的')) throw new Error('待转清单被历史挤占了');
+  });
+}
+
+
+
 // 🔴 **这个判断必须待在文件最末尾。** 它原来在中间（跑完前 115 条
 //    就 exit），后面还有三个测试块 —— 那 15 条失败了退出码照样是 0，
 //    末尾那句「前端全部通过」也照常打印。发版门禁认的就是这句话，

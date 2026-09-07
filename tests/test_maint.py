@@ -513,5 +513,50 @@ class Test转换历史(unittest.TestCase):
         self.assertEqual(maint.runs(), [])
 
 
+class Test清日志不许连坐(unittest.TestCase):
+    r"""🔴 转换历史（runs.json）和学到的模型总量（models_size.json）都住在
+    `logs/` 下，而环境检测页那一栏在界面上写的只是**「日志」**。
+
+    用户点一下清理，200 条转换历史（他要靠它找回转过的文件、查当时的报错）
+    和下载进度条的分母会一起没了，界面上一个字都没提。
+    """
+
+    def setUp(self):
+        self._logs = paths_LOGS_backup()
+        self._runs = maint.RUNS
+        self.w = tempfile.mkdtemp(prefix='p2w_logs_')
+        maint.paths.LOGS = self.w
+        maint.RUNS = os.path.join(self.w, 'runs.json')
+
+    def tearDown(self):
+        maint.paths.LOGS = self._logs
+        maint.RUNS = self._runs
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def test_清日志要保住历史和学到的分母(self):
+        io.open(os.path.join(self.w, 'convert.log'), 'w',
+                encoding='utf-8').write('一些日志')
+        io.open(maint.RUNS, 'w', encoding='utf-8').write('[{"file": "讲义.pdf"}]')
+        io.open(os.path.join(self.w, maint.SIZE_FILE_NAME), 'w',
+                encoding='utf-8').write('{"bytes": 4923616015}')
+
+        maint.clean(keys=['logs'])
+
+        self.assertFalse(os.path.isfile(os.path.join(self.w, 'convert.log')),
+                         '日志本身没被清掉')
+        self.assertTrue(os.path.isfile(maint.RUNS), '转换历史被连坐删了')
+        self.assertTrue(os.path.isfile(os.path.join(self.w, maint.SIZE_FILE_NAME)),
+                        '学到的模型总量被连坐删了')
+
+    def test_历史内容还在不是留个空壳(self):
+        io.open(maint.RUNS, 'w', encoding='utf-8').write('[{"file": "讲义.pdf"}]')
+        maint.clean(keys=['logs'])
+        self.assertEqual(maint.runs()[0]['file'], '讲义.pdf')
+
+
+def paths_LOGS_backup():
+    return maint.paths.LOGS
+
+
 if __name__ == '__main__':
     unittest.main()

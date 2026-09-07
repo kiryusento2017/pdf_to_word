@@ -407,12 +407,14 @@ def clean(keys=(), pip_paths=()):
         except OSError as e:
             failed.append('%s（%s）' % (os.path.basename(p), e.strerror or '删不掉'))
 
-    def rm_tree(d, keep_root=True):
+    def rm_tree(d, keep_root=True, keep=()):
         nonlocal freed
         if not os.path.isdir(d):
             return
         for dp, dns, fns in os.walk(d, topdown=False):
             for fn in fns:
+                if fn in keep:
+                    continue
                 rm_file(os.path.join(dp, fn))
             for dn in dns:
                 try:
@@ -475,7 +477,13 @@ def clean(keys=(), pip_paths=()):
 
     keys = set(keys or ())
     if 'logs' in keys:
-        rm_tree(paths.LOGS)
+        # 🔴 **这两个不是日志，是数据，清「日志」不能把它们一起带走。**
+        #    runs.json 是 200 条转换历史（用户要靠它找回转过的文件、
+        #    查当时的报错），models_size.json 是学到的模型总量（下载进度条
+        #    的分母）。它们跟 last_run.json 一样住在 logs/ 下，而那一栏在
+        #    界面上写的只是「日志」—— 用户点一下就没了，界面上一个字都没提。
+        rm_tree(paths.LOGS, keep=(os.path.basename(RUNS),
+                                  os.path.basename(SIZE_FILE_NAME)))
     if 'tmp' in keys:
         rm_tree(paths.TMP)
     if 'temp_pip' in keys:
@@ -530,6 +538,8 @@ LAST_ERROR = os.path.join(paths.LOGS, 'last_error.json')
 # 每条的结构跟 last_run 那条一样，只多三个字段（源路径、产物路径、
 # 完整报错），列表最新的在最前面。
 RUNS = os.path.join(paths.LOGS, 'runs.json')
+# 模型总量那份也住在 logs/ 下（models.py 写的），清日志时一并保住。
+SIZE_FILE_NAME = 'models_size.json'
 RUNS_KEEP = 200          # 小蔡定的。每条带完整路径和完整报错，不设上限会越滚越大
 
 
@@ -597,11 +607,23 @@ def note_run(rep, pdf_name='', took_sec=0):
                                rep.get('formulas', '?')),
         'took_sec': int(took_sec or 0),
     }
-    # 历史那份多三样：源 PDF 全路径（用来一键重转）、产物 Word 全路径
-    # （用来打开文件 / 打开所在文件夹）、**没截断的报错**（查当时到底
-    # 报了什么 —— 上面那个 200 字符是给诊断报告用的，不动它）。
+    # 历史那份比诊断那份多几样。前三样给界面用：源 PDF 全路径（一键重转）、
+    # 产物 Word 全路径（打开文件 / 打开所在文件夹）、**没截断的报错**
+    # （上面那个 200 字符是给诊断报告用的，不动它）。
+    #
+    # 🔴 后三样给倒计时学速度用（`server/main.py` 的 `_learned_rates`）。
+    #    **少写一个，「越用越准」就永远学不到东西、恒吃出厂常量。**
+    #    2026-09-07 就栽在这儿：这几个字段 convert 那边算得好好的，
+    #    却没被写进历史；而唯一相关的测试把 `maint.runs` 整个 mock 成手工
+    #    捏的数据，于是断链被测试盖住、全绿。跟 CLAUDE.md 第 4 条
+    #    （formulas_ok / formulas_src 那次）是同一个形状：
+    #    **测试和实现一起错，于是一起绿。**
+    #    字段名必须跟 `convert.pdf_to_word` 的 rep 对齐，别再自己起名。
     _append_run(dict(row, pdf=rep.get('pdf', '') or '',
-                     docx=rep.get('docx', '') or '', error_full=err))
+                     docx=rep.get('docx', '') or '', error_full=err,
+                     pass1_sec=rep.get('pass1_sec', 0) or 0,
+                     pass2_sec=rep.get('pass2_sec', 0) or 0,
+                     elements=rep.get('elements', 0) or 0))
     return _write_json(LAST_RUN, row)
 
 

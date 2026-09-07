@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import zipfile
 
 from lxml import etree
@@ -190,6 +191,34 @@ def _strip_details(text):
     return _DETAILS.sub('', text), n_open
 
 
+def replace_retry(src, dst, tries=5):
+    r"""把临时文件顶替成正式文件。**Windows 上要重试。**
+
+    🔴 `os.replace` 在 Windows 上会偶发 `PermissionError: [WinError 5]
+    拒绝访问` —— 刚写出来的 .docx 常被杀毒软件、Windows 搜索索引、云盘
+    同步客户端短暂占住，这一瞬间替换就会被拒。
+
+    2026-09-07 连跑 40 轮全量测试撞到 2 次（约 5%）。**用户转换时走的是
+    同一条路** —— 撞上就是一份已经转好的 Word 在最后一步失败，报错还是
+    看不懂的 WinError 5，用户只能重转一遍（四分钟起步）。
+    这也正是台账第十节那条「出现过一次、连跑四次没能复现」的根因。
+
+    占用通常只有几百毫秒，退避重试就过去了：0.1 → 0.2 → 0.4 → 0.8 秒，
+    最多等约 1.5 秒。等这一下比让用户重转划算得多。最后一次仍失败就照常
+    抛出去 —— 那说明真有人占着不放，得让上层报给用户，不能悄悄吞掉。
+    """
+    delay = 0.1
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
 def _html_tables_to_markdown(text, cwd=None):
     r"""把 MinerU 输出的 HTML 表格转成 markdown 表格。
 
@@ -322,7 +351,7 @@ def _fill_placeholders(docx_path, omml_list, texs):
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for name in names:
             z.writestr(name, blobs[name])
-    os.replace(tmp, docx_path)
+    replace_retry(tmp, docx_path)
     return n, failed, missing
 
 
@@ -413,7 +442,7 @@ def _add_table_borders(docx_path):
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for name in names:
             z.writestr(name, blobs[name])
-    os.replace(tmp, docx_path)
+    replace_retry(tmp, docx_path)
     return n
 
 
@@ -477,7 +506,7 @@ def _set_theme_fonts(docx_path):
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for name in names:
             z.writestr(name, blobs[name])
-    os.replace(tmp, docx_path)
+    replace_retry(tmp, docx_path)
     return n
 
 
@@ -552,7 +581,7 @@ def _resize_images(docx_path, targets):
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
         for name in names:
             z.writestr(name, blobs[name])
-    os.replace(tmp, docx_path)
+    replace_retry(tmp, docx_path)
     return sum(1 for t in targets[:cnt] if t is not None)
 
 

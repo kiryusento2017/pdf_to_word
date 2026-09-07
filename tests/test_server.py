@@ -8,6 +8,7 @@ import io
 import os
 import shutil
 import sys
+import tempfile
 import time
 import unittest
 
@@ -751,6 +752,143 @@ class Test倒计时越用越准(unittest.TestCase):
         必须还在 —— 它守着「转得越久说要等得越久」那几条事故教训。"""
         t = {'pages': [10, 20], 'results': [], 'sec_per_page': 26.0}
         self.assertEqual(srv._remain(t, elapsed=0), int(30 * 26))
+
+
+
+class Test学速度这条链不许断(unittest.TestCase):
+    r"""🔴 **这一条不许用 mock。**
+
+    2026-09-07 栽过：`convert` 把 pass1_sec / pass2_sec / elements 算得
+    好好的，`maint.note_run` 却没把它们写进历史（那里是逐字段挑的白名单），
+    于是 `_learned_rates` 永远读不到东西、倒计时恒吃出厂常量 ——
+    **「越用越准」在生产路径上等于没做**。
+
+    而当时唯一相关的测试把 `maint.runs` 整个换成手工捏的行数据，
+    断链被盖得严严实实、全绿。跟 CLAUDE.md 第 4 条（formulas_ok /
+    formulas_src 那次）是同一个形状：**测试和实现一起错，于是一起绿**。
+
+    所以这条测试的规矩是：
+      · 报告由 `convert.pdf_to_word` **真的吐出来**，字段名一个都不手写
+      · `note_run` 真的写文件，`runs()` 真的读回来
+      · 中间任何一环少写一个字段，这条就红
+    """
+
+    def setUp(self):
+        import convert
+        self.convert = convert
+        self._probe, self._run = convert.probe.probe_pdf, convert.extract.run
+        self._todocx = convert.todocx.md_to_docx
+        self._runs, self._last = srv.maint.RUNS, srv.maint.LAST_RUN
+        self.w = tempfile.mkdtemp(prefix='p2w_chain_')
+        srv.maint.RUNS = os.path.join(self.w, 'runs.json')
+        srv.maint.LAST_RUN = os.path.join(self.w, 'last_run.json')
+
+    def tearDown(self):
+        self.convert.probe.probe_pdf = self._probe
+        self.convert.extract.run = self._run
+        self.convert.todocx.md_to_docx = self._todocx
+        srv.maint.RUNS, srv.maint.LAST_RUN = self._runs, self._last
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _real_rep(self, pages, elements, t1, t2):
+        """让 convert 真的跑一遍编排层，拿它自己吐的报告 —— 字段名不手写。"""
+        c = self.convert
+        c.probe.probe_pdf = lambda p: {'ok': True, 'pages': pages,
+                                       'scan_pages': [], 'error': ''}
+        box = {}
+
+        def fake_run(pdf, work_dir, **kw):
+            cb = kw.get('on_progress')
+            cb('识别中', 1, pages)                 # 第一轮：分母 == 页数
+            box['t'] = time.time()
+            cb('识别中', 1, elements)              # 第二轮：分母是元素数
+            return {'ok': False, 'error': '到此为止（测试用）'}
+
+        c.extract.run = fake_run
+        rep = c.pdf_to_word('x.pdf', 'x.docx', 'w', on_progress=lambda *a: None)
+        # 计时靠真实时钟，测试里就是 0；直接按已知耗时覆盖，字段名仍来自 rep
+        rep['pass1_sec'], rep['pass2_sec'] = t1, t2
+        return rep
+
+    def test_convert算出来的速度数据要能一路走到倒计时(self):
+        for i in range(3):
+            rep = self._real_rep(pages=10, elements=200, t1=284, t2=328)
+            srv.maint.note_run(rep, pdf_name='第%d份.pdf' % i, took_sec=612)
+
+        row = srv.maint.runs()[0]
+        for k in ('pass1_sec', 'pass2_sec', 'elements'):
+            self.assertIn(k, row, '%s 没被写进历史 —— 倒计时学不到东西' % k)
+
+        p1, p2, ep = srv._learned_rates()
+        self.assertAlmostEqual(p1, 28.4, places=1, msg='每页秒没学到真实值')
+        self.assertAlmostEqual(p2, 1.64, places=2, msg='每元素秒没学到真实值')
+        self.assertAlmostEqual(ep, 20.0, places=1, msg='每页元素数没学到真实值')
+
+    def test_学到的速度真的会改变估值(self):
+        r"""光「学到了」不够 —— 还得真的influence到用户看见的那个数。"""
+        base, _w = srv._estimate([10])
+        for i in range(3):
+            rep = self._real_rep(pages=10, elements=200, t1=1420, t2=1640)
+            srv.maint.note_run(rep, pdf_name='慢%d.pdf' % i, took_sec=3060)
+        after, _w2 = srv._estimate([10])
+        self.assertGreater(after, base * 2,
+                           '学了一台慢五倍的机器，估值却没变：%d → %d' % (base, after))
+
+    def test_缓存命中的那几份不会污染历史统计(self):
+        r"""秒回的份 pass1_sec/pass2_sec/elements 全是 0（convert 里
+        `if _sw['pass2_at']` 挡着）。它们进了历史也不能被学进去。"""
+        for i in range(3):
+            rep = self._real_rep(pages=10, elements=200, t1=284, t2=328)
+            srv.maint.note_run(rep, pdf_name='真跑%d.pdf' % i, took_sec=612)
+        cached = self._real_rep(pages=23, elements=0, t1=0, t2=0)
+        cached['elements'] = 0
+        for i in range(5):
+            srv.maint.note_run(cached, pdf_name='秒回%d.pdf' % i, took_sec=2)
+        p1, _p2, _ep = srv._learned_rates()
+        self.assertAlmostEqual(p1, 28.4, places=1,
+                               msg='被缓存命中的记录带歪了：%.2f' % p1)
+
+
+
+class Test转换历史有出口(unittest.TestCase):
+    r"""🔴 历史记下来了却没人看得见，等于没做。
+
+    2026-09-07 外部复查指出：`maint.runs()` 当时只被「学速度」那处读，
+    前端没有任何界面、也没有接口 —— 小蔡要的四件事（找回转好的文件、
+    确认转没转过、失败重转、翻当时的报错）一件都办不到。
+    """
+
+    def setUp(self):
+        self._runs = srv.maint.RUNS
+        self.w = tempfile.mkdtemp(prefix='p2w_api_')
+        srv.maint.RUNS = os.path.join(self.w, 'runs.json')
+
+    def tearDown(self):
+        srv.maint.RUNS = self._runs
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def test_接口能把历史给出去(self):
+        io.open(srv.maint.RUNS, 'w', encoding='utf-8').write(
+            '[{"file": "\u8bb2\u4e49.pdf", "ok": true, "pdf": "D:/x.pdf"}]')
+        d = client.get('/api/runs').json()
+        self.assertTrue(d['ok'])
+        self.assertEqual(d['rows'][0]['file'], '讲义.pdf')
+
+    def test_没有历史时给空列表不是报错(self):
+        d = client.get('/api/runs').json()
+        self.assertTrue(d['ok'])
+        self.assertEqual(d['rows'], [])
+
+    def test_历史文件坏了也不能让这一屏废掉(self):
+        io.open(srv.maint.RUNS, 'w', encoding='utf-8').write('{不是合法 JSON')
+        r = client.get('/api/runs')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()['rows'], [])
+
+    def test_能限制条数(self):
+        rows = ','.join('{"file": "%d.pdf"}' % i for i in range(30))
+        io.open(srv.maint.RUNS, 'w', encoding='utf-8').write('[' + rows + ']')
+        self.assertEqual(len(client.get('/api/runs?limit=5').json()['rows']), 5)
 
 
 

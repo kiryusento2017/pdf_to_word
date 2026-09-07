@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, 'pipeline'))
 
+import torchdep  # noqa: E402
 import upgrade  # noqa: E402
 
 WORK = os.path.join(ROOT, '_tmp', 'tests', 'upgrade')
@@ -334,36 +335,88 @@ if __name__ == '__main__':
 
 
 class Test升级也要有进度条(unittest.TestCase):
-    r"""点「升级」要下 2.7 GB、几十分钟，界面上原来只有滚动日志，看不出
-    下到哪了 —— 而**第一次装 torch 那条路一直有进度条**，同一件事长成
-    了两个样。
+    r"""点「升级」要下 2.7 GB、几十分钟，界面上原来只有滚动日志 —— 而
+    **第一次装 torch 那条路一直有进度条**，同一件事长成了两个样。
+    根子在 download 的 on_progress 从声明之后再没被用过。
 
-    根子在：download 的参数表里留着 on_progress 这个口子，却从声明之后
-    再没被用过，一路没往下传。
+    🔴 **这一组必须真的跑一遍 `_pip`，不许只查源码里有没有那几个字符串。**
+    2026-09-07 第一版就是四条 `inspect.getsource()` + `in` 判断 ——
+    把 ProgressAcc 换成一个返回负数的类、把回调改成永远抛异常，四条照样
+    全绿。那测的是「代码长什么样」，不是「代码干什么」。
     """
 
-    def test_要让pip吐机器可读的进度(self):
-        r"""🔴 用 `--progress-bar raw`（`Progress N of M` 两个纯数字），
-        不是默认那个给人看的格式 —— 后者宽度随终端变、单位随大小变，
-        解析要考虑一堆情况。装 torch 那条路早就这么做了。"""
-        src = inspect.getsource(upgrade.download)
-        self.assertIn("'--progress-bar', 'raw'", src)
+    class _FakePopen(object):
+        """假的 pip 进程：吐几行输出就结束。"""
 
-    def test_进度真的传下去了不是留着不用(self):
-        src = inspect.getsource(upgrade.download)
-        self.assertIn('on_progress=_pg', src, 'on_progress 又只是挂在签名上')
-        self.assertIn('ProgressAcc', src, '没用累加器，分母会随每个新包跳')
+        def __init__(self, lines, rc=0):
+            self.stdout = io.BytesIO('\n'.join(lines).encode('utf-8') + b'\n')
+            self.returncode = rc
 
-    def test_分母不许是新写的估算常量(self):
-        r"""🔴「下完停在 92%」那次事故就是估算常量惹的：照着 pip 打印的
-        十进制 MB 当 MiB 换算，分母比真实大 8.8%。这里分子分母都取自
-        pip 自己吐的字节。"""
-        src = inspect.getsource(upgrade.download)
-        self.assertIn('floor=0', src, '给了个兜底常量，那就是在猜总量')
+        def wait(self):
+            return self.returncode
+
+        def kill(self):
+            pass
+
+    def _run(self, lines, rc=0):
+        """真的调用 upgrade._pip，把子进程换成假的。返回 (进度, 日志, out)."""
+        got, logs = [], []
+        real = upgrade.subprocess.Popen
+        upgrade.subprocess.Popen = lambda *a, **kw: self._FakePopen(lines, rc)
+        try:
+            code, out = upgrade._pip(
+                ['download', 'torch'], timeout=30,
+                on_log=lambda x: logs.append(x),
+                on_progress=lambda c, t: got.append((c, t)))
+        finally:
+            upgrade.subprocess.Popen = real
+        return got, logs, out
+
+    def test_进度行真的喂给了回调(self):
+        got, _logs, _out = self._run([
+            'Collecting torch', 'Progress 100 of 1000', 'Progress 700 of 1000',
+            'Downloading torch.whl'])
+        self.assertEqual(got, [(100, 1000), (700, 1000)],
+                         '进度没被解析出来喂给回调：%r' % (got,))
 
     def test_进度行不进日志区(self):
-        r"""2.7 GB 会刷出几千行 Progress，不拦的话 Collecting /
-        Downloading 这些真正有用的行全被淹掉。"""
-        src = inspect.getsource(upgrade._pip)
-        self.assertIn('continue', src, '进度行没有被拦下来')
-        self.assertIn('parse_progress', src)
+        r"""2.7 GB 会刷几千行，不拦的话 Collecting / Downloading 全被淹掉。"""
+        _got, logs, _out = self._run([
+            'Collecting torch', 'Progress 100 of 1000', 'Downloading torch.whl'])
+        self.assertEqual(logs, ['Collecting torch', 'Downloading torch.whl'],
+                         '进度行漏进日志了：%r' % (logs,))
+
+    def test_没给进度回调时一切照旧(self):
+        r"""别的调用方（plan / install）没传 on_progress，行为不能变。"""
+        logs = []
+        real = upgrade.subprocess.Popen
+        upgrade.subprocess.Popen = lambda *a, **kw: self._FakePopen(
+            ['Collecting torch', 'Progress 1 of 2'])
+        try:
+            upgrade._pip(['download'], timeout=30, on_log=lambda x: logs.append(x))
+        finally:
+            upgrade.subprocess.Popen = real
+        self.assertIn('Progress 1 of 2', logs, '没传回调时不该把进度行吃掉')
+
+    def test_失败摘要里不许全是进度数字(self):
+        r"""🔴 下载中途被掐时，out 的最后三行很可能就是三行 Progress ——
+        用户拿到的报错摘要会变成三个没意义的数字对。"""
+        real = upgrade.subprocess.Popen
+        upgrade.subprocess.Popen = lambda *a, **kw: self._FakePopen(
+            ['ERROR: 连接被重置', 'Progress 100 of 1000',
+             'Progress 200 of 1000', 'Progress 300 of 1000'], rc=1)
+        try:
+            r = upgrade.download(['torch'])
+        finally:
+            upgrade.subprocess.Popen = real
+        self.assertFalse(r['ok'])
+        self.assertIn('连接被重置', r['error'],
+                      '真正的报错被进度行挤掉了：%r' % r['error'])
+
+    def test_分母跟着已见过的包一起长(self):
+        r"""两个包各自从 0 报起，总进度不能倒退。"""
+        acc = torchdep.ProgressAcc(floor=0)
+        a = acc.feed(500, 1000)          # 第一个包
+        b = acc.feed(200, 3000)          # 换包了
+        self.assertGreaterEqual(b, a, '换包时总进度倒退了：%s → %s' % (a, b))
+        self.assertGreaterEqual(acc.total(), 3000, '分母没把新包算进来')

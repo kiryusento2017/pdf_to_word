@@ -25,6 +25,15 @@
     if (poller) { clearInterval(poller); poller = null; }
   }
 
+  // 拉转换历史。主屏空着的时候显示它 —— 打开软件就看得见上次转了什么。
+  // **读不出来就当没有**，不打扰用户：历史是锦上添花，不能让它挡住主流程。
+  function loadRuns() {
+    HTTP.get('/api/runs?limit=50').then(function (d) {
+      st.runs = (d && d.rows) || [];
+      render();
+    }).catch(function () { /* 没有历史就算了 */ });
+  }
+
   function addPaths(paths) {
     if (!paths || !paths.length) { render(); return; }
     st.scanning = true;
@@ -297,6 +306,7 @@
 
     clear: function () {
       st.items = [];
+      loadRuns();
       st.picked = {};
       st.err = '';
       render();
@@ -322,6 +332,10 @@
         stopPolling();
         // 一秒一问。转换本身以分钟计，问得再勤也只是多耗电。
         st.progMax = 0;      // 新一批开始，总进度从头算
+        // 这两个是上一批留下的界面状态，不归位会串到新一批：
+        // 报告页会自己冒出来，展开过的那一行也还开着。
+        st.showReport = false;
+        st.openStage = null;
         poller = setInterval(poll, 1000);
         poll();
       }).catch(function (e) {
@@ -577,6 +591,13 @@
     // 🔴 只有**正在转的**和**已经转完的**能点开 —— 还没轮到的那几份
     //    一步都没走过，摆一张空清单没有意义。这个限制在 pages.js 里
     //    体现为：只有那两种行才带 data-act。
+    // 重转历史里的某一份：把源 PDF 加回待转列表就行，走的还是原来那条路。
+    // 🔴 源文件可能已经被用户挪走或删了 —— addPaths 会照常体检并把
+    //    「读不了」显示出来，这里不用自己再判一遍。
+    reconvert: function (p) {
+      if (p) addPaths([p]);
+    },
+
     toggleStages: function (arg) {
       var i = parseInt(arg, 10);
       st.openStage = (st.openStage === i) ? null : i;
@@ -851,6 +872,8 @@
         });
       });
     },
+
+    loadRuns: loadRuns,
 
     openFile: function (p) { window.api.openFile(p); },
     openPath: function (p) { window.api.openPath(p); },

@@ -370,7 +370,7 @@ _DL_MAX_LINES = 200
 # 文件表，日志区只占底下一条。全量的那份在 logs/convert.log 里。
 _TASK_MAX_LINES = 120
 
-_DL = {'state': 'idle', 'got': 0, 'total': models.TOTAL_BYTES,
+_DL = {'state': 'idle', 'got': 0, 'total': models.learned_total(),
        'error': '', 'line': '', 'lines': [], 'cancel': False,
        # 'gpulib'（装 GPU 运行库）/ 'models'（下模型）/ ''（没在跑）——
        # 界面靠它说清楚现在在等什么，不然用户看着一个不动的进度条
@@ -439,7 +439,7 @@ def _dl_work(source):
         _DL['phase'] = 'models'
         _DL['cmd'] = models.download_cmd_text(source)
         _DL['log'] = models.log_path()
-        _DL['got'], _DL['total'] = 0, models.TOTAL_BYTES
+        _DL['got'], _DL['total'] = 0, models.learned_total()
         _DL['lines'] = []
     ok, err = models.download(source, on_progress=on_prog, on_log=on_log,
                               stop_flag=stopped)
@@ -1072,6 +1072,23 @@ async def cancel(task_id: str):
 
 
 # ── 关于 / 环境检测 ───────────────────────────────────────────────────
+
+
+@app.get('/api/runs')
+def list_runs(limit: int = 50):
+    r"""转换历史。最新的在最前面。
+
+    小蔡要它干四件事（2026-09-06 问过）：找回转好的 Word 存哪了、确认某份
+    转没转过成没成、失败的一键重转、出事时翻当时到底报了什么。
+
+    **只读，不删不改。** 记录本身是每转完一份就写的（`maint.note_run`），
+    不等整批结束 —— 中途崩掉时最后一条正好指向病根。
+    """
+    try:
+        return {'ok': True, 'rows': maint.runs(limit)}
+    except Exception as e:
+        # 历史读不出来不该让这一屏整个废掉，给个空列表加错误说明。
+        return {'ok': False, 'rows': [], 'error': '%s: %s' % (type(e).__name__, e)}
 
 
 @app.get('/api/maint/scan')

@@ -337,7 +337,13 @@ def download(picked, targets=None, on_log=None, on_progress=None):
     rc, out = _pip(argv, timeout=7200, on_log=on_log, on_progress=_pg)
     cmd = 'pip ' + ' '.join(argv)
     if rc != 0:
-        tail = [x for x in out.strip().splitlines() if x.strip()][-3:]
+        # 🔴 **摘要要把进度行滤掉。** 加了 --progress-bar raw 之后，2.7 GB
+        #    会吐几千行 `Progress N of M`。pip 通常把 ERROR 打在最后，可下载
+        #    中途被掐（超时、连接重置）时，最后三行很可能就是三行进度数字，
+        #    用户拿到的报错摘要变成三个没意义的数字对。
+        import torchdep
+        tail = [x for x in out.strip().splitlines()
+                if x.strip() and not torchdep.parse_progress(x)][-3:]
         return {'ok': False, 'cmd': cmd, 'error': '  '.join(tail)[:300]}
 
     _write_state({'phase': 'downloaded', 'picked': picked,
