@@ -2215,6 +2215,21 @@ console.log('\n界面状态不许串到下一批：');
       throw new Error('上一批有扫描页却没给报告入口');
   });
 
+  ck('上一批的报告页要保住滚动位置', () => {
+    // 🔴 它跟当前批的报告页不一样：**能在新一批转换进行中打开**（入口就长在
+    //    pendingBox 的 !done 分支里），而转换中每秒 render 一次、整个 DOM
+    //    推倒重来。不挂 data-keep-scroll 的话，往下滑一秒弹回顶部一次，
+    //    报告根本读不下去 —— 跟 2026-09-07 缓存明细那个 bug 同形。
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.lastResults = [Object.assign({}, clean, { scan_pages: [3] })];
+    st.showLastReport = true;
+    const h = fn(st);
+    if (!h.includes('data-keep-scroll="lastreport"'))
+      throw new Error('没挂滚动保持，转换中看报告会一秒弹回顶部一次');
+  });
+
   ck('上一批全干净时，报告页进不去（否则是个没有出口的页面）', () => {
     // 🔴 主区那个分支以前只判 lastResults.length，不判 worthReport，而退出
     //    按钮由 pendingBox 里的 worthReport 控制 —— 两个条件不一致时，

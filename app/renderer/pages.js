@@ -1634,7 +1634,12 @@ function mainRun(st) {
       && worthReport({ results: st.lastResults })) {
     return shell(top,
       '<div class="fill" style="justify-content:flex-start;gap:6px">'
-      + '<div class="log"><span class="l">'
+      // 🔴 **必须挂 data-keep-scroll。** 这一屏跟当前批的报告页不一样 ——
+      //    它能在**新一批转换进行中**打开（入口就长在 pendingBox 的
+      //    !done 分支里），而转换中每秒 render 一次、整个 DOM 推倒重来。
+      //    不挂的话：往下滑一秒弹回顶部一次，报告根本读不下去。
+      //    跟 2026-09-07 缓存明细那个 bug 一模一样的形状。
+      + '<div class="log" data-keep-scroll="lastreport"><span class="l">'
       + esc(reportText(st, { results: st.lastResults }))
           .split(chr10()).join('</span><span class="l">')
       + '</span></div></div>'

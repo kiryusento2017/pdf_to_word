@@ -10,13 +10,13 @@
 终末诗篇工作台（`edu_book_generator`）的专精版——那边做「PDF → 题库 → 重新组卷」，
 这边只做「PDF → Word」这一段。
 
-**最新发行版**：[v0.2.6](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.2.6)
+**最新发行版**：[v0.3.0](https://github.com/kiryusento2017/pdf_to_word/releases/tag/v0.3.0)
 
 ---
 
 ## 给使用者
 
-下载 `PDF2Word-Setup-v0.2.6.exe`（291 MB），双击 → 选文件夹 → 解压完成 →
+下载 `PDF2Word-Setup-v0.3.0.exe`（291 MB），双击 → 选文件夹 → 解压完成 →
 双击里面的 `PDF转Word.exe`。
 
 **四件事得先知道**：
@@ -468,7 +468,7 @@ runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有�
             打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
             直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      594 条 Python + 200 条前端检查 + 四个真实数据验证脚本
+tests/      594 条 Python + 201 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
@@ -476,7 +476,7 @@ docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 
 ```
 .venv\Scripts\python.exe -m unittest discover -s tests -q   # 594 条，16 秒
-node tests\front_check.js                                   # 200 条，真渲染
+node tests\front_check.js                                   # 201 条，真渲染
 ```
 
 🔴 **必须是 `.venv\Scripts\python.exe`，不能用全局的 `python`。**
