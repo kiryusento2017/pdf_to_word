@@ -84,6 +84,62 @@ def _vers_in(text):
     return set(re.findall(r'v\d+\.\d+\.\d+', text or ''))
 
 
+def _stands_alone(ln):
+    r"""这一行在 Markdown 里必须独占，不参与「合并成一段」的判断。
+
+    🔴 列表记号**后面必须跟空格**（`- 新增…`）。少了这个 `\s`，
+       `**粗体**开头的段落` 会被当成列表项 —— 它确实以 `*` 开头 ——
+       于是整段被放过。2026-09-09 第一版就是这么写的，扫完 15 个历史
+       版本、以为干净了，改完判据再扫又冒出 8 个。
+    """
+    s = ln.strip()
+    if not s:
+        return True
+    if s.startswith(('#', '>', '|')):
+        return True
+    if re.match(r'^[-*+]\s', s):
+        return True
+    if re.match(r'^\d+[.)]\s', s):
+        return True
+    if set(s) <= set('-=_ '):
+        return True
+    return False
+
+
+def _wrapped_lines(body):
+    r"""正文段落里有没有手工折行（RELEASE.md 第五节）。
+
+    GitHub Release 说明走 GFM，**单个换行渲染成真正的断行**，不像标准
+    Markdown 那样把软换行当空格合并。源码里折到 70 字符，网页上就在那儿断，
+    一段话被切成几条短行、右边空一大片。
+
+    小蔡 2026-09-09：「为什么好多发行版的文案都挤在左边，明明可以塞满一整行」
+
+    判据：两个相邻的普通文本行 = 手工折行。代码块里的换行是有意义的，跳过。
+    """
+    p = []
+    lines = body.replace('\r\n', '\n').split('\n')
+    in_code = False
+    hits = []
+    for i, ln in enumerate(lines[:-1]):
+        if ln.strip().startswith('```'):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if (ln.strip() and not _stands_alone(ln)
+                and lines[i + 1].strip() and not _stands_alone(lines[i + 1])):
+            hits.append(i + 1)
+    if hits:
+        where = '、'.join(str(x) for x in hits[:5])
+        more = ' 等 %d 处' % len(hits) if len(hits) > 5 else ''
+        p.append('[说明] 正文段落有手工折行（第 %s 行%s）—— GitHub 会把单个'
+                 '换行渲染成真正的断行，一段话被切成几条短行、右边空一大片。'
+                 '一段写成一整行，让 GitHub 自己排（RELEASE.md 第五节）'
+                 % (where, more))
+    return p
+
+
 def _audit_notes(body, ver, others=None):
     """只查发布说明本身。audit() 和 check_notes_file() 共用这一段。"""
     p = []
@@ -104,6 +160,8 @@ def _audit_notes(body, ver, others=None):
 
     if '预发行版' in br:
         p.append('[说明] 摘要区还留着「预发行版」字样 —— 已经转正了，那句是假的')
+
+    p += _wrapped_lines(body)
 
     for v in sorted(_vers_in(br) - set([ver])):
         if (others or {}).get(v):
