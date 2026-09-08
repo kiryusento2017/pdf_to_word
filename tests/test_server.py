@@ -774,6 +774,29 @@ class Test转换会记下运行结果(unittest.TestCase):
 class Test升级接口(unittest.TestCase):
     r"""依赖升级。**升不升由用户决定，但过程必须可预测。**"""
 
+    def test_同一个地址不许注册两遍(self):
+        r"""🔴 `POST /api/upgrade/install` 曾经被写了两份。
+
+        第一份带着「转换进行中不许装」的互斥，第二份光秃秃四行、
+        一道检查都没有。FastAPI 按注册顺序匹配第一个，所以功能上完全
+        看不出来 —— 但哪天有人删了第一份，跑的就是没保护那个：用户能在
+        转换途中点安装，而那会儿 torch 的 dll 正被 MinerU 子进程占着，
+        轻则装失败，重则把显卡运行库弄坏。
+
+        这条查的是整张路由表，以后任何一个地址被写两遍都会当场红。
+        """
+        seen = set()
+        for r in srv.app.routes:
+            for m in (getattr(r, 'methods', None) or []):
+                if m in ('HEAD', 'OPTIONS'):
+                    continue
+                key = (m, getattr(r, 'path', ''))
+                self.assertNotIn(
+                    key, seen,
+                    '%s %s 注册了两遍 —— 后一份是死代码，'
+                    '而两份的保护措施可能不一样' % key)
+                seen.add(key)
+
     def test_转换进行中不许升级(self):
         r"""升级会换掉 pipeline 用的包，转到一半换等于让后面几份
         跑在不同的代码上。"""

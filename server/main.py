@@ -1620,12 +1620,6 @@ def upgrade_pending():
     return upgrade.pending()
 
 
-@app.post('/api/upgrade/install')
-def upgrade_install():
-    """装下好的那批。重启时调，此时没有转换在跑。"""
-    return upgrade.install()
-
-
 @app.post('/api/upgrade/rollback')
 def upgrade_rollback():
     """回滚到升级前。**无条件** —— 不检查坏没坏。"""
