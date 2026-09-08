@@ -774,6 +774,32 @@ class Test转换会记下运行结果(unittest.TestCase):
 class Test升级接口(unittest.TestCase):
     r"""依赖升级。**升不升由用户决定，但过程必须可预测。**"""
 
+    def test_转换进行中不许退回(self):
+        r"""🔴 退回要把 site-packages 里的 torch 整个删掉再拷回来，
+        而转换跑着时那些 dll 正被 MinerU 子进程占着 —— 这时候删当场炸。
+
+        这个接口以前**一道检查都没有**，跟同期那个写了两遍的 install
+        一个毛病：功能做好了、接口通了，就是没人管什么时候能调。
+        """
+        tid = 'faketask_rb'
+        with srv._LOCK:
+            srv._TASKS[tid] = {'state': 'running'}
+        self.addCleanup(lambda: srv._TASKS.pop(tid, None))
+        r = client.post('/api/upgrade/rollback', json={})
+        self.assertEqual(r.status_code, 409, r.text)
+
+    def test_退回只收目录名不收路径(self):
+        r"""🔴 退回会往 site-packages 里**拷东西进去**。路径不验的话，
+        本机任意进程 POST 一个自己的目录过来，就等于往 Python 环境里
+        塞代码 —— 服务只绑 127.0.0.1，但那不等于只有我们能连。
+        （同一条教训见 maint 清理那边的 pip 缓存白名单。）
+        """
+        for bad in ('..', '../evil', '../../Windows', 'C:/evil',
+                    'a/../../b', 'sub/../../../x'):
+            r = client.post('/api/upgrade/rollback', json={'name': bad})
+            self.assertEqual(r.status_code, 400,
+                             '接受了危险的备份名：%r' % bad)
+
     def test_同一个地址不许注册两遍(self):
         r"""🔴 `POST /api/upgrade/install` 曾经被写了两份。
 

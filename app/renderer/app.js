@@ -53,6 +53,11 @@ var state = {
   // 轮询没启动，界面永远停在「正在装」）。这些进诊断文件。
   jsErrors: [],
   diagBusy: false,      // 正在生成诊断文件
+  // 升级备份列表（进环境检测页时拉）。以前 /api/upgrade/backups 做好了
+  // 没人调，界面上看不见也退不回去。
+  backups: [],
+  rollbackAsk: '',      // 哪一份正在问「确定退回？」，空 = 没在问
+  rollbackBusy: false,  // 正在退回（拷 4 GB 要一会儿）
   // 首次使用那一屏：源清单、选中的源、下载进度
   runs: [],             // 转换历史，进「历史」那一屏时拉
   upgPending: null,     // 有没有下好等着装的升级（开机问一次）

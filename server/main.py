@@ -1620,10 +1620,45 @@ def upgrade_pending():
     return upgrade.pending()
 
 
+class RollbackReq(BaseModel):
+    # 退回哪一份备份，只收**目录名**（如 `20260907_145754`），不收路径。
+    # 空 = 状态文件里记着的那次，保持老行为。
+    name: str = ''
+
+
 @app.post('/api/upgrade/rollback')
-def upgrade_rollback():
-    """回滚到升级前。**无条件** —— 不检查坏没坏。"""
-    return upgrade.rollback()
+def upgrade_rollback(req: RollbackReq = RollbackReq()):
+    r"""退回升级前的版本。**回滚动作本身无条件** —— 不检查坏没坏、
+    不判断断在哪，删干净再拷回去，结果一定是升级前那个能用的版本。
+
+    🔴 **但什么时候能做这件事是有条件的（2026-09-08 加）。**
+
+    回滚要把 site-packages 里的 torch 整个删掉再拷回来，而转换跑起来时
+    那些 dll 正被 MinerU 子进程占着 —— 这时候删等于当场炸。这个接口
+    以前一道检查都没有，跟同期那个写了两遍的 install 一个毛病：
+    **功能做好了、接口通了，就是没人管什么时候能调**。
+
+    🔴 **只收目录名，不收路径。** 拼完还要验落点确实在 backup 目录内。
+    回滚会往 Python 环境里拷东西，路径不验等于让本机任意进程往
+    site-packages 里塞代码 —— 服务只绑 127.0.0.1，但那不等于只有我们能连。
+    （同一条教训见 maint 清理那边的 pip 缓存白名单。）
+    """
+    with _LOCK:
+        busy = (any(t.get('state') == 'running' for t in _TASKS.values())
+                or _DL.get('state') == 'running'
+                or _UPG.get('state') == 'running'
+                or _UPGI.get('state') == 'running'
+                or _UPD.get('state') in ('running', 'installing'))
+    if busy:
+        return JSONResponse({'detail': '正在转换或安装，完成后再退回'},
+                            status_code=409)
+    d = ''
+    if req.name:
+        root = os.path.abspath(upgrade.BACKUP)
+        d = os.path.abspath(os.path.join(root, req.name))
+        if not d.startswith(root + os.sep) or not os.path.isdir(d):
+            return JSONResponse({'detail': '没有这份备份'}, status_code=400)
+    return upgrade.rollback(d)
 
 
 @app.get('/api/upgrade/backups')

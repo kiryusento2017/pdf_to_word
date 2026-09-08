@@ -468,15 +468,15 @@ runtime/    pandoc.exe + 许可证。node.exe 和 python/ 是**发行版才有�
             打包时 put_node() 从系统 PATH 复制 node.exe 进去，开发机上
             直接走 PATH 里那个
 tools/      setup_env(装开发环境) build_release(组装发行版) make_icon(做图标)
-tests/      595 条 Python + 203 条前端检查 + 四个真实数据验证脚本
+tests/      597 条 Python + 206 条前端检查 + 四个真实数据验证脚本
 docs/       DESIGN.md（设计与决策台账） RELEASE.md（发行版规矩）
 ```
 
 ### 跑测试
 
 ```
-.venv\Scripts\python.exe -m unittest discover -s tests -q   # 595 条，16 秒
-node tests\front_check.js                                   # 203 条，真渲染
+.venv\Scripts\python.exe -m unittest discover -s tests -q   # 597 条，16 秒
+node tests\front_check.js                                   # 206 条，真渲染
 ```
 
 🔴 **必须是 `.venv\Scripts\python.exe`，不能用全局的 `python`。**

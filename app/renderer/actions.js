@@ -666,6 +666,42 @@
         st.diag = d;
         render();
       }).catch(function () {});
+      // 升级备份的明细。**这个接口以前做好了没人调** —— 跟 rollback
+      // 一个毛病：功能齐了、界面上摸不到。拉不到就当没有，不挡这一屏。
+      HTTP.get('/api/upgrade/backups').then(function (d) {
+        st.backups = (d && d.items) || [];
+        render();
+      }).catch(function () { st.backups = []; });
+    },
+
+    // 点第一次只是亮出确认，点第二次才真退。**回滚要删掉 site-packages
+    // 里的 torch 再拷回来**，误触的代价是等好几分钟拷 4 GB，值得多问一次。
+    askRollback: function (name) {
+      st.rollbackAsk = (st.rollbackAsk === name) ? '' : name;
+      render();
+    },
+
+    doRollback: function (name) {
+      if (st.rollbackBusy) return;
+      st.rollbackBusy = true;
+      st.rollbackAsk = '';
+      st.err = '';
+      render();
+      HTTP.post('/api/upgrade/rollback', { name: name }).then(function (d) {
+        st.rollbackBusy = false;
+        if (d && d.ok) {
+          // 拷回去的是文件，而当前进程里 torch 早就加载进内存了 ——
+          // 必须重启才算数。跟装升级那边同一个道理。
+          st.err = '已经退回，点「立即重启」或者关掉软件重开才生效。';
+        } else {
+          st.err = '退回失败：' + ((d && d.error) || '没说原因');
+        }
+        render();
+      }).catch(function (e) {
+        st.rollbackBusy = false;
+        st.err = '退回失败：' + String(e && e.message || e);
+        render();
+      });
     },
 
     // 查上游有没有新版本。

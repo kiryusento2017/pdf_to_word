@@ -1131,6 +1131,44 @@ function envCheckView(st) {
         + '<table>' + rows + '</table></div>' : '');
   }
 
+  // 升级备份明细 + 退回入口。
+  //
+  // 🔴 **回滚这条链以前整个是断的**：后端的 `upgrade.rollback()` 和
+  //    `/api/upgrade/backups` 都写好了、逻辑也稳（删干净再拷回去，
+  //    重复做多少次结果都一样），但前端**一个字都没引用** —— 界面上
+  //    既看不见有哪几份备份，也没有任何地方能退回去。
+  //    跟 2026-09-07 那次「2.5 GB 下好了没人装」是同一个形状：
+  //    功能齐了，缺的是「谁按下那一下」。
+  var backs = '';
+  var bl = st.backups || [];
+  if (bl.length) {
+    backs = '<div class="f-dim" style="font-size:11px;text-align:left">'
+      + '升级备份（退回之后要重启才生效）</div>'
+      // 🔴 展开的框是独立滚动区，必须挂 data-keep-scroll ——
+      //    重绘时 scrollTop 会归零，2026-09-07 缓存明细那次就是漏了这个。
+      + '<div data-keep-scroll="backuplist" style="max-height:76px;'
+      + 'overflow:auto;font-size:11px;text-align:left"><table>'
+      + bl.map(function (b) {
+          var vs = Object.keys(b.versions || {}).map(function (k) {
+            return k + ' ' + b.versions[k];
+          }).join('、');
+          var asking = st.rollbackAsk === b.name;
+          return '<tr><td style="padding:0 8px 0 0">' + esc(b.name) + '</td>'
+            + '<td style="padding:0 8px 0 0" class="f-dim">' + esc(vs) + '</td>'
+            + '<td style="padding:0 8px 0 0;text-align:right">'
+            + F.gb(b.size) + '</td><td>'
+            + (st.rollbackBusy ? '<span class="f-dim">正在退回…</span>'
+               : (asking
+                  ? btn('doRollback', '确定退回', { cls: 'link', arg: b.name })
+                  : btn('askRollback', '退回这一份',
+                        { cls: 'link', arg: b.name,
+                          off: isRunning(st),
+                          title: isRunning(st) ? '正在转换，转完再退' : '' })))
+            + '</td></tr>';
+        }).join('')
+      + '</table></div>';
+  }
+
   // 清理结果
   var res = '';
   var cr = st.cleanResult;
@@ -1182,6 +1220,7 @@ function envCheckView(st) {
     + upgradeBox(st)
     + use
     + cache
+    + backs
     + res
     + '<div style="display:flex;gap:8px;margin-top:2px">'
     + btn('doClean', picked ? '清理选中的 ' + picked + ' 项' : '清理',

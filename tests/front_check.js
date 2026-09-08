@@ -951,6 +951,47 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('正在生成')) throw new Error('没给「正在生成」的反馈');
   });
 
+  ck('有升级备份时列出来，每份都能退回', () => {
+    // 🔴 回滚这条链以前整个是断的：后端 rollback 和 /api/upgrade/backups
+    //    都写好了，前端一个字都没引用 —— 界面上既看不见有哪几份备份，
+    //    也没有任何地方能退回去。跟「2.5 GB 下好了没人装」同形。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.backups = [{ name: '20260907_145754', size: 4447397185,
+                    picked: ['torch'], versions: { torch: '2.11.0+cu128' } }];
+    const h = fn(st);
+    if (!h.includes('20260907_145754')) throw new Error('没列出备份');
+    if (!h.includes('2.11.0+cu128')) throw new Error('没说退回去会变成哪个版本');
+    if (!h.includes('data-act="askRollback"')) throw new Error('没有退回入口');
+  });
+
+  ck('退回要问第二遍才真退', () => {
+    // 拷 4 GB 要好几分钟，误触的代价不小，值得多问一次。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.backups = [{ name: '20260907_145754', size: 100, versions: {} }];
+    st.rollbackAsk = '20260907_145754';
+    const h = fn(st);
+    if (!h.includes('data-act="doRollback"')) throw new Error('确认态没出现');
+    if (!h.includes('确定退回')) throw new Error('没给确认文案');
+  });
+
+  ck('转换进行中不许退回', () => {
+    // 退回要删掉 site-packages 里的 torch 再拷回来，转换中做这个当场炸。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.backups = [{ name: '20260907_145754', size: 100, versions: {} }];
+    st.task = { state: 'running' };
+    const h = fn(st);
+    const i = h.indexOf('data-act="askRollback"');
+    if (i < 0) throw new Error('按钮不该消失，只该变灰');
+    const tag = h.slice(i, h.indexOf('>', i));
+    if (!tag.includes('disabled')) throw new Error('转换中还能点退回');
+  });
+
   ck('生成诊断文件失败时，环境检测页得把原因说出来', () => {
     // 🔴 st.err 以前全项目只在待转屏渲染，这一屏通篇没有 —— 于是三个位置
     //    都写不进去时，按钮只是从「正在生成…」闪回原样，一个字的解释都没有。
