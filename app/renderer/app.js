@@ -321,7 +321,15 @@ function patchConv(el, st) {
   if (t.state === 'done' || t.state === 'cancelled') return false;
   var eta = el.querySelector('#cv-eta');
   var used = el.querySelector('#cv-used');
-  if (!eta || !used) return false;
+  // 🔴 抓手不在 = **当前这一屏根本不显示转换进度**（用户切到了历史 / 关于 /
+  //    环境检测 / 更新面板）。这时候 elapsed 那几个字段变了，界面上什么都
+  //    不会变 —— **正确做法是什么都不做**，不是退回整页重绘。
+  //    小蔡 2026-09-08 报「历史里面也会卡顿」就是这个：转换还在跑、轮询
+  //    照旧每秒来，而历史屏没有抓手，于是每秒退回重绘，200 条历史重拼
+  //    一遍，滚动照样被拽 —— 转换屏丝滑了，历史屏照旧卡。
+  //    （万一哪天是因为有人把 pages.js 里的 id 删了才拿不到，那条「增量
+  //    结果跟整页重绘逐字相同」的对拍测试会红，兜得住。）
+  if (!eta || !used) return true;
 
   eta.textContent = C.eta(t);
   used.textContent = C.used(t);

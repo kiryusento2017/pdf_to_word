@@ -488,6 +488,42 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
     }
   });
 
+  // 🔴 小蔡 2026-09-08 第三次验收：「历史里面也会卡顿」。
+  //    这是增量刷新的**盲区**，不是历史屏自己的毛病：
+  //    转换还在跑的时候切到历史 / 关于 / 环境检测 / 更新面板，轮询照旧每秒
+  //    跑，可这些屏上根本没有 cv-eta 那几个抓手 —— patchConv 拿不到就报失败，
+  //    于是每秒退回整页重绘，200 条历史重拼一遍，滚动照样被拽。
+  //
+  //    抓手不在 = **这一屏根本不显示转换进度** = elapsed 那几个字段变了
+  //    界面上什么都不会变 = **什么都不用做**，而不是重绘。
+  ck('转换中切到历史屏，不该每秒整页重绘', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+    st.about = 'history';
+    st.runs = Array.from({ length: 200 }, (_, i) => ({
+      ok: true, time: '2026-09-08 12:00', pdf: 'C:\\a\\' + i + '.pdf',
+      docx: 'C:\\a\\' + i + '.docx', took_sec: 120,
+    }));
+
+    sb2.window.P2W_RENDER_CONV();
+    const before = el._keep.history;      // 历史屏自己的滚动容器
+    if (!before) throw new Error('历史屏没渲染出来，测试前提就不成立');
+    before.scrollTop = 500;               // 用户翻到中间在看
+
+    st.task.elapsed = 11;                 // 后台转换照常在跑
+    st.task.remain = 1799;
+    st.task.stage_cur = 6;
+    sb2.window.P2W_RENDER_CONV();
+
+    if (el._keep.history !== before) {
+      throw new Error('每秒把 200 条历史整个重拼一遍 —— 滚动照样被拽');
+    }
+    if (before.scrollTop !== 500) {
+      throw new Error('滚动位置被动过，停在 ' + before.scrollTop);
+    }
+  });
+
   // 🔴 **这条护栏守的是整个增量刷新方案里唯一能产生「界面该变没变」的路径。**
   //
   //    convSig 把这几个字段排除在签名之外，前提是「它们只喂那几个 patch
