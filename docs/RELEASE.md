@@ -616,10 +616,10 @@ python -c "import zipfile; z=zipfile.ZipFile('dist/pdf_to_word-vX-update.zip'); 
 给老师看的，不是给开发者看的。必须有这四段：
 
 1. **怎么装**——下哪个文件、双击之后干什么
-2. **用之前要知道的**——必须装 Office（且**只装 WPS 不行**）、
-   **必须有 NVIDIA 独立显卡**（只用 GPU，没有 N 卡装了也转不了）、
-   别装 `C:\Program Files`、首次要下约 7.4 GB
+2. **用之前要知道的**——**必须有 NVIDIA 独立显卡**（只用 GPU，没有 N 卡
+   装了也转不了）、别装 `C:\Program Files`、首次要下约 7.4 GB
    （4.6 GB 模型 + 2.8 GB GPU 运行库）
+   （~~必须装 Office~~ 2026-09-09 起不用了，转公式那个 XSL 已随包分发）
 3. **不想用了怎么办**——删文件夹即可，干净
 4. **以后怎么更新**——软件里点「检查更新」，不用再来 GitHub
 

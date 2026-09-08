@@ -265,8 +265,11 @@ ipcMain.handle('open-file', async (_e, p) => {
 // 漏洞，「能打开任意 URL」就成了钓鱼入口 —— 用户看到是我们的软件
 // 弹出的浏览器，戒心是最低的。宁可写死几条也不开通用能力。
 const URL_WHITELIST = [
-  'https://www.microsoft.com/',
-  'https://www.microsoftstore.com.cn/',
+  // 🔴 microsoft.com / microsoftstore.com.cn 2026-09-09 删了：那两条是给
+  //    「去装 Office」那个按钮用的，XSL 改成随包分发之后按钮没了，域名也
+  //    就没有调用方。白名单本来就是「宁可写死几条也不开通用能力」，
+  //    留着用不上的条目跟这个立论相悖。
+  //    aka.ms 留着 —— 那是 VC 运行库在用，跟 Office 无关。
   'https://nodejs.org/',
   // Visual C++ 运行库。torch 的 c10.dll 依赖它，缺了整个 torch 都
   // import 不了（Windows 只报一句「动态链接库初始化例程失败」）。
