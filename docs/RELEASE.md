@@ -178,9 +178,15 @@ v0.0.2 就带着开发机的运行时垃圾发出去了 —— 而「在 dist �
 robocopy pipeline dist\PDF2Word\pipeline /MIR
 robocopy server dist\PDF2Word\server /MIR
 robocopy app\renderer dist\PDF2Word\resources\app\renderer /MIR
+robocopy runtime\xsl dist\PDF2Word\runtime\xsl /MIR
 copy app\main.js app\preload.js app\package.json app\icon.ico ^
      dist\PDF2Word\resources\app\
 ```
+
+🔴 `runtime\xsl` 那行是 2026-09-09 加的。**漏了它，发行版里就没有
+MML2OMML.XSL**，而新代码默认用自带那份 —— 用户点转换才会炸，
+打包时一声不吭。`runtime\` 下别的东西（python / pandoc / node）
+不在这里同步，它们由完整构建负责，手工同步碰不到。
 
 同步完记得清 `__pycache__`，不然它会被打进安装包（里面还嵌着开发机的路径）：
 
@@ -721,8 +727,12 @@ MinerU 的东西。我们通过 `MINERU_TOOLS_CONFIG_JSON` 指向自己那份。
 
 ### 公式必须走 XSL，不降级
 
-09-01 定的。没有 Office 就拦住并引导去装，**不静默用 Pandoc 顶替**——
+09-01 定的。XSL 找不到就拦住，**不静默用 Pandoc 顶替**——
 两条路的产物有实质差异（Pandoc 把空集 ∅ 转成直径符号 ⌀，那是错的）。
+
+（2026-09-09 起 XSL 随包分发，所以「找不到」基本只剩一种可能：
+自带文件被杀软删了。拦截屏的话术也跟着改了 —— 不再引导去装 Office，
+装了也解决不了文件被删。）
 
 ⚠️ Pandoc **不能从包里去掉**：整个 docx 是它生成的（md→html→docx），
 XSL 只是把生成物里的公式替换掉。
@@ -790,10 +800,19 @@ CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.8
 ⚠️ `--cuda` 构建是例外：那种包直接把 GPU 版打进去，装完即用不用联网，
    只在确实需要离线分发时才这么打。
 
-### 不打包微软的 XSL
+### ~~不打包微软的 XSL~~ 2026-09-09 推翻了
 
-`MML2OMML.XSL` 是随 Office 分发的版权文件，提取出来再分发是侵权。
-只读用户本机那份。这条没有商量余地。
+**这条原来写着「提取出来再分发是侵权，只读用户本机那份，没有商量余地」。**
+2026-09-09 小蔡定了相反的做法：`runtime/xsl/MML2OMML.XSL` **随包分发**，
+理由是「这个软件只给三个人用」，云端版（teach-studio）先做了同样的决定。
+
+⚠️ **风险没有消失，只是被接受了**：仓库和 release 都是公开的，
+「只给三个人用」和「公开分发」是两回事；本项目又是 GPL-3.0，
+跟这个非 GPL 兼容的文件在授权上冲突。小蔡知情并拍板。
+细节见 `docs/PLAN_NEXT.md` 第四十四节。
+
+留着这条的原文是因为**它是被推翻的，不是被遗忘的** —— 哪天要往回改，
+得知道当初为什么那么定。
 
 ---
 
@@ -821,7 +840,7 @@ CPU 版），首次启动由 `pipeline/torchdep.py` 按需装 CUDA 版（约 2.8
 | | 说明 |
 |---|---|
 | 发行版的 Python 跟开发环境不是一回事 | **发行版用的是 embeddable 版，目录里有 `python312._pth`；只要这个文件存在，`sys.path` 就完全由它决定，`PYTHONPATH` 环境变量被直接忽略**。2026-09-03 差点因此发出一个「什么都没修」的版本：中文路径补丁靠 PYTHONPATH 挂 `sitecustomize`，开发环境 298 条测试全绿，而发行版子进程的 `sys.path` 只有三条，补丁一次都没加载过。**凡是靠环境变量或 site 机制生效的东西，必须拿发行版的 python.exe 亲自验一遍。**现在走 `sitepatch/run_mineru.py` 引导脚本（脚本目录自动进 `sys.path[0]`，不看 `._pth` 也不看 `PYTHONPATH`）|
-| 更新包碰不到 `runtime/` | `UPDATE_PARTS` 只有 `pipeline/` `server/` `app/`。任何放在 `runtime/` 下的修复**对老用户无效** —— 他们点「检查更新」拿不到。所以补丁的落点必须同时满足「更新包能覆盖」和「不依赖 site 机制」两条 |
+| 更新包碰不到 `runtime/`（**2026-09-09 起有一个例外**） | `UPDATE_PARTS` 原来只有 `pipeline/` `server/` `app/`，任何放在 `runtime/` 下的修复**对老用户无效** —— 他们点「检查更新」拿不到。所以补丁的落点必须同时满足「更新包能覆盖」和「不依赖 site 机制」两条。**例外**：`runtime/xsl`（190 KB）2026-09-09 加进了 `UPDATE_PARTS`，不带的话老用户升上来那个目录是空的、还得靠装 Office 兜底，这次改动对他们等于没做。加它的前提是**体积可以忽略** —— `runtime/` 下别的东西（python、pandoc、node）加进来会让更新包从 0.9 MB 变成几百 MB，那条原则仍然成立 |
 | 首次启动要装依赖 | `--slim` 打的包里没有 Layer 1，用户首次打开要跑 `首次安装.cmd`（联网几分钟）。默认构建已经装好，不走这条路 |
 | GitHub 单文件 2 GiB | 安装包 291 MB，离上限还远。**但 `--cuda` 构建会到 1.5~2 GB**，那种包逼近上限；真要发的话先量一下，7-Zip 支持分卷 SFX |
 | SmartScreen | exe 没有代码签名，Windows 会弹「未知发布者」。老师需要点「更多信息 → 仍要运行」。签名要买证书（一年几百到几千）。**7z 自解压格式触发率更高**，Edge 可能直接「已阻止此不安全下载」——真发给老师时考虑改发 zip，或者直接微信/U盘传 |
