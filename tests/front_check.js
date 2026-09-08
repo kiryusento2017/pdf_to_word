@@ -1203,8 +1203,11 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
     if (h.includes('转换完成')) throw new Error('停止了却说完成');
   });
 
-  ck('「再转一批」把失败的自动勾上、成功的取消勾选', () => {
-    // 全成功的人得到清爽的空勾选；有失败的人点一下开始就是重试
+  ck('「再转一批」把成功的移出列表、失败的自动勾上', () => {
+    // 🔴 2026-09-09 改的：成功的**移出去**，不再是留着取消勾选。
+    //    留着的话它跟没转过的长得一模一样（都是没勾的白底行），用户
+    //    看到的是「已经转完的还堵在队列里」。Word 都出来了，留着没用。
+    //    失败的留下并勾好，点一下开始就是重试 —— 这才是这个按钮的价值。
     const sb2 = mkSandbox();
     const real = sb2.window.P2W_STATE;
     real.items = [
@@ -1219,8 +1222,19 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
     sb2.window.P2W_ACTS.newBatch();
     if (real.task !== null) throw new Error('任务没清掉');
     if (real.taskId !== '') throw new Error('taskId 没清掉');
-    if (real.picked['C:\\a\\好.pdf'] !== false) throw new Error('成功的没取消勾选');
+    if (real.items.some((x) => x.path === 'C:\\a\\好.pdf')) {
+      throw new Error('转成功的没移走，还堵在待转清单里');
+    }
+    if (!real.items.some((x) => x.path === 'C:\\a\\坏.pdf')) {
+      throw new Error('转失败的被移走了，没法一键重试');
+    }
     if (real.picked['C:\\a\\坏.pdf'] !== true) throw new Error('失败的没勾上');
+    // 🔴 移走的同时必须删掉 picked 的键。picked 是三态，**键不存在才
+    //    等于选中**，而本项目的 addPaths 不给新文件设 picked（靠的就是
+    //    这一条）。留着那个 false 的话，同一份 PDF 再拖进来会默认不勾。
+    if ('C:\\a\\好.pdf' in real.picked) {
+      throw new Error('移走了却把 picked 的键留着，再拖进来会默认不勾');
+    }
   });
 
   ck('「再转一批」不许碰这批根本没转过的文件', () => {
@@ -1240,7 +1254,13 @@ console.log('\n\u8f6c\u6362\uff08\u4e3b\u5c4f\u8fdb\u5ea6\u6001\uff09\uff1a');
       { ok: true, pdf: 'C:\\a\\转过的.pdf', docx: 'C:\\a\\转过的.docx' },
     ] };
     sb2.window.P2W_ACTS.newBatch();
-    if (real.picked['C:\\a\\转过的.pdf'] !== false) throw new Error('转过且成功的该取消勾选');
+    // 转过且成功的**移出列表**（2026-09-09 起），没转过的原样不动。
+    if (real.items.some((x) => x.path === 'C:\\a\\转过的.pdf')) {
+      throw new Error('转过且成功的该移出列表');
+    }
+    if (!real.items.some((x) => x.path === 'C:\\a\\刚拖进来的.pdf')) {
+      throw new Error('没转过的文件被移走了 —— 用户会以为文件被吃了');
+    }
     if (real.picked['C:\\a\\刚拖进来的.pdf'] !== true)
       throw new Error('没转过的文件被取消勾选了 —— 用户会以为文件被吃了');
   });

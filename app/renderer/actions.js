@@ -410,15 +410,33 @@
         ran[r.pdf] = true;
         if (!r.ok) failed[r.pdf] = true;
       });
-      // 🔴 **只重设这一批真转过的那些。**
+      // 🔴 **转成功的移出列表，转失败的留下并勾上。**
       //
-      //    原来是 `st.picked[x.path] = !!failed[x.path]` 一律重设。但自从
-      //    有了待办队列，`st.items` 里可能混着**根本没转过**的文件：
-      //    摁停止时并回来的待办、晋升时 start() 失败留下的那批。
-      //    它们在 results 里没有记录，于是被一律设成未勾选 ——
+      //    2026-09-09 改的。原来成功的留在列表里、只是取消勾选 —— 可它们
+      //    跟没转过的长得一模一样（都是没勾的白底行），用户看到的是
+      //    「已经转完的还堵在队列里」。Word 都出来了，留着没用处。
+      //    失败的留下并勾好，才是「再转一批」真正的价值：直接点开始就是重试。
+      //
+      //    🔴 **只碰这一批真转过的。** `st.items` 里可能混着**根本没转过**的
+      //    文件：摁停止时并回来的待办、晋升时 start() 失败留下的那批。
+      //    它们在 results 里没有记录，一律处理的话会被误删 ——
       //    用户看到的是「软件把我刚拖进来的东西吃了」。
+      //
+      //    🔴 **移除的同时必须 delete picked，这边尤其不能漏。** picked 是
+      //    三态，**键不存在才等于选中**，而本项目的 addPaths 靠的正是这一条
+      //    （它不给新文件设 picked）。只删列表不删键的话，那个 false 会留着，
+      //    同一份 PDF 再拖进来就默认不勾 —— 而且只在「转过 → 再拖一次」时
+      //    才现形。（云端版的 addPaths 会显式设 true，那边侥幸盖得住，
+      //    但不该指望它。）
+      st.items = st.items.filter(function (x) {
+        if (ran[x.path] && !failed[x.path]) {
+          delete st.picked[x.path];
+          return false;
+        }
+        return true;
+      });
       st.items.forEach(function (x) {
-        if (ran[x.path]) st.picked[x.path] = !!failed[x.path];
+        if (failed[x.path]) st.picked[x.path] = true;
       });
       st.task = null;
       st.taskId = '';
