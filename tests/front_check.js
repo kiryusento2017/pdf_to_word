@@ -2215,6 +2215,29 @@ console.log('\n界面状态不许串到下一批：');
       throw new Error('上一批有扫描页却没给报告入口');
   });
 
+  ck('上一批的报告页，返回按钮必须排在报告前面', () => {
+    // 🔴 2026-09-08 小蔡真机实测：「点了上一批的报告之后，怎么没有返回
+    //    按钮，我被困在了报告页面。」
+    //
+    //    按钮其实渲染了 —— 但报告那块是 .fill，CSS 写着 min-height:100%，
+    //    它自己就把主区撑满；拼在它后面的东西被顶到第一屏之外，要往下滚
+    //    才看得见。620x440 的窗口里那等于不存在。
+    //
+    //    所以光判断「按钮在不在」是不够的，**得判断它在不在前面**。
+    const st = ready(sb);
+    st.items = oneItem;
+    st.task = Object.assign({}, runTask);
+    st.lastResults = [Object.assign({}, clean, { scan_pages: [3] })];
+    st.showLastReport = true;
+    const h = fn(st);
+    const btnAt = h.indexOf('data-act="toggleLastReport"');
+    const repAt = h.indexOf('没列出来的不代表一定对');
+    if (btnAt < 0) throw new Error('报告页没有返回按钮');
+    if (repAt < 0) throw new Error('报告内容没渲染出来');
+    if (btnAt > repAt)
+      throw new Error('返回按钮排在报告后面，会被顶出屏幕 —— 等于没有');
+  });
+
   ck('上一批的报告页要保住滚动位置', () => {
     // 🔴 它跟当前批的报告页不一样：**能在新一批转换进行中打开**（入口就长在
     //    pendingBox 的 !done 分支里），而转换中每秒 render 一次、整个 DOM

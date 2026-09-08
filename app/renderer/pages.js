@@ -1633,20 +1633,25 @@ function mainRun(st) {
   if (st.showLastReport && st.lastResults && st.lastResults.length
       && worthReport({ results: st.lastResults })) {
     return shell(top,
-      '<div class="fill" style="justify-content:flex-start;gap:6px">'
-      // 🔴 **必须挂 data-keep-scroll。** 这一屏跟当前批的报告页不一样 ——
-      //    它能在**新一批转换进行中**打开（入口就长在 pendingBox 的
-      //    !done 分支里），而转换中每秒 render 一次、整个 DOM 推倒重来。
-      //    不挂的话：往下滑一秒弹回顶部一次，报告根本读不下去。
-      //    跟 2026-09-07 缓存明细那个 bug 一模一样的形状。
+      // 🔴 **退出口必须排在报告前面。** 2026-09-08 小蔡真机实测：
+      //    「点了上一批的报告之后，怎么没有返回按钮，我被困在了报告页面。」
+      //
+      //    按钮其实渲染了 —— 但报告那块是 `.fill`，CSS 写着
+      //    `min-height:100%`，它自己就把主区撑满了；拼在它**后面**的东西
+      //    被顶到第一屏之外，`.main` 的 overflow:auto 要往下滚才看得见。
+      //    620x440 的窗口里，那等于不存在。
+      //
+      //    这是同一个坑第三次：前两次是「按钮压根没渲染」，这次是
+      //    「渲染了但看不见」。**结论是位置本身要在前面，不能靠滚动。**
+      pendingBox(st, done)
+      + '<div class="fill" style="justify-content:flex-start;gap:6px">'
+      // 🔴 **必须挂 data-keep-scroll。** 这一屏能在新一批转换进行中打开，
+      //    而转换中每秒 render 一次、整个 DOM 推倒重来。不挂的话往下滑
+      //    一秒弹回顶部一次，报告根本读不下去。
       + '<div class="log" data-keep-scroll="lastreport"><span class="l">'
       + esc(reportText(st, { results: st.lastResults }))
           .split(chr10()).join('</span><span class="l">')
-      + '</span></div></div>'
-      // 🔴 **报告页必须带着退出口一起渲染。** 返回按钮在 pendingBox 里，
-      //    少这一句就是把用户丢进一个出不来的页面 —— 1513 行那条注释
-      //    记着的正是同一个形状的事故（2026-09-07 实测复现过）。
-      + pendingBox(st, done),
+      + '</span></div></div>',
       bot);
   }
 
