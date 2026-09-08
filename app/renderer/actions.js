@@ -859,9 +859,18 @@
         .then(function (d) {
           st.maintPick = {};
           st.cleanResult = d;
-          return HTTP.get('/api/maint/scan');
-        }).then(function (d) {
-          st.maint = d;
+          // 🔴 占用数字和备份列表来自**两个不同的接口，两个都得刷**。
+          //    以前只刷了 /api/maint/scan —— 2026-09-08 小蔡实测撞上：
+          //    勾「升级备份」清掉三份之后，上面的占用数字变了，下面那张
+          //    表还端着三行已经不存在的备份。备份列表是这两天才加的新
+          //    数据源，接进了 openEnvCheck 却漏了这条刷新链。
+          return Promise.all([
+            HTTP.get('/api/maint/scan'),
+            HTTP.get('/api/upgrade/backups').catch(function () { return null; })
+          ]);
+        }).then(function (rs) {
+          st.maint = rs[0];
+          if (rs[1]) st.backups = rs[1].items || [];
           st.maintBusy = false;
           render();
         }).catch(function (e) {

@@ -14,7 +14,7 @@
 ```
 .venv\Scripts\python.exe -m unittest discover -s tests -q   # 623 条
 .venv\Scripts\python.exe tools\check_upstream.py            # 上游有没有新版
-node tests\front_check.js                                   # 208 条
+node tests\front_check.js                                   # 209 条
 ```
 
 **红一条都不许发。** 不存在「这条测试早就坏了不用管」——
@@ -40,7 +40,7 @@ node tests\front_check.js                                   # 208 条
 
 | | 查什么 | 抓得到的那类错 |
 |---|---|---|
-| `check_docs` | 数字对不对、提到的文件在不在 | 「README 写 208 条，实际 240 条」 |
+| `check_docs` | 数字对不对、提到的文件在不在 | 「README 写 209 条，实际 240 条」 |
 | `check_claims` | 文档说的行为跟代码一不一致 | 「注释写『不用 ping 判优』，实现算的就是延迟」 |
 | `check_package` | 安装包里有没有不该有的东西 | 「包里 80 个 `_tmp`/`appdata` 条目」「`使用说明.txt` 还是上一版」 |
 | `check_release` | **发出去之后** GitHub 上的状态对不对 | 「latest 还指着上一版」「tag 指向的 commit 不是 version.json 里那个」「三个附件少一个」「发布说明没有分隔线」 |

@@ -2373,6 +2373,22 @@ console.log('\n界面状态不许串到下一批：');
       if (!seg.includes(k)) throw new Error('开新一批没归位：' + k);
     }
   });
+
+  ck('清理完，占用数字和备份列表两个都得刷', () => {
+    // 🔴 2026-09-08 小蔡实测撞上：勾「升级备份」清掉三份之后，上面的
+    //    占用数字变了，下面那张表还端着三行已经不存在的备份。
+    //    原因是清理完只重新拉了 /api/maint/scan，而备份列表来自另一个
+    //    接口 —— 新数据源接进了 openEnvCheck，却漏了这条刷新链。
+    const src = require('fs').readFileSync(
+      'D:/claude_code_workspace/pdf_to_word/app/renderer/actions.js', 'utf8');
+    const i = src.indexOf("HTTP.post('/api/maint/clean'");
+    if (i < 0) throw new Error('找不到清理那一段');
+    const seg = src.slice(i, i + 900);
+    if (!seg.includes('/api/maint/scan')) throw new Error('清理完没刷占用数字');
+    if (!seg.includes('/api/upgrade/backups')) {
+      throw new Error('清理完没刷备份列表');
+    }
+  });
 }
 
 

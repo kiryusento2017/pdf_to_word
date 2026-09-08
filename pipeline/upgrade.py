@@ -721,7 +721,8 @@ def prune_dup_backups(keep_versions=2):
 
     seen = []                      # 见过哪些版本组合，顺序即新旧
     doomed = []
-    for r in list_backups():       # 已经按时间倒序（新的在前）
+    # 判断该不该删只看版本号，不需要知道多大 —— 别去量那五万个文件。
+    for r in list_backups(with_size=False):   # 已按时间倒序（新的在前）
         key = json.dumps(r.get('versions') or {}, sort_keys=True)
         if key in seen or len(seen) >= max(int(keep_versions), 1):
             doomed.append(r)
@@ -781,7 +782,7 @@ def drop_backups_of_current():
                 'why': '上次装到一半断了，回滚还要用这些备份，一份都没删。'}
 
     doomed = []
-    for r in list_backups():
+    for r in list_backups(with_size=False):
         vs = r.get('versions') or {}
         if not vs or _meta_dirty(vs.keys()):
             continue
@@ -791,8 +792,23 @@ def drop_backups_of_current():
     return {'removed': removed, 'freed': freed, 'why': ''}
 
 
-def list_backups():
-    """有哪些备份。给环境检测那一屏列出来让用户清。"""
+def list_backups(with_size=True):
+    r"""有哪些备份。给环境检测那一屏列出来让用户清。
+
+    🔴 `with_size=False` 时 `size` 一律是 0，**不去量每份多大**。
+
+       量大小是这里最贵的一步：要 `os.walk` 遍历整份备份、对每个文件
+       `getsize` 一次 —— 一份 torch 备份就是 14000+ 个文件，四份就是
+       五万多次系统调用，而且多半是冷读（刚写完 4 GB，缓存全被冲掉）。
+
+       而自动清理那两条路（`prune_dup_backups` /
+       `drop_backups_of_current`）判断该不该删**只看版本号**，压根不需
+       要知道多大 —— 它们返回的 `freed` 没有任何调用方在看。所以那两
+       条传 `False`，把这五万次遍历整个省掉。
+
+       真需要大小的只有三处：环境检测页那一屏、`maint.scan_logs` 的占
+       用统计、诊断文件 —— 那三处照旧走默认的 `True`。
+    """
     out = []
     if not os.path.isdir(BACKUP):
         return out
@@ -801,12 +817,13 @@ def list_backups():
         if not os.path.isdir(d):
             continue
         size = 0
-        for dp, _dn, fns in os.walk(d):
-            for fn in fns:
-                try:
-                    size += os.path.getsize(os.path.join(dp, fn))
-                except OSError:
-                    continue
+        if with_size:
+            for dp, _dn, fns in os.walk(d):
+                for fn in fns:
+                    try:
+                        size += os.path.getsize(os.path.join(dp, fn))
+                    except OSError:
+                        continue
         meta = {}
         try:
             with io.open(os.path.join(d, 'backup.json'), encoding='utf-8') as f:

@@ -794,7 +794,9 @@ class Test备份按版本去重(unittest.TestCase):
         r = upgrade.prune_dup_backups()
         self.assertEqual(self._left(), ['20260907_142606'])
         self.assertEqual(r['removed'], 2)
-        self.assertGreater(r['freed'], 0, '没报释放了多少')
+        # freed 这里一定是 0：自动清理走 list_backups(with_size=False)，
+        # 判断该不该删只看版本号，不去量那五万个文件。没人看这个数。
+        self.assertEqual(r['freed'], 0)
 
     def test_版本不一样的都留着(self):
         r"""留着不同版本才有「退回上一版」的意义。"""
