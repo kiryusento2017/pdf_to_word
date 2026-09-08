@@ -272,7 +272,14 @@ def main():
     say('  · 决定要升 → 先在本机实测，再写 ok:true 和目标版本')
     say('  · 还没测   → 保持 ok:null，界面显示「我们没测过，你自己定」')
     say('')
-    say('确认过了就用 --offline 跳过这道检查继续打包。')
+    # 🔴 这里以前写的是「用 --offline 跳过这道检查继续打包」，**是错的**，
+    #    把两个工具的参数搞混了：--offline 是本脚本自己的，而「继续打包」
+    #    要加的是 build_release.py 的 --skip-upstream。
+    #    2026-09-09 发 v0.3.2 时照着这句话打包，参数不认、构建白等一轮。
+    say('确认过了要继续打包，加 build_release.py 的 --skip-upstream：')
+    say('    .venv\\Scripts\\python.exe tools\\build_release.py '
+        '--version vX.Y.Z --skip-upstream')
+    say('（本脚本自己的 --offline 只是让它跳过联网检查，跟打包无关。）')
     return 1
 
 
