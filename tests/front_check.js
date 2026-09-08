@@ -992,6 +992,34 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!tag.includes('disabled')) throw new Error('转换中还能点退回');
   });
 
+  ck('退完了要给一个真的「立即重启」按钮', () => {
+    // 🔴 以前退完只弹一句「点『立即重启』或者关掉软件重开才生效」——
+    //    **而那个按钮根本不存在**，文案在指挥用户去点一个没有的东西。
+    //    2026-09-08 小蔡点名要这个按钮。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.backups = [{ name: '20260907_145754', size: 100, versions: {} }];
+    st.rollbackDone = true;
+    const h = fn(st);
+    if (!h.includes('data-act="restartApp"')) throw new Error('没有重启按钮');
+    if (!h.includes('已经退回')) throw new Error('没说退回成功了');
+  });
+
+  ck('退完之后不再摆那张过时的备份表', () => {
+    // 那份备份重启后就会被 drop_backups_of_current 收掉，还摆在那儿
+    // 等于让用户对着一个即将消失的东西再点一次。
+    const st = ready(sb);
+    st.about = 'env';
+    st.diag = { versions: { mineru: '3.4.5' }, root: 'D:/x' };
+    st.backups = [{ name: '20260907_145754', size: 100, versions: {} }];
+    st.rollbackDone = true;
+    const h = fn(st);
+    if (h.includes('data-act="askRollback"')) {
+      throw new Error('退完还摆着退回按钮');
+    }
+  });
+
   ck('生成诊断文件失败时，环境检测页得把原因说出来', () => {
     // 🔴 st.err 以前全项目只在待转屏渲染，这一屏通篇没有 —— 于是三个位置
     //    都写不进去时，按钮只是从「正在生成…」闪回原样，一个字的解释都没有。

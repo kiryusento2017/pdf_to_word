@@ -1141,7 +1141,14 @@ function envCheckView(st) {
   //    功能齐了，缺的是「谁按下那一下」。
   var backs = '';
   var bl = st.backups || [];
-  if (bl.length) {
+  if (st.rollbackDone) {
+    // 退完了。这时候列表里的数字已经过时（那份备份重启后就会消失，
+    // 见 upgrade.drop_backups_of_current），所以整块换成一句话加按钮。
+    backs = '<div style="font-size:11px;text-align:left">已经退回。'
+      + '<span class="f-dim">重启之后界面上的版本才跟着变。</span></div>'
+      + '<div style="text-align:left">'
+      + btn('restartApp', '立即重启', { cls: 'primary' }) + '</div>';
+  } else if (bl.length) {
     backs = '<div class="f-dim" style="font-size:11px;text-align:left">'
       + '升级备份（退回之后要重启才生效）</div>'
       // 🔴 展开的框是独立滚动区，必须挂 data-keep-scroll ——

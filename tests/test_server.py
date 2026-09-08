@@ -800,6 +800,49 @@ class Test升级接口(unittest.TestCase):
             self.assertEqual(r.status_code, 400,
                              '接受了危险的备份名：%r' % bad)
 
+    def test_手动退回之后下好的升级包还能装回去(self):
+        r"""小蔡 2026-09-08：「以前我下载过的升级包 2.14.0 应该依然存在，
+        那我可以选择升级回去」。退回的最后一步会 clear_state()，不在这儿
+        把记录补回去，界面上就没有这条路了。"""
+        called = []
+        old_rb, old_mk = srv.upgrade.rollback, srv.upgrade.mark_downloaded
+        srv.upgrade.rollback = lambda d='': {'ok': True, 'picked': ['torch']}
+        srv.upgrade.mark_downloaded = lambda p, t=None: called.append(list(p))
+        try:
+            r = client.post('/api/upgrade/rollback', json={})
+        finally:
+            srv.upgrade.rollback = old_rb
+            srv.upgrade.mark_downloaded = old_mk
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(called, [['torch']], '退回后没把「可以装」记回去')
+
+    def test_退回没成就不许留可以装的记录(self):
+        called = []
+        old_rb, old_mk = srv.upgrade.rollback, srv.upgrade.mark_downloaded
+        srv.upgrade.rollback = lambda d='': {'ok': False, 'error': '没成'}
+        srv.upgrade.mark_downloaded = lambda p, t=None: called.append(list(p))
+        try:
+            client.post('/api/upgrade/rollback', json={})
+        finally:
+            srv.upgrade.rollback = old_rb
+            srv.upgrade.mark_downloaded = old_mk
+        self.assertEqual(called, [])
+
+    def test_记不上可以装也不能让退回本身报错(self):
+        old_rb, old_mk = srv.upgrade.rollback, srv.upgrade.mark_downloaded
+        srv.upgrade.rollback = lambda d='': {'ok': True, 'picked': ['torch']}
+
+        def boom(p, t=None):
+            raise OSError('写不动')
+        srv.upgrade.mark_downloaded = boom
+        try:
+            r = client.post('/api/upgrade/rollback', json={})
+        finally:
+            srv.upgrade.rollback = old_rb
+            srv.upgrade.mark_downloaded = old_mk
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['ok'], '退回已经成了，不该反过来报错')
+
     def test_同一个地址不许注册两遍(self):
         r"""🔴 `POST /api/upgrade/install` 曾经被写了两份。
 
@@ -853,6 +896,45 @@ class Test升级接口(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()['ok'])
         self.assertIsInstance(r.json()['items'], list)
+
+    def test_开机那一问会顺手收拾同版本的备份(self):
+        r"""退回并重启之后那份备份就该消失 —— 人已经在这个版本上了。"""
+        called = []
+        old = srv.upgrade.drop_backups_of_current
+        srv.upgrade.drop_backups_of_current = lambda: called.append(1)
+        try:
+            client.get('/api/upgrade/pending')
+        finally:
+            srv.upgrade.drop_backups_of_current = old
+        self.assertEqual(len(called), 1, '开机那一问没去收拾备份')
+
+    def test_收拾备份失手不能挡住开机那一问(self):
+        old = srv.upgrade.drop_backups_of_current
+
+        def boom():
+            raise OSError('删不动')
+        srv.upgrade.drop_backups_of_current = boom
+        try:
+            r = client.get('/api/upgrade/pending')
+        finally:
+            srv.upgrade.drop_backups_of_current = old
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('action', r.json())
+
+    def test_生成诊断文件绝不许删备份(self):
+        r"""🔴 差点踩进去的坑：删同版本备份这件事**如果写进
+        `upgrade.pending()` 函数里**，就会连累诊断 —— 生成诊断文件时也
+        要调它读「待装的」，那就成了「点一下生成诊断，顺手删掉 4 GB
+        备份」。**诊断只许读，不许改。**"""
+        called = []
+        old = srv.upgrade.drop_backups_of_current
+        srv.upgrade.drop_backups_of_current = lambda: called.append(1)
+        try:
+            r = client.post('/api/diag/export', json={})
+        finally:
+            srv.upgrade.drop_backups_of_current = old
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(called, [], '生成诊断文件把备份删了')
 
     def test_没有待装的东西时install不乱装(self):
         r = client.post('/api/upgrade/install')

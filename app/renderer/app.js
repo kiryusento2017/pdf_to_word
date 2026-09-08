@@ -58,6 +58,7 @@ var state = {
   backups: [],
   rollbackAsk: '',      // 哪一份正在问「确定退回？」，空 = 没在问
   rollbackBusy: false,  // 正在退回（拷 4 GB 要一会儿）
+  rollbackDone: false,  // 退完了，等重启 —— 这时列表换成「立即重启」
   // 首次使用那一屏：源清单、选中的源、下载进度
   runs: [],             // 转换历史，进「历史」那一屏时拉
   upgPending: null,     // 有没有下好等着装的升级（开机问一次）

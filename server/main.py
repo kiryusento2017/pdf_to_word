@@ -1616,7 +1616,20 @@ def upgrade_pending():
 
     🔴 下载中断电**不算事**（环境没坏，旧的还能用），正常进主界面。
     只有装到一半才必须处理 —— 那时 import torch 可能已经失败。
+
+    顺手收拾一件事：**版本跟当前环境一样的备份，删掉**（小蔡 09-08 定
+    的，见 `upgrade.drop_backups_of_current`）。退回并重启之后那份备份
+    就没用了 —— 人已经在这个版本上，再退一次是退给谁看。
+
+    🔴 **这一步只能挂在接口这一层，不能塞进 `upgrade.pending()`** ——
+       生成诊断文件时也会调那个函数（本文件「待装的」那一行），塞进去
+       就成了「点一下生成诊断，顺手删掉 4 GB 备份」。诊断只许读，
+       不许改。
     """
+    try:
+        upgrade.drop_backups_of_current()
+    except Exception:
+        pass          # 收拾旧东西失手，不能挡住开机这一问
     return upgrade.pending()
 
 
@@ -1658,7 +1671,33 @@ def upgrade_rollback(req: RollbackReq = RollbackReq()):
         d = os.path.abspath(os.path.join(root, req.name))
         if not d.startswith(root + os.sep) or not os.path.isdir(d):
             return JSONResponse({'detail': '没有这份备份'}, status_code=400)
-    return upgrade.rollback(d)
+
+    # 退回之前先记下「下过哪些包」—— rollback 最后会 clear_state()。
+    _st = upgrade.read_state() or {}
+    _picked = _st.get('picked') or []
+    _targets = _st.get('targets') or {}
+
+    r = upgrade.rollback(d)
+
+    # 🔴 **下好的升级包还在硬盘上的话，把「可以装」这个记录留住。**
+    #
+    #    小蔡 2026-09-08 要的：「以前我下载过的升级包 2.14.0 应该依然
+    #    存在，那我可以选择升级回去」。包确实还在（CACHE 在 %TEMP% 下，
+    #    装完不删），但退回的最后一步把状态清了，于是界面上根本没有这
+    #    条路 —— 得重新点一次「检查更新」走一遍完整流程。
+    #
+    #    🔴 **这一步只能放在接口这一层。** rollback() 有三个使用场景：
+    #       用户手动退回、装失败自动回滚、开机发现装到一半自动回滚。
+    #       只有第一种该留这个记录 —— 后两种留了会变成
+    #       「装 → 失败 → 回滚 → 提示可以装 → 装 → 失败」的死循环。
+    #       写进函数里还会直接打破 `test_回滚之后状态清空`，而那条测试
+    #       的存在理由正是「不清的话下次开机又要回滚一遍」。
+    if r.get('ok'):
+        try:
+            upgrade.mark_downloaded(_picked or r.get('picked') or [], _targets)
+        except Exception:
+            pass      # 记不上就记不上，退回本身已经成了，不能反过来报错
+    return r
 
 
 @app.get('/api/upgrade/backups')

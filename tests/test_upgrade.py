@@ -219,9 +219,86 @@ class Test备份与回滚(unittest.TestCase):
         self.assertFalse(r['ok'])
         self.assertIn('找不到', r['error'])
 
+    def test_回滚要删掉版本号对不上的那份元数据(self):
+        r"""🔴 2026-09-08 从小蔡的备份目录里查出来的真实 bug。
+
+        包本体的目录名不带版本号（永远叫 `fakepkg`），照备份里的名字删
+        没问题；但元数据目录名**带版本号** —— 备份里那份叫
+        `fakepkg-2.11.0.dist-info`，现场那份叫 `fakepkg-2.14.0.dist-info`。
+        名字对不上，老实现就把它整个漏掉了，回滚完两份并排躺着。
+
+        后果不是多占几十 KB：`importlib.metadata` 在两份元数据并存时
+        返回哪一个**是不确定的**，而「检查更新」就靠这个数。
+        """
+        site = os.path.join(WORK, 'site')
+        bak = os.path.join(WORK, 'backup', '20260908')
+        # 现场：装着新版 —— 本体 + 新版本号的元数据
+        os.makedirs(os.path.join(site, 'fakepkg'))
+        os.makedirs(os.path.join(site, 'fakepkg-2.14.0.dist-info'))
+        # 现场还有两个名字开头一样的**别的包**，一根汗毛都不许动
+        os.makedirs(os.path.join(site, 'fakepkgvision'))
+        os.makedirs(os.path.join(site, 'fakepkggen'))
+        # 备份：旧版 —— 本体 + 旧版本号的元数据
+        os.makedirs(os.path.join(bak, 'fakepkg'))
+        os.makedirs(os.path.join(bak, 'fakepkg-2.11.0.dist-info'))
+        io.open(os.path.join(bak, 'fakepkg', 'old.py'), 'w').write('旧的')
+        io.open(os.path.join(bak, 'backup.json'), 'w',
+                encoding='utf-8').write(json.dumps({'picked': ['fakepkg']}))
+
+        old_site = upgrade._site_dir
+        upgrade._site_dir = lambda: site
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'installing', 'backup': bak,
+                        'picked': ['fakepkg']}))
+        try:
+            r = upgrade.rollback()
+        finally:
+            upgrade._site_dir = old_site
+
+        self.assertTrue(r['ok'])
+        left = os.listdir(site)
+        self.assertIn('fakepkg-2.11.0.dist-info', left, '备份的元数据没拷回来')
+        self.assertNotIn('fakepkg-2.14.0.dist-info', left,
+                         '新版本的元数据没删掉 —— 版本号会读错')
+        self.assertEqual(
+            len([x for x in left if x.startswith('fakepkg-')]), 1,
+            '一个包只该留一份元数据')
+        self.assertIn('fakepkgvision', left, '误伤了别的包')
+        self.assertIn('fakepkggen', left, '误伤了别的包')
+
+    def test_退哪几个包先信备份自己记的(self):
+        r"""用户主动点「退回」时，状态文件多半是 `phase=done` 甚至根本
+        没有，里面的 picked 指的也是**上一次升级**、未必是这份备份。
+        backup.json 是做这份备份时当场写的，更可信。"""
+        site = os.path.join(WORK, 'site')
+        bak = os.path.join(WORK, 'backup', '20260908')
+        os.makedirs(os.path.join(site, 'fakepkg'))
+        os.makedirs(os.path.join(site, 'fakepkg-9.9.9.dist-info'))
+        os.makedirs(os.path.join(bak, 'fakepkg'))
+        io.open(os.path.join(bak, 'backup.json'), 'w',
+                encoding='utf-8').write(json.dumps({'picked': ['fakepkg']}))
+
+        old_site = upgrade._site_dir
+        upgrade._site_dir = lambda: site
+        try:
+            # 状态文件里**没有** picked，只能靠 backup.json
+            r = upgrade.rollback(bak)
+        finally:
+            upgrade._site_dir = old_site
+
+        self.assertTrue(r['ok'])
+        self.assertNotIn('fakepkg-9.9.9.dist-info', os.listdir(site),
+                         'backup.json 里的 picked 没被读到')
+
     def test_备份列表能列出来给用户清(self):
-        r"""硬链接不占额外空间，但用户要看得见能删 —— 小蔡定的：
-        「备份的东西要加入到环境监测，方便用户清理，我们不自动清理」。"""
+        r"""用户要看得见有哪几份、各占多大 —— 09-05 小蔡定的：
+        「备份的东西要加入到环境监测，方便用户清理」。
+
+        ⚠️ 那句话后面还有半句「我们不自动清理」，**09-08 被推翻了**：
+        没人清就一直堆，他试三次升级堆出 12.4 GB。现在 `backup()` 会
+        自己按版本去重、开机会收掉「跟当前版本一样」的那份，见
+        `Test备份按版本去重` 和 `Test退回重启后备份自己消失`。
+        这个列表本身照旧 —— 看得见、能手动清，只是不再只靠手动。"""
         d = os.path.join(WORK, 'backup', '20260905_120000')
         os.makedirs(d)
         io.open(os.path.join(d, 'a.bin'), 'wb').write(b'x' * 1000)
@@ -520,8 +597,11 @@ class Test下好的包还在不在(unittest.TestCase):
 
 
 class Test清理升级备份(unittest.TestCase):
-    r"""🔴 `install()` 装之前会把 site-packages 里那几个包整份备份下来，
-    **装成功也不删** —— 回滚要靠它。一次 4 GB 量级（torch 整份拷贝）。
+    r"""用户在环境检测页**手动清**走的那条路。自动那条见
+    `Test备份按版本去重` 和 `Test退回重启后备份自己消失`。
+
+    🔴 `install()` 装之前会把 site-packages 里那几个包整份备份下来，
+    **装成功也不删那一份** —— 回滚要靠它。一次 4 GB 量级（torch 整份拷贝）。
 
     2026-09-07 小蔡机器上两份就 **8.26 GB、28092 个文件**，而
     `list_backups()` 早就写好、接口也有，**界面上却没有这一项，也没有任何
@@ -675,3 +755,295 @@ class Test升级也要有进度条(unittest.TestCase):
         b = acc.feed(200, 3000)          # 换包了
         self.assertGreaterEqual(b, a, '换包时总进度倒退了：%s → %s' % (a, b))
         self.assertGreaterEqual(acc.total(), 3000, '分母没把新包算进来')
+
+
+class Test备份按版本去重(unittest.TestCase):
+    r"""🔴 2026-09-08 小蔡定的规矩，**推翻了 09-05「我们不自动清理」**。
+
+    原来的规矩是「列在环境检测里让用户自己清」。代价是没人清就一直堆：
+    他试了三次升级，硬盘上躺着三份**内容几乎一样**的 2.11.0，12.4 GB
+    （逐文件按硬链接去重量过，是真占这么多，不是把同一份算了三遍）。
+
+    新规矩两条：同版本只留最新一份；不同版本最多留两个。
+    """
+
+    def setUp(self):
+        self._bak, self._state = upgrade.BACKUP, upgrade.STATE
+        self.w = tempfile.mkdtemp(prefix='p2w_dup_')
+        upgrade.BACKUP = os.path.join(self.w, 'backup')
+        upgrade.STATE = os.path.join(self.w, 'st.json')
+
+    def tearDown(self):
+        upgrade.BACKUP, upgrade.STATE = self._bak, self._state
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _mk(self, name, versions):
+        d = os.path.join(upgrade.BACKUP, name)
+        os.makedirs(d)
+        io.open(os.path.join(d, 'x.bin'), 'wb').write(b'x' * 1000)
+        io.open(os.path.join(d, 'backup.json'), 'w', encoding='utf-8').write(
+            json.dumps({'picked': sorted(versions), 'versions': versions}))
+
+    def _left(self):
+        return sorted(os.listdir(upgrade.BACKUP))
+
+    def test_同一个版本只留最新那份(self):
+        self._mk('20260901_100000', {'torch': '2.11.0+cu128'})
+        self._mk('20260905_120000', {'torch': '2.11.0+cu128'})
+        self._mk('20260907_142606', {'torch': '2.11.0+cu128'})
+        r = upgrade.prune_dup_backups()
+        self.assertEqual(self._left(), ['20260907_142606'])
+        self.assertEqual(r['removed'], 2)
+        self.assertGreater(r['freed'], 0, '没报释放了多少')
+
+    def test_版本不一样的都留着(self):
+        r"""留着不同版本才有「退回上一版」的意义。"""
+        self._mk('20260901_100000', {'torch': '2.11.0'})
+        self._mk('20260905_120000', {'torch': '2.14.0'})
+        upgrade.prune_dup_backups()
+        self.assertEqual(self._left(), ['20260901_100000', '20260905_120000'])
+
+    def test_不同版本也有上限不能一路堆下去(self):
+        r"""一路 2.11→2.14→2.15→2.16 升上去、从不回退的人，按「每个版本
+        留一份」一份都不会删 —— 照样堆到 12 GB。所以还得压个总数。"""
+        self._mk('20260901_100000', {'torch': '2.11.0'})
+        self._mk('20260903_100000', {'torch': '2.14.0'})
+        self._mk('20260905_100000', {'torch': '2.15.0'})
+        upgrade.prune_dup_backups()
+        self.assertEqual(self._left(), ['20260903_100000', '20260905_100000'],
+                         '该留最新的两个版本')
+
+    def test_同版本去重和总数上限一起生效(self):
+        self._mk('20260901_100000', {'torch': '2.11.0'})
+        self._mk('20260902_100000', {'torch': '2.14.0'})
+        self._mk('20260903_100000', {'torch': '2.14.0'})
+        self._mk('20260904_100000', {'torch': '2.15.0'})
+        upgrade.prune_dup_backups()
+        self.assertEqual(self._left(), ['20260903_100000', '20260904_100000'])
+
+    def test_装到一半断了就一份都不许删(self):
+        r"""那意味着下次开机要靠备份回滚 —— 这时候删等于把回头路砍了。"""
+        self._mk('20260901_100000', {'torch': '2.11.0'})
+        self._mk('20260905_120000', {'torch': '2.11.0'})
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'installing', 'backup': 'x'}))
+        r = upgrade.prune_dup_backups()
+        self.assertEqual(r['removed'], 0)
+        self.assertEqual(len(self._left()), 2)
+        self.assertIn('装到一半', r['why'])
+
+    def test_备份完自己就调了不用等用户去点(self):
+        r"""🔴 **这条是整块改动的要害。**
+
+        上一版栽的就是这里：清理函数写好了、接口也有，**升级流程从头到
+        尾一次都不调**，只等用户自己去环境检测页勾一下。功能齐、接口通、
+        缺的是「谁按下那一下」—— 这个项目栽在这个形状上已经第三次了。
+        """
+        site = os.path.join(self.w, 'site')
+        os.makedirs(os.path.join(site, 'torch'))
+        io.open(os.path.join(site, 'torch', 'a.py'), 'w').write('x')
+        # 先摆一份「同版本的老备份」在那儿
+        self._mk('20260101_000000', {'torch': upgrade.local_version('torch')})
+
+        old = upgrade._site_dir
+        upgrade._site_dir = lambda: site
+        try:
+            b = upgrade.backup(['torch'])
+        finally:
+            upgrade._site_dir = old
+
+        self.assertTrue(b['ok'], '备份本身就没成：%s' % b.get('error'))
+        self.assertNotIn('20260101_000000', self._left(),
+                         '老的同版本备份没被收拾掉 —— backup() 没调清理')
+
+    def test_清理失手不能连累这次备份(self):
+        r"""不然会变成「因为清理旧的失败，导致升级不敢往下装」，本末倒置
+        （`install()` 看 backup 的 ok 决定要不要继续）。"""
+        site = os.path.join(self.w, 'site')
+        os.makedirs(os.path.join(site, 'torch'))
+        io.open(os.path.join(site, 'torch', 'a.py'), 'w').write('x')
+        old_site, old_prune = upgrade._site_dir, upgrade.prune_dup_backups
+        upgrade._site_dir = lambda: site
+
+        def _boom(*a, **kw):
+            raise OSError('清理炸了')
+        upgrade.prune_dup_backups = _boom
+        try:
+            b = upgrade.backup(['torch'])
+        finally:
+            upgrade._site_dir = old_site
+            upgrade.prune_dup_backups = old_prune
+        self.assertTrue(b['ok'], '清理失手把整次备份带崩了')
+
+
+class Test退回重启后备份自己消失(unittest.TestCase):
+    r"""🔴 小蔡 2026-09-08 定的流程：
+
+        2.11 →升级→ 2.14，下面列一份「2.11 的备份」
+        点退回 → 重启 → 环境回到 2.11，**下面那份备份也该没了**
+
+    理由是他自己说的：「我退回并重启之后我用的是 2.11 的版本，那我这个
+    时候我要再升级的话，那他直接再重新创建一个不就好了」—— 对，
+    `install()` 装之前一定会重新备一份当前版本。
+
+    **时机是重启之后，不是点退回那一刻**：退回是拷 4 GB，中途可能断，
+    那时环境半新半旧，备份还得留着救命。
+    """
+
+    def setUp(self):
+        self._bak, self._state = upgrade.BACKUP, upgrade.STATE
+        self._site, self._ver = upgrade._site_dir, upgrade.local_version
+        self.w = tempfile.mkdtemp(prefix='p2w_cur_')
+        upgrade.BACKUP = os.path.join(self.w, 'backup')
+        upgrade.STATE = os.path.join(self.w, 'st.json')
+        self.site = os.path.join(self.w, 'site')
+        os.makedirs(self.site)
+        upgrade._site_dir = lambda: self.site
+        self._meta('torch', '2.11.0')          # 环境里干净的一份元数据
+
+    def tearDown(self):
+        upgrade.BACKUP, upgrade.STATE = self._bak, self._state
+        upgrade._site_dir, upgrade.local_version = self._site, self._ver
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _meta(self, pkg, ver):
+        os.makedirs(os.path.join(self.site, '%s-%s.dist-info' % (pkg, ver)))
+
+    def _env_is(self, **vs):
+        upgrade.local_version = lambda p: vs.get(p, '')
+
+    def _mk(self, name, versions):
+        d = os.path.join(upgrade.BACKUP, name)
+        os.makedirs(d)
+        io.open(os.path.join(d, 'x.bin'), 'wb').write(b'x' * 1000)
+        io.open(os.path.join(d, 'backup.json'), 'w', encoding='utf-8').write(
+            json.dumps({'picked': sorted(versions), 'versions': versions}))
+
+    def _left(self):
+        return sorted(os.listdir(upgrade.BACKUP))
+
+    def test_版本跟现在一样的备份删掉(self):
+        self._env_is(torch='2.11.0')
+        self._mk('20260907_142606', {'torch': '2.11.0'})
+        r = upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), [])
+        self.assertEqual(r['removed'], 1)
+
+    def test_版本不一样的一根汗毛都不许动(self):
+        r"""正常升级完重启，环境是新版、备份是旧版 —— 那份备份正是
+        用来退回去的，删了就没退路了。"""
+        self._env_is(torch='2.14.0')
+        self._mk('20260907_142606', {'torch': '2.11.0'})
+        upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), ['20260907_142606'])
+
+    def test_有一项对不上就不算一样(self):
+        r"""备份记了两个包，就得两个都对上。"""
+        self._meta('torchvision', '0.26.0')
+        self._env_is(torch='2.11.0', torchvision='0.29.0')
+        self._mk('20260907_142606',
+                 {'torch': '2.11.0', 'torchvision': '0.26.0'})
+        upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), ['20260907_142606'])
+
+    def test_没记版本的备份不敢碰(self):
+        self._env_is(torch='2.11.0')
+        self._mk('20260907_142606', {})
+        upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), ['20260907_142606'])
+
+    def test_环境里有孤儿元数据时一份都不删(self):
+        r"""🔴 这道保护是整条链最要紧的一环。
+
+        同一个包躺着两份元数据时，`importlib.metadata` 返回哪一份**是不
+        确定的** —— 2026-09-08 实测过，装的明明是 1.17 问出来是 1.16。
+        这时候拿读出来的版本号去判断「该不该删备份」，删的可能正是唯一
+        的退路。所以：环境脏就一份都不删，宁可多占 4 GB。
+        """
+        self._meta('torch', '2.14.0')          # 回滚留下的孤儿，两份并存
+        self._env_is(torch='2.11.0')           # 读出来是旧的（碰运气碰的）
+        self._mk('20260907_142606', {'torch': '2.11.0'})
+        r = upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), ['20260907_142606'],
+                         '环境脏的时候不该信版本号')
+        self.assertEqual(r['removed'], 0)
+
+    def test_装到一半断了就一份都不许删(self):
+        self._env_is(torch='2.11.0')
+        self._mk('20260907_142606', {'torch': '2.11.0'})
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'installing', 'backup': 'x'}))
+        upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), ['20260907_142606'])
+
+    def test_读不到site目录时当脏的不删(self):
+        self._env_is(torch='2.11.0')
+        self._mk('20260907_142606', {'torch': '2.11.0'})
+        upgrade._site_dir = lambda: ''
+        upgrade.drop_backups_of_current()
+        self.assertEqual(self._left(), ['20260907_142606'])
+
+
+class Test退回之后还能装回去(unittest.TestCase):
+    r"""小蔡 2026-09-08：「以前我下载过的升级包 2.14.0 应该依然存在，
+    那我可以选择升级回去。」
+
+    包确实还在（CACHE 在 %TEMP% 下，装完不删），但 `rollback()` 最后
+    一步 `clear_state()` 把记录清了 —— 界面上就没有这条路了。
+    """
+
+    def setUp(self):
+        self._state, self._cache = upgrade.STATE, upgrade.CACHE
+        self.w = tempfile.mkdtemp(prefix='p2w_mk_')
+        upgrade.STATE = os.path.join(self.w, 'st.json')
+        upgrade.CACHE = os.path.join(self.w, 'cache')
+        os.makedirs(upgrade.CACHE)
+
+    def tearDown(self):
+        upgrade.STATE, upgrade.CACHE = self._state, self._cache
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def _wheel(self, *names):
+        for n in names:
+            io.open(os.path.join(upgrade.CACHE,
+                                 '%s-1.0-py3-none-any.whl' % n), 'wb').write(b'x')
+
+    def test_包还在就把可以装这个记录留住(self):
+        self._wheel('torch', 'torchvision')
+        self.assertTrue(upgrade.mark_downloaded(['torch', 'torchvision']))
+        r = upgrade.pending()
+        self.assertEqual(r['action'], 'install')
+        self.assertEqual(sorted(r['picked']), ['torch', 'torchvision'])
+
+    def test_包被清掉了就不写这个记录(self):
+        r"""硬盘上没 wheel 还说「能装」的话，pip 带着 --no-index 找不到
+        文件会装失败，还要再回滚一次 —— 用户白等一场且看不懂。"""
+        self.assertFalse(upgrade.mark_downloaded(['torch']))
+        self.assertIsNone(upgrade.read_state())
+
+    def test_白名单外的包不认(self):
+        self._wheel('requests')
+        self.assertFalse(upgrade.mark_downloaded(['requests']))
+        self.assertIsNone(upgrade.read_state())
+
+    def test_回滚函数自己绝不写这个记录(self):
+        r"""🔴 `install()` 装失败时也会调 `rollback()`。那条路上要是留了
+        「可以装」的记录，就成了「装 → 失败 → 回滚 → 开机提示可以装 →
+        装 → 失败」的死循环。所以这件事只能由接口层在**用户手动退回**
+        那条路上做。"""
+        site = os.path.join(self.w, 'site')
+        bak = os.path.join(self.w, 'bak')
+        os.makedirs(site)
+        os.makedirs(bak)
+        io.open(os.path.join(bak, 'a.py'), 'w').write('x')
+        self._wheel('torch')
+        old = upgrade._site_dir
+        upgrade._site_dir = lambda: site
+        io.open(upgrade.STATE, 'w', encoding='utf-8').write(
+            json.dumps({'phase': 'installing', 'backup': bak,
+                        'picked': ['torch']}))
+        try:
+            upgrade.rollback()
+        finally:
+            upgrade._site_dir = old
+        self.assertIsNone(upgrade.read_state(), 'rollback 自己留了状态')

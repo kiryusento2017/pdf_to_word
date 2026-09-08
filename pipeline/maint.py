@@ -449,10 +449,16 @@ def scan():
          'size': logs['upgrade_cache'],
          'note': '清了要重新下一次' if logs['upgrade_cache'] else '没有',
          'cleanable': True},
-        # 🔴 一次升级备份就是 4 GB 量级（torch 整份拷贝），装成功也不删 ——
-        #    回滚要靠它。2026-09-07 小蔡机器上两份 8.26 GB，而 list_backups()
-        #    早就写好、接口也有，**界面上却没有这一项**，用户看不见更清不掉。
-        {'key': 'upgrade_backup', 'label': '升级备份（装成功后就没用了）',
+        # 🔴 一次升级备份就是 4 GB 量级（torch 整份拷贝），装成功也不删
+        #    那一份 —— 退回旧版本要靠它。2026-09-07 小蔡机器上两份
+        #    8.26 GB，而 list_backups() 早就写好、接口也有，**界面上却没
+        #    有这一项**，用户看不见更清不掉。
+        #
+        #    09-08 补上了自动那一半（备份完按版本去重、开机收掉跟当前版
+        #    本一样的那份，见 upgrade.prune_dup_backups /
+        #    drop_backups_of_current）。手动入口仍然留着 —— 自动只保证
+        #    不无限堆，想一次清干净还是得用户自己点。
+        {'key': 'upgrade_backup', 'label': '升级备份（用来退回旧版本）',
          'size': logs['upgrade_backup'],
          'note': '会留最新一份，方便万一要退回去'
                  if logs['upgrade_backup'] else '没有',

@@ -391,6 +391,21 @@ def download(picked, targets=None, on_log=None, on_progress=None):
     return {'ok': True, 'error': '', 'cmd': cmd}
 
 
+def _belongs(name, pkg):
+    r"""site-packages 里这个条目是不是属于这个包。
+
+    一个包在 site-packages 里摊成两样东西：本体目录（永远叫 `torch`，
+    **不带版本号**）和元数据目录（`torch-2.14.0+cu126.dist-info`，
+    **带版本号**）。所以判据是「名字相等，或者以 `包名-` 开头」。
+
+    `torchvision` 既不等于 `torch`、也不以 `torch-` 开头，`torchgen`
+    同理 —— 不会被误伤。
+    """
+    low = name.lower()
+    base = pkg.lower().replace('-', '_')
+    return low == base or low.startswith(base + '-')
+
+
 def _backup_one(pkg, dest):
     r"""备份一个包的目录和它的 dist-info。返回备份了几个文件。
 
@@ -401,9 +416,7 @@ def _backup_one(pkg, dest):
         return 0
     n = 0
     for name in os.listdir(site):
-        low = name.lower()
-        base = pkg.lower().replace('-', '_')
-        if low != base and not low.startswith(base + '-'):
+        if not _belongs(name, pkg):
             continue
         src = os.path.join(site, name)
         dst = os.path.join(dest, name)
@@ -453,6 +466,13 @@ def backup(picked):
                                                    indent=2))
     except Exception:
         pass
+    # 备完顺手收拾旧的。**这一步失手不能影响「这次备份成功了」这个结论** ——
+    # 不然会变成「因为清理旧的失败，导致升级不敢往下装」，本末倒置。
+    if total > 0:
+        try:
+            prune_dup_backups()
+        except Exception:
+            pass
     return {'ok': total > 0, 'dir': dest, 'files': total,
             'error': '' if total else '没备份到任何文件'}
 
@@ -532,11 +552,46 @@ def rollback(backup_dir=''):
     if not site:
         return {'ok': False, 'error': '找不到 site-packages'}
 
-    picked = st.get('picked') or []
+    # 这次退的是哪几个包 —— **先信备份自己记的**。用户主动点「退回」时，
+    # 状态文件多半是 `phase=done` 甚至根本没有，里面的 picked 指的也是
+    # 上一次升级、未必是这份备份；而 backup.json 是做这份备份时当场写的。
+    picked = []
+    try:
+        with io.open(os.path.join(d, 'backup.json'), encoding='utf-8') as f:
+            picked = json.load(f).get('picked') or []
+    except Exception:
+        pass
+    if not picked:
+        picked = st.get('picked') or []
+
     # ① 先把现场删干净
-    for name in os.listdir(d):
-        if name == 'backup.json':
-            continue
+    #
+    # 🔴 **不能只照着备份里有哪些名字删**（2026-09-08 查出来的）。
+    #
+    #    一个包在 site-packages 里摊成两样：本体目录名**不带版本号**
+    #    （永远叫 `torch`），元数据目录名**带版本号**。备份里那份叫
+    #    `torch-2.11.0+cu128.dist-info`，而现场那份叫
+    #    `torch-2.14.0+cu126.dist-info` —— 名字对不上，于是**新版本的
+    #    元数据一个字都没被碰过**，回滚完两份并排躺着。
+    #
+    #    后果不是多占几十 KB：`local_version()` 走 importlib.metadata，
+    #    两份元数据并存时它返回哪一个**是不确定的**。2026-09-08 实测：
+    #    装的明明是 1.17，问出来是 1.16，连 pip 自己收尾那行都打错了。
+    #    而「检查更新」就靠这个数去跟服务器比 —— 读错就可能明明能升却
+    #    说「已是最新」。
+    #
+    #    小蔡的备份目录里能看到这个过程的脚印：09-07 14:26 那份干净，
+    #    14:57 那份多了一张 torch-2.14 的孤儿，09-08 那份又多了一张
+    #    torchvision-0.29 的 —— **每回滚一次多一张**。
+    #
+    #    所以在原来那套之外**再扫一遍**：凡是属于这几个包的，不管叫什么
+    #    名字全删掉。**只加不减** —— 原来能删掉的照样删，这一遍只多清
+    #    掉名字对不上的那些。
+    doomed = set(n for n in os.listdir(d) if n != 'backup.json')
+    for name in os.listdir(site):
+        if any(_belongs(name, p) for p in picked):
+            doomed.add(name)
+    for name in doomed:
         live = os.path.join(site, name)
         try:
             if os.path.isdir(live):
@@ -566,14 +621,46 @@ def rollback(backup_dir=''):
             'picked': picked}
 
 
+def mark_downloaded(picked, targets=None):
+    r"""把「下好了、可以装」这个记录写回去。写成了返回 True。
+
+    用在**用户主动退回之后**：`rollback()` 最后一步 `clear_state()`，
+    于是哪怕新版的 wheel 完好躺在 CACHE 里，界面上也不给入口 —— 用户
+    得重新点一次「检查更新」，走一遍完整流程才回得去（pip 认已经下好
+    的文件、其实很快，但界面上根本没有这条路）。
+
+    小蔡 2026-09-08：「以前我下载过的升级包 2.14.0 应该依然存在，
+    那我可以选择升级回去。」
+
+    🔴 **只给「用户主动退回」这一条路用。** `install()` 装失败时也会调
+       `rollback()`，那条路上绝不能写这个记录 —— 会变成
+       「装 → 失败 → 回滚 → 开机提示可以装 → 装 → 失败」的死循环。
+       所以调用点在 `/api/upgrade/rollback` 那个接口里，不在这个模块内。
+
+    包不齐就不写：`install()` 带 `--no-index` 找不到 wheel 会装失败，
+    还要再回滚一次，用户白等一场且看不懂。
+    """
+    picked = [p for p in (picked or ()) if p in ALLOWED]
+    if not picked or missing_wheels(picked):
+        return False
+    _write_state({'phase': 'downloaded', 'picked': picked,
+                  'targets': targets or {},
+                  'time': time.strftime('%Y-%m-%d %H:%M:%S')})
+    return True
+
+
 def prune_backups(keep=1):
     r"""删掉旧的升级备份，**默认留最新一份**。返回 {removed, freed, why}。
 
+    这是**用户在环境检测页手动清**走的那条路（`maint.clean`）。自动那
+    条在 `prune_dup_backups`（备份完按版本去重）和
+    `drop_backups_of_current`（开机收掉跟当前版本一样的那份）。
+
     🔴 `install()` 装之前会把 site-packages 里那几个包整份备份下来，
-       **装成功也不删** —— 回滚要靠它。代价是一次 4 GB 量级（torch 整份
-       拷贝）：2026-09-07 小蔡机器上两份就 8.26 GB、28092 个文件，而
-       `list_backups()` 早就写好、接口也有，**界面上却没有这一项、也没有
-       任何地方能删**，8 GB 就那么躺着。
+       **装成功也不删那一份** —— 回滚要靠它。代价是一次 4 GB 量级
+       （torch 整份拷贝）：2026-09-07 小蔡机器上两份就 8.26 GB、
+       28092 个文件，而 `list_backups()` 早就写好、接口也有，
+       **界面上却没有这一项、也没有任何地方能删**，8 GB 就那么躺着。
 
     **为什么默认留一份而不是全清**：多留 4 GB，换一次「装完发现不对还能
     退回去」的机会。想全清传 `keep=0`。
@@ -588,9 +675,14 @@ def prune_backups(keep=1):
                        '一份都没删。等它装完或者回滚完再来。'}
 
     rows = list_backups()          # 已经按时间倒序（新的在前）
-    doomed = rows[max(int(keep), 0):]
+    removed, freed = _rm_backups(rows[max(int(keep), 0):])
+    return {'removed': removed, 'freed': freed, 'why': ''}
+
+
+def _rm_backups(rows):
+    """删掉这几份备份。返回 (删了几份, 释放多少字节)。"""
     removed = freed = 0
-    for r in doomed:
+    for r in rows:
         d = r.get('dir') or os.path.join(BACKUP, r.get('name', ''))
         if not os.path.isdir(d):
             continue
@@ -600,6 +692,102 @@ def prune_backups(keep=1):
             continue
         removed += 1
         freed += r.get('size', 0)
+    return removed, freed
+
+
+def prune_dup_backups(keep_versions=2):
+    r"""**备份完顺手收拾旧的**（`backup()` 末尾调）。两条规则：
+
+      · 同一个版本只留一份 —— 留最新的那份
+      · 不同版本最多留 `keep_versions` 个 —— 留最新的几个
+
+    🔴 2026-09-08 小蔡定的，**推翻了 09-05 「我们不自动清理」那条**。
+       原来的规矩是「列在环境检测里让用户自己清」，代价是没人清就一直
+       堆：他试了三次升级，硬盘上躺着三份**内容几乎一样**的 2.11.0，
+       12.4 GB（逐文件按硬链接去重量过，是真占这么多）。
+
+    **为什么按版本去重而不是只留最新一份**：留着不同版本才有「退回上
+    一版」的意义；同一个版本留三份则纯粹是同一堆文件存三遍。而
+    `keep_versions` 是防另一头 —— 一路 2.11→2.14→2.15→2.16 升上去的
+    人从不回退，按「每版本一份」一份都不会删，照样堆到 12 GB。
+
+    🔴 `phase=installing` 时一份都不删 —— 跟 `prune_backups` 同一条
+       保护：那意味着上次装到一半断了，回滚要靠备份。
+    """
+    st = read_state() or {}
+    if st.get('phase') == 'installing':
+        return {'removed': 0, 'freed': 0,
+                'why': '上次装到一半断了，回滚还要用这些备份，一份都没删。'}
+
+    seen = []                      # 见过哪些版本组合，顺序即新旧
+    doomed = []
+    for r in list_backups():       # 已经按时间倒序（新的在前）
+        key = json.dumps(r.get('versions') or {}, sort_keys=True)
+        if key in seen or len(seen) >= max(int(keep_versions), 1):
+            doomed.append(r)
+        else:
+            seen.append(key)
+    removed, freed = _rm_backups(doomed)
+    return {'removed': removed, 'freed': freed, 'why': ''}
+
+
+def _meta_dirty(pkgs):
+    r"""这几个包里，有没有谁在 site-packages 里躺着**不止一份**元数据。
+
+    有的话说明环境是脏的（历史上回滚留下的孤儿），这时候
+    `local_version()` 读出来的版本号本身就不可信 —— 谁也不知道
+    importlib.metadata 会挑哪一份。读不到 site-packages 也当脏的：
+    宁可少删，不可误删。
+    """
+    site = _site_dir()
+    if not site:
+        return True
+    try:
+        names = os.listdir(site)
+    except OSError:
+        return True
+    for pkg in pkgs:
+        n = len([x for x in names
+                 if _belongs(x, pkg) and x.lower().endswith('.dist-info')])
+        if n > 1:
+            return True
+    return False
+
+
+def drop_backups_of_current():
+    r"""删掉「版本跟当前环境**完全一样**」的备份。返回 {removed, freed, why}。
+
+    小蔡 2026-09-08 定的：退回并重启之后，那份备份就该从列表里消失 ——
+    我已经在这个版本上了，再「退回」到它没有意义；真要再升级，
+    `install()` 装之前会重新备一份当前版本，不缺。
+
+    🔴 **时机是重启之后，不是点退回那一刻。** 退回是拷 4 GB 文件，中途
+       可能断；那时环境半新半旧，备份还得留着救命。重启起来一比版本，
+       对上了才说明真退成功了。所以这个函数挂在开机那一问上。
+
+    🔴 **只能挂在 `/api/upgrade/pending` 那个接口里，不能写进
+       `pending()` 函数**：生成诊断文件时也会调那个函数，那就成了
+       「点一下生成诊断，顺手删了 4 GB」。生成诊断不该有任何副作用。
+
+    两道误删保护：
+
+      · 备份记的版本要**每一项都对上**才删；没记版本的一份都不碰
+      · 环境脏（同一个包躺着不止一份元数据）时一份都不删 —— 那时候
+        版本号本身就读不准，见 `_meta_dirty`
+    """
+    st = read_state() or {}
+    if st.get('phase') == 'installing':
+        return {'removed': 0, 'freed': 0,
+                'why': '上次装到一半断了，回滚还要用这些备份，一份都没删。'}
+
+    doomed = []
+    for r in list_backups():
+        vs = r.get('versions') or {}
+        if not vs or _meta_dirty(vs.keys()):
+            continue
+        if all(local_version(p) == v for p, v in vs.items()):
+            doomed.append(r)
+    removed, freed = _rm_backups(doomed)
     return {'removed': removed, 'freed': freed, 'why': ''}
 
 
