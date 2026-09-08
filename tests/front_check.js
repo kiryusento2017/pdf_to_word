@@ -488,6 +488,44 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
     }
   });
 
+  // 🔴 **这条护栏守的是整个增量刷新方案里唯一能产生「界面该变没变」的路径。**
+  //
+  //    convSig 把这几个字段排除在签名之外，前提是「它们只喂那几个 patch
+  //    改得到的地方」。这个前提是 2026-09-08 逐处查证过的，但**它会随着
+  //    pages.js 的改动失效**：哪天有人拿 t.stage 去渲染一个新东西，而它
+  //    还被排除在签名外，那个新东西就永远不刷新 —— 而且测试全绿，因为
+  //    没人知道该去测它。
+  //
+  //    所以这里盯着「用途数量」。数字一变就红，红了不代表你错，是提醒你
+  //    回去看 app.js 的 convSig：新增的那处用途，patch 改得到吗？
+  //      改得到 -> 把数字更新到下面表里，完事
+  //      改不到 -> 必须把那个字段从 convSig 的 drop 列表里拿掉
+  ck('被排除出签名的字段，用途没变多（变多了要回去改 convSig）', () => {
+    const src = fs.readFileSync(path.join(R, 'pages.js'), 'utf8');
+    const live = src.split('\n')
+      .filter((l) => !l.trim().startsWith('//')).join('\n');
+    // 2026-09-08 查证：stage 3 处全在 convProgress / stageText；
+    // stage_total 6 处全在 convProgress / stageText / cv-sbar 宽度；
+    // stages 1 处只在展开步骤详情时；lines 1 处、progress_line 2 处只在
+    // 日志展开时。全都是 patch 改得到、或者收着时根本不上屏的。
+    const want = {
+      't.stage': [/t\.stage\b/g, 3],
+      't.stage_total': [/t\.stage_total\b/g, 6],
+      't.stages': [/t\.stages\b/g, 1],
+      't.lines': [/t\.lines\b/g, 1],
+      't.progress_line': [/t\.progress_line\b/g, 2],
+    };
+    for (const name of Object.keys(want)) {
+      const [re, n] = want[name];
+      const got = (live.match(re) || []).length;
+      if (got !== n) {
+        throw new Error(name + ' 的用途从 ' + n + ' 处变成了 ' + got
+          + ' 处 —— 回去看 app.js 的 convSig：新增那处 patch 改得到吗？'
+          + '改不到的话必须把它从 drop 列表里拿掉，否则界面该变没变');
+      }
+    }
+  });
+
   // 护栏：转换轮询必须走 renderConv。有人哪天顺手改回 render()，卡顿就
   // 原样回来了，而且**不会有任何测试红** —— 上面那几条测的是 renderConv
   // 自己的行为，管不着调用方用的是哪个。
