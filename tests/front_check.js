@@ -18,6 +18,16 @@ const vm = require('vm');
 const R = path.join(__dirname, '..', 'app', 'renderer');
 let bad = 0;
 
+// 假 DOM 里 textContent 存的是**原文**，而全量渲染吐出来的 HTML 是转义过的。
+// 要把两条路径的产物摆在一起比，就得把后者还原回原文。
+// 顺序跟 app.js 的 esc() 反着来：&amp; 必须最后还原，否则 &amp;lt; 会被
+// 多还原一层，比出来是假的不一致。
+function unesc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+}
+
 function ck(name, fn) {
   try {
     fn();
@@ -36,6 +46,11 @@ function mkSandbox() {
   const appEl = (function () {
     let logEl = null;
     let keepEls = {};
+    // 带 id 的节点。转换中的增量刷新（renderConv）靠 querySelector('#cv-…')
+    // 拿到这几个节点直接改文字 / 改宽度 —— 不模拟出它们，那条路径在这里
+    // 根本跑不起来，只会静默降级回全量重绘，于是测试绿的是降级路径，
+    // 真正每秒在跑的那条一行没测到（坑 4 的老形状）。
+    let idEls = {};
     return {
       set innerHTML(v) {
         this._html = v;
@@ -56,13 +71,37 @@ function mkSandbox() {
             getAttribute: (a) => (a === 'data-keep-scroll' ? key : null),
           };
         }
+        // 🔴 带 id 的节点。只认两种形状，因为增量刷新要动的就这两样：
+        //    文字类 <span id="…">文本</span> 取标签里的文本；
+        //    进度条那种空的 <i id="…" style="width:N%"></i> 取宽度。
+        //    取内容用的是「往后找第一个同名闭合标签」，所以**这些节点里
+        //    不能再套同名标签** —— 套了就取错。真要套，改这里的解析。
+        idEls = {};
+        const reTag = /<(\w+)\s+id="([^"]+)"([^>]*?)>/g;
+        let g;
+        while ((g = reTag.exec(v)) !== null) {
+          const tag = g[1], id = g[2], attrs = g[3];
+          const close = v.indexOf('</' + tag + '>', reTag.lastIndex);
+          const inner = close < 0 ? '' : v.slice(reTag.lastIndex, close);
+          const w = /width:\s*([^;"]+)/.exec(attrs);
+          idEls[id] = {
+            id,
+            textContent: unesc(inner),
+            style: { width: w ? w[1].trim() : '' },
+          };
+        }
       },
       get innerHTML() { return this._html || ''; },
-      querySelector: (s) => (s === '#dllog' ? logEl : null),
+      querySelector: (s) => {
+        if (s === '#dllog') return logEl;
+        if (s && s.charAt(0) === '#') return idEls[s.slice(1)] || null;
+        return null;
+      },
       querySelectorAll: (s) => (s === '[data-keep-scroll]'
         ? Object.keys(keepEls).map((k) => keepEls[k]) : []),
       get _log() { return logEl; },
       get _keep() { return keepEls; },
+      get _ids() { return idEls; },
     };
   }());
   const sb = {
@@ -229,6 +268,252 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
     const el = sb2.document.getElementById('app');
     sb2.window.P2W_RENDER();
     if (el._keep.main.scrollTop !== 0) throw new Error('本来在顶部，却被挪到了别处');
+  });
+
+  // 🔴 小蔡 2026-09-08 原话「页面上下卡顿我受不了了」，问清楚是**转换中**卡。
+  //    根因不是保不住滚动位置（那个 2026-09-07 已经修了），而是**每秒把整页
+  //    推倒重来**：用户滚轮的惯性还没停，DOM 就被换掉、scrollTop 被按上一秒
+  //    的值写回去，一秒拽一次。
+  //    所以这里断的不是「位置对不对」，是「**整页有没有被重建**」——
+  //    位置对但每秒重建，照样卡。
+  function runningSt(sb2) {
+    const st = sb2.window.P2W_STATE;
+    st.envLoading = false;
+    st.env = goodEnv();
+    st.items = Array.from({ length: 40 }, (_, i) => (
+      { path: 'C:\\a\\' + i + '.pdf', ok: true, pages: 10, scan_pages: [] }));
+    // lines / progress_line 是后端每秒原样带回来的（poll 返回整个 task），
+    // 真实数据里一定有，测试也得带上 —— 少了它们就测不出「日志一动就整页
+    // 重绘」这个洞。
+    st.task = { state: 'running', total: 40, current: 0,
+                stage: '逐页识别', stage_cur: 5, stage_total: 56,
+                results: [], elapsed: 10, remain: 1800,
+                lines: [], progress_line: '', stages: ['逐页识别'] };
+    return st;
+  }
+
+  ck('转换中每秒刷新不重建整页，滚动不被打断', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+
+    sb2.window.P2W_RENDER_CONV();       // 第一次：整页画出来，理所应当
+    const before = el._keep.main;       // 记住这一次的滚动容器
+    before.scrollTop = 500;             // 用户滚到中间正看着
+
+    st.task.elapsed = 11;               // 一秒后，变的只有这几个数
+    st.task.remain = 1799;
+    st.task.stage_cur = 6;
+    sb2.window.P2W_RENDER_CONV();       // 第二次：该走增量，不该重建
+
+    if (el._keep.main !== before) {
+      throw new Error('整页被重建了 —— 滚动容器换成了新元素，用户正滚着就被拽一下');
+    }
+    if (before.scrollTop !== 500) {
+      throw new Error('滚动位置被动过，停在 ' + before.scrollTop);
+    }
+    // 🔴 光「不重建」不算数：不刷新也满足这一条。数字必须真的跟着变，
+    //    否则就是拿「界面冻住」换来的假流畅。
+    const used = el._ids['cv-used'] && el._ids['cv-used'].textContent;
+    const eta = el._ids['cv-eta'] && el._ids['cv-eta'].textContent;
+    if (!used || used.indexOf('11 秒') < 0) {
+      throw new Error('底部已用时没刷新，还是「' + used + '」');
+    }
+    if (!eta || eta.indexOf('29 分') < 0) {
+      throw new Error('顶部剩余时间没刷新，还是「' + eta + '」');
+    }
+  });
+
+  // 🔴 **这条是整个改动的命根子。**
+  //    增量刷新是第二条渲染路径，跟整页重绘并存 —— 两条路各画各的，早晚
+  //    分叉，而分叉的表现是「同一份数据在两条路下显示不同」，肉眼极难发现
+  //    （坑 4 的形状：测试和实现一起错，于是一起绿）。
+  //    所以这里不测「增量有没有更新」，测的是**增量的结果跟整页重绘逐字
+  //    相同**。谁哪天在 pageMain 里改了文案却忘了改 patchConv，这条就红。
+  const convSnap = (el) => {
+    const g = (id) => {
+      const n = el._ids[id];
+      return n ? (n.textContent + ' | ' + n.style.width) : '(这个节点不见了)';
+    };
+    return { 'cv-eta': g('cv-eta'), 'cv-used': g('cv-used'),
+             'cv-tbar': g('cv-tbar'), 'cv-stg': g('cv-stg'),
+             'cv-sbar': g('cv-sbar') };
+  };
+
+  ck('增量刷新的结果跟整页重绘逐字相同', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+
+    sb2.window.P2W_RENDER_CONV();      // 第一次：整页画出来
+    st.task.elapsed = 137;             // 跳到一个不好凑巧蒙对的数
+    st.task.remain = 642;
+    st.task.stage_cur = 31;
+    sb2.window.P2W_RENDER_CONV();      // 第二次：走增量
+    const patched = convSnap(el);
+
+    sb2.window.P2W_RENDER();           // 同一份数据，整页重绘一遍
+    const full = convSnap(el);
+
+    for (const k of Object.keys(full)) {
+      if (patched[k] !== full[k]) {
+        throw new Error(k + ' 对不上 —— 增量「' + patched[k]
+          + '」，整页「' + full[k] + '」');
+      }
+    }
+  });
+
+  // 🔴 结构一变就必须退回整页重绘，否则「该出现的东西没出现」。
+  //    最容易踩的是行内那条小进度条：stage_cur 从 0 变成正数时它**才被
+  //    渲染出来**，这时候只改数字是改不到一个还不存在的节点的。
+  ck('结构变了要退回整页重绘，不能硬打补丁', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+    st.task.stage_cur = 0;             // 小条这会儿根本没渲染
+
+    sb2.window.P2W_RENDER_CONV();
+    if (el._ids['cv-sbar']) throw new Error('stage_cur=0 时小进度条就不该存在');
+    const before = el._keep.main;
+
+    st.task.stage_cur = 1;             // 从无到有 —— 这是结构变化
+    sb2.window.P2W_RENDER_CONV();
+
+    if (el._keep.main === before) {
+      throw new Error('该整页重绘却走了增量，小进度条永远出不来');
+    }
+    if (!el._ids['cv-sbar']) throw new Error('重绘了但小进度条还是没出来');
+  });
+
+  // 🔴 小蔡 2026-09-08 验收：「还是偶尔会卡一下」。
+  //    原因：后端 poll 把**整个 task 原样返回**，里头的 `lines`（转换日志）
+  //    和 `progress_line`（MinerU 那条 tqdm，几乎每秒在刷）也跟着回来。
+  //    它们只在日志展开时才上屏（pages.js 的 `if (st.showLog)`），可日志
+  //    收着的时候它们一变照样让签名变、照样整页重绘 ——
+  //    **界面上什么都没变，白卡一下。** MinerU 吐日志的节奏不匀，
+  //    表现就是「偶尔卡一下」。
+  ck('日志收着时，日志变了不该整页重绘', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+    st.showLog = false;                     // 默认就是收着的
+
+    sb2.window.P2W_RENDER_CONV();
+    const before = el._keep.main;
+    before.scrollTop = 300;
+
+    st.task.lines = ['正在处理第 3 页'];       // MinerU 吐了一行
+    st.task.progress_line = 'Loading: 30%';  // tqdm 在原地刷
+    st.task.elapsed = 11;
+    sb2.window.P2W_RENDER_CONV();
+
+    if (el._keep.main !== before) {
+      throw new Error('日志一动就整页重绘 —— 而日志根本没显示，纯白卡一下');
+    }
+    if (before.scrollTop !== 300) {
+      throw new Error('滚动位置被动过，停在 ' + before.scrollTop);
+    }
+  });
+
+  // 反过来也得成立：日志开着的时候它们要上屏，那就必须重绘，
+  // 否则新日志永远出不来 —— 别为了不卡把功能弄丢了。
+  ck('日志展开时，日志变了必须重绘', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+    st.showLog = true;
+
+    sb2.window.P2W_RENDER_CONV();
+    const before = el._keep.main;
+
+    st.task.lines = ['新的一行'];
+    sb2.window.P2W_RENDER_CONV();
+
+    if (el._keep.main === before) {
+      throw new Error('日志开着却没重绘，新日志出不来');
+    }
+  });
+
+  // 🔴 同一个洞的第二个实例：**换阶段**。
+  //    MinerU 一份文件要跑六七个阶段，每换一次 `stage` / `stage_total` /
+  //    `stages` 都变。但这三样只喂三个地方：
+  //      stage       -> convProgress（cv-tbar 宽度）、stageText（cv-stg 文字）
+  //      stage_total -> 同上，外加 cv-sbar 宽度
+  //      stages      -> **只在展开了当前这行的步骤详情时**才上屏
+  //    前两个 patch 全改得到，第三个收着的时候根本不显示 ——
+  //    让它们进签名等于每换一次阶段白重绘一次。一份文件卡六七下。
+  ck('换阶段不该整页重绘（步骤详情收着时）', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+    st.openStage = null;                    // 步骤详情收着，默认状态
+
+    sb2.window.P2W_RENDER_CONV();
+    const before = el._keep.main;
+    before.scrollTop = 420;
+
+    st.task.stage = '识别公式和文字';          // 换到下一个阶段
+    st.task.stage_total = 1100;             // 单位也跟着换了
+    st.task.stage_cur = 3;                  // 仍然 > 0，小条该在的还在
+    st.task.stages = ['逐页识别', '识别公式和文字'];
+    sb2.window.P2W_RENDER_CONV();
+
+    if (el._keep.main !== before) {
+      throw new Error('换个阶段就整页重绘 —— 一份文件要换六七次，卡六七下');
+    }
+    if (before.scrollTop !== 420) {
+      throw new Error('滚动位置被动过，停在 ' + before.scrollTop);
+    }
+    const stg = el._ids['cv-stg'] && el._ids['cv-stg'].textContent;
+    if (!stg || stg.indexOf('识别公式和文字') < 0) {
+      throw new Error('阶段名没跟着变，还是「' + stg + '」');
+    }
+  });
+
+  // 反过来：步骤详情展开着的时候，stages 要上屏，那就必须重绘。
+  ck('步骤详情展开时，换阶段必须重绘', () => {
+    const sb2 = mkSandbox();
+    const el = sb2.document.getElementById('app');
+    const st = runningSt(sb2);
+    st.openStage = 0;                       // 展开的正是当前这行（current=0）
+
+    sb2.window.P2W_RENDER_CONV();
+    const before = el._keep.main;
+
+    st.task.stages = ['逐页识别', '识别公式和文字'];
+    sb2.window.P2W_RENDER_CONV();
+
+    if (el._keep.main === before) {
+      throw new Error('步骤详情开着却没重绘，新走过的那一步永远出不来');
+    }
+  });
+
+  // 护栏：转换轮询必须走 renderConv。有人哪天顺手改回 render()，卡顿就
+  // 原样回来了，而且**不会有任何测试红** —— 上面那几条测的是 renderConv
+  // 自己的行为，管不着调用方用的是哪个。
+  //
+  // 🔴 这是源码字符串匹配，**先把注释行剔掉再匹配**：CLAUDE.md 记着
+  //    「`// loadUpgPending();` 里的字符串跟活代码一模一样，源码匹配分不清
+  //    活代码和注释掉的代码」—— 而这段代码的注释里正好写着 renderConv，
+  //    不剔注释的话，把活代码删了这条照样绿。
+  ck('转换轮询走的是增量刷新，不是整页重绘', () => {
+    const src = fs.readFileSync(path.join(R, 'actions.js'), 'utf8');
+    const live = src.split('\n')
+      .filter((l) => !l.trim().startsWith('//')).join('\n');
+    const at = live.indexOf('function poll()');
+    if (at < 0) throw new Error('找不到转换轮询 poll()');
+    // 只截 poll 这一个函数。**不能按固定字符数截**，也不能找「下一个顶层
+    // function」—— poll 后面跟的全是 `xxx: function` 这种对象方法，没有
+    // 顶层函数声明，一路截到文件尾会扫进别人正常的 render()，误报。
+    // poll 缩进两格，它的收尾就是行首两个空格的 `}`；内部所有闭合都比这更深。
+    const end = live.indexOf('\n  }', at);
+    const seg = live.slice(at, end < 0 ? live.length : end);
+    if (!/renderConv\(\)/.test(seg)) {
+      throw new Error('转换轮询没走 renderConv —— 每秒重建整页，滚动又要被拽');
+    }
+    if (/(^|[^a-zA-Z])render\(\)/m.test(seg.replace(/renderConv\(\)/g, ''))) {
+      throw new Error('转换轮询里还留着整页重绘的 render()');
+    }
   });
 
   ck('每种状态都吐完整三段，主区才能铺满', () => {
@@ -2040,10 +2325,12 @@ console.log('\n总进度条：');
     }, over || {});
     return st;
   };
-  // 顶上那条是渲染出的第一个 <i style="width:N%">
+  // 顶上那条是渲染出的第一个 <i style="width:N%">。
+  // id 是可选的：增量刷新给顶上那条挂了 id="cv-tbar"，行内的小条没挂，
+  // 两种形状都得认 —— 写死成「紧跟 style」的话，加个属性就全红。
   const pct = (st) => {
     const h = fn(st);
-    const m = h.match(/<div class="bar"><i style="width:(\d+)%/);
+    const m = h.match(/<div class="bar"><i(?: id="[^"]*")? style="width:(\d+)%/);
     if (!m) throw new Error('没找到进度条');
     return parseInt(m[1], 10);
   };

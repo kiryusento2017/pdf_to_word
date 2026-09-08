@@ -242,6 +242,116 @@ function render() {
   }
 }
 
+// ── 转换中的增量刷新 ───────────────────────────────────────────────────
+// 转换中每秒问一次后端。以前每次都调 render() 把整页推倒重来 —— 用户滚轮
+// 的惯性还没停，DOM 就被换掉、scrollTop 被按上一秒记的值写回去，一秒拽
+// 一次。小蔡 2026-09-08 原话：「页面上下卡顿我受不了了」。
+// （上面那段保住滚动位置的代码修的是「弹回顶部」，跟这个是两回事：位置
+//   保住了，但每秒重建照样卡。）
+//
+// 现在：结构没变就只改那几个真在动的数字，整页不碰；结构一变、或者哪个
+// 抓手不见了，就老老实实走 render()。
+//
+// 🔴 **最坏情况是退回原来的行为，不会更糟。** 这是整个设计的地基：签名
+//    算错的后果是多重绘一次（性能损失），不是「界面该变没变」（bug）。
+//    改这里之前，先确认你的改动仍然满足这一条。
+var convSigLast = null;
+
+// 🔴 签名用「反向排除」：只把**确定每秒在变、而且只喂给那几个数字**的字段
+//    挑出去，其余 state 一律进签名。
+//    正着列举「哪些字段影响结构」的话，漏一个就是界面不刷新；反着排除，
+//    漏一个只是多重绘一次。方向必须朝安全那侧 —— 这就是为什么这里看着
+//    「笨」，别改成正向列举。
+// 拷一份，跳过指定的键。签名专用。
+function sigCopy(o, drop) {
+  var r = {}, k;
+  for (k in o) {
+    if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+    if (drop.indexOf(k) >= 0) continue;
+    r[k] = o[k];
+  }
+  return r;
+}
+
+// 万一 state 里塞进了循环引用，stringify 会抛 —— 那就返回 null，当成签名
+// 对不上去走整页重绘。宁可慢，不可错。
+function sigDump(s) {
+  try { return JSON.stringify(s); } catch (e) { return null; }
+}
+
+function convSig(st) {
+  // progMax 是总进度的累计值，每秒在涨，而且只喂 cv-tbar
+  var s = sigCopy(st, ['task', 'progMax']);
+  if (st.task) {
+    // stage / stage_total 只喂三处，而那三处 patch 全改得到：
+    //   convProgress -> cv-tbar 宽度；stageText -> cv-stg 文字；
+    //   stage_total  -> cv-sbar 宽度。
+    // 所以换阶段不必重绘。**这三样都别加回签名** ——
+    // MinerU 一份文件换六七次阶段，加回去就是一份文件白卡六七下。
+    var drop = ['elapsed', 'remain', 'stage_cur', 'stage', 'stage_total'];
+    // 🔴 **日志收着的时候，日志字段不进签名。**
+    //    后端的 poll 把整个 task 原样返回，`lines`（转换日志）和
+    //    `progress_line`（MinerU 那条 tqdm，几乎每秒在刷）也跟着回来。
+    //    它们只在 `st.showLog` 为真时才上屏（见 pages.js 的那段 if）——
+    //    日志收着时它们一变照样让签名变、照样整页重绘，而**界面上什么都
+    //    没变**，纯白卡一下。MinerU 吐日志的节奏不匀，表现就是小蔡说的
+    //    「还是偶尔会卡一下」（2026-09-08 验收）。
+    //    日志展开时它们要上屏，那就必须留在签名里，否则新日志出不来。
+    if (!st.showLog) drop = drop.concat(['lines', 'progress_line']);
+    // 🔴 `stages`（走过哪几步）**只在展开了当前这一行的步骤详情时**才上屏
+    //    （pages.js：`st.openStage === i ? stageList(t.stages, true) : ''`，
+    //    而当前这行的 i 就是 t.current）。收着的时候它变了界面上什么都不变，
+    //    进签名就是白重绘。展开着就必须留，否则新走过的那一步出不来。
+    if (st.openStage !== st.task.current) drop = drop.concat(['stages']);
+    s.task = sigCopy(st.task, drop);
+    // 🔴 stage_cur 的**数值**不进签名，但「有没有」要进 —— 行内那条小进度条
+    //    是 `stage_cur > 0` 才渲染的，从无到有是结构变化，得走整页重绘。
+    s.task.hasCur = st.task.stage_cur > 0 ? 1 : 0;
+  }
+  return sigDump(s);
+}
+
+// 把那几个数字就地改掉。**动不了结构**：只写 textContent 和宽度。
+// 算式全部取自 P2W_CONV，跟整页重绘用的是同一份 —— 各写各的必然分叉，
+// 而分叉出来的界面差异肉眼极难发现。
+// 任何一个抓手不在（转完了、或者有人删了 id），返回 false 让上面去重绘。
+function patchConv(el, st) {
+  var C = window.P2W_CONV, t = st.task;
+  if (!C || !t) return false;
+  if (t.state === 'done' || t.state === 'cancelled') return false;
+  var eta = el.querySelector('#cv-eta');
+  var used = el.querySelector('#cv-used');
+  if (!eta || !used) return false;
+
+  eta.textContent = C.eta(t);
+  used.textContent = C.used(t);
+
+  var tbar = el.querySelector('#cv-tbar');
+  if (tbar && tbar.style) tbar.style.width = C.pct(C.prog(st, t), 1) + '%';
+
+  // 这两个只在「有一份正在转」的那一行上。拿不到是正常的（那一行还没
+  // 出现），不算失败。
+  var stg = el.querySelector('#cv-stg');
+  if (stg) stg.textContent = C.stage(t);
+  var sbar = el.querySelector('#cv-sbar');
+  if (sbar && sbar.style) {
+    sbar.style.width = C.pct(t.stage_cur, t.stage_total || 1) + '%';
+  }
+  return true;
+}
+
+// 转换轮询专用的刷新入口。**别处一律继续用 render()。**
+function renderConv() {
+  var el = document.getElementById('app');
+  var sig = convSig(state);
+  if (el && el.querySelector && sig !== null && sig === convSigLast
+      && patchConv(el, state)) {
+    return;                       // 打上了就收工，整页一个字都没动
+  }
+  render();
+  convSigLast = sig;
+}
+
 // ── JS 报错留痕 ────────────────────────────────────────────────────────
 // 🔴 **不改变任何行为，只记一笔。** 不弹窗、不打断、不 render ——
 //    出错的时候界面往往已经不对劲了，再弹个框只会让老师更慌。
@@ -370,6 +480,7 @@ window.addEventListener('DOMContentLoaded', function () {
 
 window.P2W_STATE = state;
 window.P2W_RENDER = render;
+window.P2W_RENDER_CONV = renderConv;
 window.P2W_ESC = esc;
 window.P2W_FMT = { sec: fmtSec, base: baseName, gb: fmtGB };
 window.P2W_RUNNING = isRunning;

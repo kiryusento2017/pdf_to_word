@@ -300,7 +300,11 @@
           return;              // start() 自己会 render，别再来一次
         }
       }
-      render();
+      // 🔴 **这里必须是 renderConv，不是 render。** 这是一秒一次的轮询：
+      //    走 render() 会把整页推倒重来，用户正滚列表就被每秒拽一下
+      //    （小蔡 2026-09-08「页面上下卡顿我受不了了」）。
+      //    renderConv 结构没变时只改那几个数字，变了自己会退回 render()。
+      renderConv();
     }).catch(function (e) {
       // 🔴 **任务不存在就别再问了。**
       //

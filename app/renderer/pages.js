@@ -14,10 +14,18 @@ var F = window.P2W_FMT;
 var running = window.P2W_RUNNING;
 
 // ── 小构件 ─────────────────────────────────────────────────────────────
-function bar(cur, total) {
+// id 是给增量刷新用的，**可选** —— 不传就跟以前一模一样，现有调用点
+// 一个字都不用改。转换中每秒只改这个 <i> 的宽度，不重建整页（见
+// app.js 的 renderConv）。
+function barPct(cur, total) {
   var pct = total > 0 ? Math.round(100 * cur / total) : 0;
   if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-  return '<div class="bar"><i style="width:' + pct + '%"></i></div>';
+  return pct;
+}
+
+function bar(cur, total, id) {
+  return '<div class="bar"><i' + (id ? ' id="' + id + '"' : '')
+    + ' style="width:' + barPct(cur, total) + '%"></i></div>';
 }
 
 // 顶上那条总进度。**按七个步骤各占多少时间算，不是「当前这步完成了多少」。**
@@ -55,6 +63,29 @@ function convProgress(st, t) {
 //    单位 ——「逐页识别 23/56 页」「识别公式和文字 544/1100 项」，看得懂
 //    它在数什么，不会再跳得莫名其妙。**其余阶段照旧只给名字**，那条教训
 //    仍然生效。
+// 顶上那行「还要多久」。
+//
+// 🔴 **抽成函数是为了让整页重绘和增量刷新共用同一份。** 各写各的必然分叉，
+//    而分叉出来的差异是「同一个界面在两条路径下显示不同」—— 肉眼极难发现，
+//    测试也照样绿（坑 4 的形状）。改文案只改这里一处。
+//
+// 估不出来就说估不出来；估完了还没转完，认账 —— 总比让一个「还要约 0 秒」
+// 挂在那儿不动强。估不出来也不能让屏幕静止，所以退而显示已用时，
+// 那是永远在跳的那个数。
+function convEta(t) {
+  if (t.remain === null || t.remain === undefined) {
+    return '正在估算…（已用 ' + F.sec(t.elapsed) + '）';
+  }
+  if (t.remain <= 0) return '你的 GPU 真垃圾';
+  return '还要约 ' + F.sec(t.remain);
+}
+
+// 状态栏左边那句「已用 X」。抽出来的理由跟 convEta 一样：整页重绘和增量
+// 刷新共用一份，改文案只改这里一处。
+function convUsed(t) {
+  return '已用 ' + F.sec(t.elapsed);
+}
+
 function stageText(t) {
   var s = t.stage || '准备中';
   if (!t.stage_total) return s;
@@ -1514,17 +1545,15 @@ function mainRun(st) {
   if (!done) {
     // 估不出来就说估不出来；估完了还没转完，认账 —— 总比让一个
     // 「还要约 0 秒」挂在那儿不动强。
-    var eta;
-    // 估不出来也不能让屏幕静止 —— 已用时是永远在跳的那个数。
-    if (t.remain === null || t.remain === undefined) {
-      eta = '正在估算…（已用 ' + F.sec(t.elapsed) + '）';
-    }
-    else if (t.remain <= 0) eta = '你的 GPU 真垃圾';
-    else eta = '还要约 ' + F.sec(t.remain);
-    top = '<span style="font-size:13px;font-weight:600;color:var(--theme);'
+    var eta = convEta(t);
+    // 🔴 cv-eta / cv-tbar 这两个 id 是**增量刷新的抓手**，别删。
+    //    转换中每秒只改这两处（文字、宽度），整页不重建 —— 不然用户
+    //    正滚列表就被每秒拽回一次（见 app.js 的 renderConv）。
+    //    span 里必须是纯文本、不能再套标签：patch 走的是 textContent。
+    top = '<span id="cv-eta" style="font-size:13px;font-weight:600;color:var(--theme);'
       + 'white-space:nowrap">' + esc(eta) + '</span>'
       + '<span class="grow" style="padding:0 4px">'
-      + bar(convProgress(st, t), 1)
+      + bar(convProgress(st, t), 1, 'cv-tbar')
       + '</span>'
       + (t.total > 1 ? '<span class="f-dim" style="white-space:nowrap">第 '
           + (t.current + 1) + ' / ' + t.total + ' 份</span>' : '');
@@ -1611,9 +1640,13 @@ function mainRun(st) {
         //    同一个东西绊了他两次。数字本身没错，是它压根不该给用户看：
         //    单位在变、有些阶段不吐中间值，而用户真正要的是「还要多久」，
         //    那个数在顶上单独显示。
-        + '<span class="rt">' + esc(stageText(t)) + '</span>'
+        // 🔴 cv-stg / cv-sbar 同上，是增量刷新的抓手，别删。
+        //    小条**从无到有**那一下是结构变化（`stage_cur > 0` 的真假翻转），
+        //    所以 convSig 里存的是这个真假、不是数值 —— 翻转时走整页重绘，
+        //    之后才走增量。改这行的人要一起想清楚这件事。
+        + '<span id="cv-stg" class="rt">' + esc(stageText(t)) + '</span>'
         + '<span style="width:56px;flex:none">'
-        + (t.stage_cur > 0 ? bar(t.stage_cur, t.stage_total || 1) : '')
+        + (t.stage_cur > 0 ? bar(t.stage_cur, t.stage_total || 1, 'cv-sbar') : '')
         + '</span></div>'
         + (st.openStage === i ? stageList(t.stages, true) : '');
     }
@@ -1628,7 +1661,7 @@ function mainRun(st) {
     // 「停止只在当前这份转完之后生效」那句提示删了 —— 2026-09-02 起
     // 停止是当场生效的（extract._spawn 里有 watch 线程杀进程树）。
     // 留着一句过时的免责声明，比什么都不写更坏。
-    bot = botBar(st, '<span>已用 ' + F.sec(t.elapsed) + '</span>'
+    bot = botBar(st, '<span id="cv-used">' + esc(convUsed(t)) + '</span>'
       + btn('toggleLog', st.showLog ? '返回列表' : '日志')
       + btn('cancel', '停止'), true);
   } else {
@@ -1819,3 +1852,9 @@ function pageModel(st) {
 // 路由下测不到（upd 一有值就跳去更新面板了），单独导出才验得了。
 window.P2W_PAGES = { main: pageMain, model: pageModel,
                      upgradeBox: upgradeBox };
+
+// 转换中增量刷新要用的那几个算式。**整页重绘用的是同样这几个函数** ——
+// 导出来是为了让 app.js 的 patchConv 跟这里共用一份，别再写第二遍
+// （见 convEta 上面那段）。
+window.P2W_CONV = { eta: convEta, used: convUsed, stage: stageText,
+                    prog: convProgress, pct: barPct };
