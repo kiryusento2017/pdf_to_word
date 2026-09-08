@@ -4633,3 +4633,204 @@ torchdep）逐行看了；大文件（`main.py` 590、`pages.js` 518、
 - `_tail` 读文件尾部时，「丢掉半行残句后到了文件末尾」有退回原位的兜底
 - `arch_fits` 的浮点取整（8.9 → major 8 / minor 9）在边界值上是对的
 - `_belongs` 不会让 `torch` 误伤 `torchvision` / `torchgen`
+
+---
+
+## 四十二、⬜ 三个 agent 全量审查：三十余条，小蔡定「全部不管」（2026-09-08）
+
+小蔡：「派三个 agent 不同角度看一下，记得全量扫项目的代码。」看完结论：
+**「第一条入台账，不管，第二条入台账，不管，第三条不管，全部不管，入台账，
+发布 0.3.1 版本。」**
+
+**状态：全部只记录、不修。一行代码没动。发布照常。**
+
+三个角度：A 独立全量扫（不给先入之见）、B 对抗性论证「按提议改会引入什么
+新问题」、C 只看跨模块接缝与并发。都跑 opus。
+
+⚠️ **下面这些绝大多数 v0.2.6 就有，不是 v0.3.1 引入的** —— 所以不构成
+「这一版不能发」的理由。
+
+---
+
+### 🔴 一、同一个错误判据写了两遍：成功一个文件就算成功
+
+```python
+backup()    return {'ok': total > 0, ...}    # upgrade.py:476
+rollback()  return {'ok': n > 0, ...}        # upgrade.py:620
+```
+
+一份 torch 是 **14829 个文件**（本机实测）。`_backup_one` 逐文件
+`os.link` → 失败退 `shutil.copy2` → 再失败 `continue`；`rollback` 的拷回
+同样逐项 try/continue。**两端都用「至少成功一项」当判据**，于是整套
+「装之前先备份、出事就回滚」的事务设计**从头到尾没有完整性校验**。
+
+完整失效链：
+
+1. 备份只成了几十个文件（磁盘满 / 杀软锁 dll / 跨盘 copy2 大面积失败）→ **报成功**
+2. `install()` 只看 `b.get('ok')`（`:505`）就写 `phase=installing` 往下装
+3. 装失败 → 自动 `rollback()` → **先把现场 14829 个文件全删光**，再拷回那几十个
+4. `n > 0` → **又报成功**
+5. 接口看 `r.get('ok')`（`main.py:1696`）顺手 `mark_downloaded()` 写「可以装」
+6. 前端 `d.ok` → `st.rollbackDone = true` → 界面显示「已经退回」+「立即重启」
+7. 重启 → `drop_backups_of_current()` → 版本对上 → **删掉最后的退路**
+
+**全程零报错，环境彻底废掉。**
+
+Agent B 实测跑过 3~7 步（临时目录 monkeypatch 让 `copytree` 在 torch 那项
+抛错）：
+
+    rollback 返回: {'ok': True, 'restored': 1}
+    site 里现在有: ['torch', 'torch-2.11.0.dist-info']   ← torch/ 是空壳
+
+🔴 `upgrade.py:496-504` 那段注释专门论证了「备份没做成就别往下装」，
+**实现的却是「备份一个文件都没做成才别往下装」**。
+
+**修法（未做）**：两处 `ok` 都改成「一项不少地成功」。Agent B 核对过现有
+623 条测试一条都不会红 —— 那些测试的备份里都只有一个文件，`n == 总数`。
+
+### 🔴 二、清一次日志，把升级状态机的记忆抹掉
+
+```python
+rm_tree(paths.LOGS, keep=(os.path.basename(RUNS), SIZE_FILE_NAME))  # maint.py:573
+STATE = os.path.join(paths.LOGS, 'upgrade_state.json')              # upgrade.py:86
+```
+
+白名单保了 `runs.json` 和 `models_size.json`，**漏了 `upgrade_state.json`**。
+而那段代码上面还有整段注释讲「这两个不是日志、是数据，清日志不能把它们
+带走」。
+
+- 下好 2.5 GB 后清日志 → 记录没了，`pending()` 返回 `none`，「立即重启」
+  消失，wheel 无人认领（第三十四节那次事故换个成因原样复发）
+- `phase=installing` 时清日志 → 自动回滚信号被销毁，**同时**
+  `prune_backups` 的 `installing` 保护（`:671`）失效，备份下次可被删
+
+### 🔴 三、`pending()` 的 `rollback` 分支全项目没有消费者
+
+`upgrade.pending()` 返回四种 action，前端只接了两种
+（`pages.js:1036` install / `:1043` redownload），**`rollback` 掉进
+`else`（`:1050`）渲染出正常的「下载并升级」界面**。
+
+触发路径完全可达：`install()` 跑 pip 装 2.5 GB 要几分钟，这期间界面
+**不给任何按钮**（`pages.js:1020-1026`），但用户能点标题栏 × →
+`main.js:200` → `killTree` 用 `taskkill /T /F` 把 pip 连根砍掉。状态停在
+`installing`，torch 被删了一半。下次开机界面若无其事。
+
+备份好端端躺着（`prune_backups` 的 installing 保护挡着），抢救代码也写好
+了 —— **就是没人按下那一下**。`main.py:1689-1691` 的文档字符串明写
+「rollback 有三个使用场景……开机发现装到一半自动回滚」，第三个没有代码。
+
+### 🟠 四、其余按类
+
+**升级状态机（另外三条）**
+- 安装拼的是 `pip install --no-index --find-links CACHE --upgrade torch`
+  **不带版本号**（前端两处 `targets` 都写死 `{}`，`actions.js:780,803`），
+  而 CACHE 从不自动清 → pip 挑**版本号最高**的装。`plan()` 走的是**在线**
+  `--dry-run`（`:285-288`）—— **预演和实际用两套解析源**
+- `missing_wheels` 只比包名不比版本（`:888-898`）→ 下载被杀时，CACHE 里
+  上一轮的旧 torchvision 能让「包齐了」成立
+- `download()` 失败后**状态永久停在 `downloading`**（`:378-386` 直接
+  return，不清状态）
+
+**并发与互斥**
+- `/api/maint/clean` 的忙碌判据**漏了 `_UPGI`**（`main.py:1169`）—— 同文件
+  另两处都判了。pip 正读 wheel 时点清理会把它删掉。注释（`:1155-1160`）
+  逐个点名了另外三个字典，写于 `_UPGI` 存在之前
+- `/api/update/download` 只判 `running` 不判 `installing`（`:353`）——
+  另外三处都写的 `in ('running','installing')`
+- `promotePending` 可重入（`actions.js:129-164`）：连拖两次能起**两个转换
+  任务**抢同一块 GPU，其中一个成孤儿（不被轮询、不被取消、结果丢失）
+- `/api/gpulib/install` 是四个「往 site-packages 装 torch」的入口里**唯一
+  没有转换互斥**的
+
+**前端**
+- 🔴 `HTTP.get` 不检查 `r.ok`（`app.js:165-167`），404 当正常数据 resolve
+  → **第三十六节记着「已修」的 404 空转其实没修好**，那个 catch 分支
+  （`actions.js:304-316`）是死代码。影响面是**所有** GET 调用方
+- `closeUpdate` 忘了 `stopUpdPolling`（`actions.js:623`）→ 定时器每 800 ms
+  空转到关软件；更麻烦的是**串味**：下次点「检查更新」，僵尸轮询立刻往新
+  对象上写，可能直接跳到「更新完成」
+- 「重新下载」是死按钮：`startUpgrade` 的 picked 来自 `st.upgPick`，开机时
+  是 `{}` → 直接 return，**点了没有任何反应**
+- 「关于」页第一次打开版本号空白（`st.diag` 只在 `openEnvCheck` 里拉）
+- `pages.js:1032-1033` 装失败时两个分支**都**说「已经回到升级前的版本」
+
+**转换链**
+- `convert.py:121` 调 `todocx.md_to_docx` 是裸的，而 `todocx` 内部三处
+  （`:708/726/755`）走 `replace_retry`，5 次退避后仍会 raise。
+  `replace_retry` 自己的注释给了实测概率 **40 轮撞 2 次（5%）**。
+  异常穿透 → 整批剩下的一份都不转，界面显示「转完了」+ 一句
+  `PermissionError`。隔壁 `_set_theme_fonts` 专门包了 try（`:760-764`），
+  **保护是散着加的，漏了三处**
+- `tomath.py:184` 调 node、`todocx.py:137` 调 pandoc **都没有 timeout**，
+  而同文件的 `node_available()` 写了 `timeout=30`。卡住则转换线程永久阻塞，
+  **且出 Word 这一阶段没有任何取消通道**，点停止无反应
+- 0 页 PDF（`pages=0` 且 `ok=True`，`convert.py:69-71` 记着真实可达）→
+  `est=0` → `_remain` 返回 0 → 界面从第一秒就显示「你的 GPU 真垃圾」
+
+**做好了没人调 / 断在中间**
+- `maint.note_error` **零调用点** —— 诊断里「最近一次错误」永远是空的，
+  而那正是诊断存在的理由（`main.py:1456-1458`）
+- `torchdep.ensure_msvcp` **零调用点** —— 而 `main.py:102-109` 的注释写着
+  「这里**顺手就补上**，不叫用户去装」
+- `vcredist` 装完**不看结果就写「已装」标记**（`vcredist.py:167-177`）→
+  用户在 UAC 点「否」也会打勾 → 放行去下 2.8 GB → 装完才失败
+- `local_version()` 的白名单把 `sha` 吞掉（`update.py:147`）→ 后端照样问
+  （`main.py:1465`）、前端条件渲染（`pages.js:849`）→ **版本 sha 永远不显示**
+- `update.write_version` 零调用且不写 `sha`；`GET /api/deps/local`、
+  `GET /api/ping`、`/api/env` 的 pandoc/space 等字段前端一个字不读
+- 清 8 GB 备份界面报「已清理 0 KB」（`maint.py:592-597` 只读了
+  `prune_backups` 的 `why`，把 `freed` 丢了）
+
+**更新包自更新**
+- `update.py:988-1006` 回滚失败时**无条件断言**「已经改的 N 个文件都还原
+  了，现在还是更新前的状态」，而 `restored` 只数成功的。同段注释自己写着
+  这个半新半旧状态「比不更新糟得多」「最坏的地方在于它还能启动」
+
+**常量两处写、无守护**：`RUNS_KEEP=200`（前端硬写 `?limit=200`）、
+`SEC_PER_PAGE_GPU=26.0`（前端硬写 `|| 26`，而后端注释说它偏低 25%）、
+进度权重 `{pass1:0.44,pass2:0.51,other:0.05}`。三个日志文件名在产出者和
+诊断收集处各硬编码一遍。
+
+**资源**：`upgrade._pip` 没有 `stop_flag`（2.7 GB 升级下载**无法取消**，
+而那正是第三条那条链的起点）、`p.kill()` 不带 `/T`（另外四处都用
+`taskkill /T /F`）、四处 `p.stdout` 三种收尾方式、三个 `async` 路由里做
+阻塞 IO（违反 `main.py:10-14` 自己写死的规矩）
+
+### ✅ 我（主 agent）被推翻的四条
+
+**记下来免得以后照着错的去改**：
+
+| 我说的 | 实际 |
+|---|---|
+| 进度条第二轮不算阶段内进度 | `pages.js:41` 有 `else if ... inner = w.pass1 + w.pass2*r`，**算了**。我 grep 过滤时把 `else if` 滤掉了 |
+| `.trylock` 会成为永远扫不到的孤儿 | 过滤条件是 `startswith('pip-')`，`pip-xxx.trylock` **照样匹配**，下轮自愈。**是注释写错了** |
+| 最严重的是「回滚失败→备份被误删」 | **落点错了**。那个场景 `rollback()` 返回的是 `ok=True`，根子在上面第一条 |
+| 上次修好了 404 空转（第三十六节） | `HTTP.get` 不检查状态码，**那个 catch 从来没执行过** |
+
+### ⚖️ 一处矛盾的裁决
+
+轮询把内部 list 原样交给序列化器、锁外被 `del lst[0:n]`：Agent C 说会抛
+`RuntimeError: changed size during iteration`，Agent A 说不会抛。
+**判 A 对** —— Python 的 list 迭代器长度变化时不抛异常（dict 才抛），
+后果是「日志少几行」而不是「请求失败」。严重性从 P0 降到 P3。
+
+### 两个反复出现的形状
+
+**形状一：产出侧写得很完整，消费侧没接。** 这次新找到五处（`rollback`
+分支、`note_error`、`ensure_msvcp`、`/api/deps/local`、`already` 字段）。
+项目已在 `main.py:1560-1566`、`pages.js:1136-1141`、`actions.js:17-23`
+记过三次这个教训。
+
+**形状二：同一条规则抄在 3~4 处，其中一处漏了后来新增的那项。**
+`_UPGI` 漏在 clean、`installing` 漏在 update、`STATE` 漏在日志白名单。
+
+### 如果哪天要动，建议的最小四改
+
+都是一行、且 Agent B 核对过不破坏现有测试：
+
+1. `backup()` / `rollback()` 的 `ok` 判据改成「一项不少」
+2. 日志白名单加 `upgrade_state.json`
+3. 前端补上 `pend.action === 'rollback'` 分支
+4. `HTTP.get` 补 `r.ok` 检查（顺带让所有 GET 的错误处理真正生效）
+
+这四条堵住的是「环境彻底废掉」这一类后果。其余按需。
