@@ -15,7 +15,7 @@ A/B/C/D 四张图排一行，这是常态。`effort=high` 会打开图片分析�
 完整的图形区域整体切下来，进了 Word 还是并排的；`medium` 和云端做不到，只能一
 张图算一块，四个选项变成四行，一道题占掉大半页。
 
-`effort` 为什么关键，官方源码 `hybrid_analyze.py` 写得很直白：
+`effort` 为什么关键，MinerU 官方源码 mineru/backend/hybrid/hybrid_analyze.py 里写得很直白：
 
     def _resolve_effective_image_analysis(effort, image_analysis):
         """medium 强制关闭以保持快速路径。"""
