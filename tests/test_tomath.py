@@ -35,10 +35,18 @@ class Test找Office的XSL(unittest.TestCase):
         # 只 mock XSL_CANDIDATES 的话「找不到」的用例根本不成立。
         self._orig_reg = tomath.registry_candidates
         tomath.registry_candidates = lambda: []
+        # 🔴 2026-09-09 起 find_xsl **第一步先看自带的那份**
+        #    （runtime/xsl/MML2OMML.XSL，随软件分发）。这一条不堵上，
+        #    下面这些用例全都测不到 Office 探测那条兜底路径 —— 它们会一路
+        #    拿到自带的真文件。这个类测的就是兜底那条，所以这里堵掉。
+        #    「自带的优先」本身另有用例，见 Test自带的XSL。
+        self._orig_bundled = tomath.bundled_xsl
+        tomath.bundled_xsl = lambda: None
 
     def tearDown(self):
         tomath.XSL_CANDIDATES = self._orig
         tomath.registry_candidates = self._orig_reg
+        tomath.bundled_xsl = self._orig_bundled
         shutil.rmtree(WORK, ignore_errors=True)
 
     def test_候选路径不止一条(self):
@@ -93,13 +101,16 @@ class Test批量转换的硬契约(unittest.TestCase):
                 with io.open(p, 'w', encoding='utf-8') as f:
                     f.write('<xsl/>')
             orig_reg, orig_cand = tomath.registry_candidates, tomath.XSL_CANDIDATES
+            orig_bundled = tomath.bundled_xsl       # 自带的排在这两条之前，先堵上
             try:
+                tomath.bundled_xsl = lambda: None
                 tomath.registry_candidates = lambda: [reg_hit]
                 tomath.XSL_CANDIDATES = [dir_hit]
                 self.assertEqual(tomath.find_xsl(), reg_hit, '目录扫描盖过了注册表')
             finally:
                 tomath.registry_candidates = orig_reg
                 tomath.XSL_CANDIDATES = orig_cand
+                tomath.bundled_xsl = orig_bundled
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -114,8 +125,10 @@ class Test批量转换的硬契约(unittest.TestCase):
     def test_XSL不在时全部返回None且长度不变(self):
         orig = tomath.XSL_CANDIDATES
         orig_reg = tomath.registry_candidates
+        orig_bundled = tomath.bundled_xsl
         tomath.XSL_CANDIDATES = ['/根本不存在/MML2OMML.XSL']
         tomath.registry_candidates = lambda: []      # 注册表那条也得堵上
+        tomath.bundled_xsl = lambda: None            # 自带那条也是（2026-09-09 起）
         try:
             got = tomath.batch_to_omml(['x', 'y', 'z'])
             self.assertEqual(len(got), 3, '长度契约被破坏了')
@@ -124,6 +137,48 @@ class Test批量转换的硬契约(unittest.TestCase):
         finally:
             tomath.XSL_CANDIDATES = orig
             tomath.registry_candidates = orig_reg
+            tomath.bundled_xsl = orig_bundled
+
+
+class Test自带的XSL(unittest.TestCase):
+    r"""2026-09-09 起 `runtime/xsl/MML2OMML.XSL` 随软件分发，不再要求用户
+    装 Office（决定和风险见 tomath.py 顶部）。这一组盯的就是这件事。"""
+
+    def test_自带的文件真的在(self):
+        p = tomath.bundled_xsl()
+        self.assertTrue(p, 'runtime/xsl/MML2OMML.XSL 不见了 —— '
+                           '发行版会转不了公式，而且要到用户点转换才炸')
+        self.assertTrue(os.path.isfile(p))
+
+    def test_自带的优先于用户的Office(self):
+        r"""发出去的那份就是验证过的那份，不受用户装了哪版 Office 影响。"""
+        orig_reg, orig_cand = tomath.registry_candidates, tomath.XSL_CANDIDATES
+        try:
+            # 把 Office 那两条都指向「存在的别的文件」，自带的仍该赢
+            other = os.path.abspath(__file__)
+            tomath.registry_candidates = lambda: [other]
+            tomath.XSL_CANDIDATES = [other]
+            self.assertEqual(tomath.find_xsl(), tomath.bundled_xsl(),
+                             '用户的 Office 盖过了自带的那份')
+        finally:
+            tomath.registry_candidates = orig_reg
+            tomath.XSL_CANDIDATES = orig_cand
+
+    def test_自带的没了才回头找Office(self):
+        r"""兜底那条没删：万一自带文件被杀软删了，还能自己找回来。"""
+        orig_b, orig_reg, orig_cand = (tomath.bundled_xsl,
+                                       tomath.registry_candidates,
+                                       tomath.XSL_CANDIDATES)
+        try:
+            other = os.path.abspath(__file__)
+            tomath.bundled_xsl = lambda: None
+            tomath.registry_candidates = lambda: []
+            tomath.XSL_CANDIDATES = [other]
+            self.assertEqual(tomath.find_xsl(), other, '兜底那条断了')
+        finally:
+            tomath.bundled_xsl = orig_b
+            tomath.registry_candidates = orig_reg
+            tomath.XSL_CANDIDATES = orig_cand
 
 
 @unittest.skipUnless(tomath.xsl_available() and tomath.node_available(),

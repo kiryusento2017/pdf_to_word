@@ -11,12 +11,23 @@ r"""LaTeX 源码 → Word 原生公式对象（OMML）。
     在 Word 里不会随内容伸缩。与其让一部分用户拿到次等产物还不知情，
     不如在门口就说清楚「这软件需要 Office」。
 
-`MML2OMML.XSL` 是微软随 Office 分发的版权文件，**不打包进安装包**——
-提取出来再分发是侵权，用户装了 Office 才有。读用户自己机器上那份是
-合法的，这里就是这么做。
+**XSL 从哪来（小蔡 2026-09-09 改定）**：`runtime/xsl/MML2OMML.XSL`
+**随软件打包分发**，转换一律用这一份，不再要求用户装 Office。
 
-探测两手都上：先查注册表（准，能找到装在非标准位置的），再扫常见目录
-（兜底）。实测本机 0.7 毫秒命中，快到不必缓存。
+    原来的做法是「只读用户自己机器上那份」，理由写在这里：这是微软随
+    Office 分发的版权文件，提取出来再分发有版权问题。改的原因是小蔡定的
+    使用范围 ——「这个软件只给三个人用」，同一决定在云端版（teach-studio）
+    上已经先做了，两个项目保持一致。
+    ⚠️ 风险仍在：仓库和 release 都是公开的，本项目又是 GPL-3.0，跟这个
+    非 GPL 兼容的文件在授权上是冲突的。小蔡知情并拍板。
+
+找的顺序：**自带的优先**，找不到才回头探测用户的 Office。
+自带优先是为了确定性 —— 发出去的那份就是验证过的那份，不受用户装了哪版
+Office 影响。下面那套 Office 探测**没删，留作兜底**：万一自带文件被杀软
+删了、或者有人手工精简过 runtime，还能自己找回来，不至于当场变砖。
+
+Office 探测两手都上：先查注册表（准，能找到装在非标准位置的），再扫常见
+目录（兜底）。实测本机 0.7 毫秒命中，快到不必缓存。
 
 零新依赖：node + 自带 KaTeX（`vendor/katex/`，MIT）+ lxml。
 """
@@ -134,8 +145,25 @@ def last_error():
     return _last_error
 
 
+def bundled_xsl():
+    r"""随软件打包的那一份（`runtime/xsl/MML2OMML.XSL`）。
+
+    开发环境和发行版是同一个位置 —— `paths.RUNTIME` 已经处理了两者的差异，
+    这里不用自己判断跑在哪。
+    """
+    try:
+        import paths as _p
+    except ImportError:
+        return None                      # 单独跑这个模块时够不到 paths
+    p = os.path.join(_p.RUNTIME, 'xsl', 'MML2OMML.XSL')
+    return p if os.path.isfile(p) else None
+
+
 def find_xsl():
-    """找 MML2OMML.XSL。注册表优先（准），再扫常见目录（兜底）。"""
+    """找 MML2OMML.XSL。**自带的优先**，找不到才探测用户的 Office（兜底）。"""
+    p = bundled_xsl()
+    if p:
+        return p
     for p in registry_candidates():
         if os.path.isfile(p):
             return p

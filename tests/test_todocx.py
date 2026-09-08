@@ -331,18 +331,28 @@ class Test两条路的优先级(unittest.TestCase):
             tomath.batch_to_omml = orig
 
     def test_没有XSL时直接判失败而不是退回Pandoc(self):
-        r"""门口拦了「完全没装 Office」，屋里这条也得拦 ——
-        否则装了 Office 但某批公式转不成的人照样静默拿到次等产物。"""
+        r"""门口拦了「XSL 找不到」，屋里这条也得拦 ——
+        否则某批公式转不成的人照样静默拿到次等产物。
+
+        🔴 2026-09-09 起 XSL 随包分发，要模拟「没有 XSL」得**三条路一起堵**：
+        自带的、注册表、目录扫描。少堵一条，这个用例就测了个寂寞。"""
         orig_x, orig_r = tomath.XSL_CANDIDATES, tomath.registry_candidates
+        orig_b = tomath.bundled_xsl
         tomath.XSL_CANDIDATES = ['/根本没有/MML2OMML.XSL']
         tomath.registry_candidates = lambda: []
+        tomath.bundled_xsl = lambda: None
         try:
             r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
             self.assertFalse(r['ok'], '没有 XSL 却判成功')
-            self.assertIn('Office', r['error'], '没告诉用户该装什么')
+            # 不再断言含「Office」：文件随包分发之后，正确的提示是「安装
+            # 目录下那份文件不见了」，再让人去装 Office 是错的引导。
+            self.assertIn('MML2OMML.XSL', r['error'], '没说清楚缺的是哪个文件')
+            self.assertNotIn('装上 Office', r['error'],
+                             '还在让人去装 Office —— 文件已经随包分发了')
         finally:
             tomath.XSL_CANDIDATES = orig_x
             tomath.registry_candidates = orig_r
+            tomath.bundled_xsl = orig_b
 
     def test_明确不要XSL时仍然可以出Word(self):
         r"""prefer_xsl=False 是调用方明确表示「我知道，就要 Pandoc 的结果」，
@@ -359,8 +369,10 @@ class Test两条路的优先级(unittest.TestCase):
         拦下的次等品（公式是 Pandoc 转的，∅ 会变成 ⌀）。
         """
         orig_x, orig_r = tomath.XSL_CANDIDATES, tomath.registry_candidates
+        orig_b = tomath.bundled_xsl          # 自带那条也得堵（2026-09-09 起）
         tomath.XSL_CANDIDATES = ['/根本没有/MML2OMML.XSL']
         tomath.registry_candidates = lambda: []
+        tomath.bundled_xsl = lambda: None
         try:
             r = todocx.md_to_docx(self.md, self.out, prefer_xsl=True)
             self.assertFalse(r['ok'])
@@ -369,6 +381,7 @@ class Test两条路的优先级(unittest.TestCase):
         finally:
             tomath.XSL_CANDIDATES = orig_x
             tomath.registry_candidates = orig_r
+            tomath.bundled_xsl = orig_b
 
     @unittest.skipUnless(tomath.xsl_available() and tomath.node_available(),
                          '本机没有 Office 的 XSL 或没有 node')

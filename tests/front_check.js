@@ -196,7 +196,9 @@ console.log('\u52a0\u8f7d\u4e0e\u7ed3\u6784\uff1a');
                      'pickFiles', 'pickDir', 'pickOut', 'outDefault', 'toggle',
                      'selAll', 'selNone', 'clear', 'start', 'cancel',
                      'probeSources', 'pickSource', 'startDownload', 'pickLocal',
-                     'openFile', 'openPath', 'openOffice', 'openNode',
+                     // openOffice 2026-09-09 删了：XSL 随包分发之后，
+                     // 拦截屏不再劝人去装 Office，那个按钮没了调用方。
+                     'openFile', 'openPath', 'openNode',
                      'cancelDownload', 'checkUpdate', 'closeUpdate',
                      'downloadUpdate', 'restartApp',
                      'openAbout', 'closeAbout', 'openEnvCheck',
@@ -651,22 +653,27 @@ console.log('\n\u73af\u5883\u81ea\u68c0\uff08\u72b6\u6001\u680f + \u62e6\u622a\u
     if (!h.includes('显卡 ✗')) throw new Error('状态栏没留记号，人会忘了自己在硬来');
   });
 
-  ck('没装 Office 时拦住，并说清楚为什么要装', () => {
+  ck('公式引擎缺失时拦住，并说清楚该怎么办', () => {
     // 2026-09-01 小蔡改定：XSL 是硬性要求，不再降级到 Pandoc。
-    // 这一屏是被拦下来的老师唯一能看到的解释。
+    // 🔴 2026-09-09 大改：XSL 随包分发（runtime/xsl/），node 本来就随包，
+    //    所以走到这一屏**只可能是安装包缺东西**（多半被杀软删了），
+    //    不再是「你没装 Office」。这一屏是被拦下来的老师唯一能看到的解释。
     const st = ready(sb);
     st.env.office = { ok: false };
     st.env.formula = { ok: false,
-      why: '这台电脑没有装微软 Office。本软件把公式转成 Word 原生公式，'
-         + '要用到 Office 自带的一个转换文件（MML2OMML.XSL），'
-         + '那是微软的文件，不能随本软件分发，只能装了 Office 才有。' };
+      why: '公式转换要用的文件不见了：安装目录下的 runtime/xsl/MML2OMML.XSL。'
+         + '通常是被杀毒软件删掉了。把安装包重新解压一次即可；'
+         + '如果反复被删，把安装目录加进杀软白名单。' };
     const h = fn(st);
-    if (h.includes('把 PDF 拖进来')) throw new Error('没装 Office 却放行了');
-    if (!h.includes('需要先安装微软 Office')) throw new Error('没说要装什么');
-    if (!h.includes('MML2OMML')) throw new Error('没解释为什么需要它');
-    if (!h.includes('data-act="openOffice"')) throw new Error('没给去官网的入口');
-    if (!h.includes('data-act="reload"')) throw new Error('装完之后没法重新检查');
-    if (!h.includes('WPS')) throw new Error('没提醒「装 WPS 不管用」——这是最容易踩的坑');
+    if (h.includes('把 PDF 拖进来')) throw new Error('公式引擎缺了却放行了');
+    if (!h.includes('安装包不完整')) throw new Error('没说清楚这是什么问题');
+    if (!h.includes('MML2OMML')) throw new Error('没说缺的是哪个文件');
+    if (!h.includes('杀毒软件')) throw new Error('没说最可能的原因和解法');
+    if (!h.includes('data-act="reload"')) throw new Error('修好之后没法重新检查');
+    // 🔴 反向断言：**不许再劝人去装 Office**。文件已经随软件分发了，
+    //    装 Office 解决不了「安装目录下的文件被删」，那是错的引导。
+    if (h.includes('需要先安装微软 Office')) throw new Error('还在劝人装 Office');
+    if (h.includes('data-act="openOffice"')) throw new Error('还留着去微软官网的按钮');
   });
 
   ck('显卡不够的人，先问显卡再谈下模型', () => {
@@ -1827,13 +1834,13 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
   });
 
   ck('环境有硬伤时，更新面板不能盖住拦截屏', () => {
-    // 连 Office 都没有的话，先解决那个 —— 更新了也用不了
+    // 公式引擎都缺了的话，先解决那个 —— 更新了也用不了
     const st = ready(sb);
-    st.env.formula = { ok: false, why: '没装 Office' };
+    st.env.formula = { ok: false, why: '公式转换要用的文件不见了' };
     st.upd = { ok: true, has_update: true, local: 'v1', latest: 'v2', error: '' };
     const h = fn(st);
-    if (h.includes('有新版本 v2')) throw new Error('更新面板盖住了 Office 拦截屏');
-    if (!h.includes('需要先安装微软 Office')) throw new Error('该拦的没拦');
+    if (h.includes('有新版本 v2')) throw new Error('更新面板盖住了拦截屏');
+    if (!h.includes('安装包不完整')) throw new Error('该拦的没拦');
   });
 }
 

@@ -325,12 +325,6 @@
   window.P2W_ACTS = {
     reload: function () { window.location.reload(); },
 
-    // 引导去装 Office。主进程那边有域名白名单，这里传什么都只可能
-    // 打开微软自己的站。
-    openOffice: function () {
-      window.api.openUrl('https://www.microsoft.com/zh-cn/microsoft-365');
-    },
-
     // GPU 运行库加载不了时最常见的解法：装 Visual C++ 运行库。
     // 直接给下载地址，不让人自己去搜 —— 搜「vc运行库」出来的
     // 前几条常常是第三方打包站。

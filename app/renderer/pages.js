@@ -254,12 +254,15 @@ function envLine(st, compact) {
     if (st.envError) { color = '#b91c1c'; text = '后台没连上'; cls = 'f-bad'; }
     else if (!(e.writable || {}).ok) { color = '#b91c1c'; text = '安装目录不可写'; cls = 'f-bad'; }
     else if (!(e.mineru || {}).ok) { color = '#b91c1c'; text = '转换引擎缺失'; cls = 'f-bad'; }
-    // Office 现在是硬性要求（2026-09-01 改定），不再是「有更好」。
-    else if (!(e.formula || {}).ok) { color = '#b91c1c'; text = '缺少 Office'; cls = 'f-bad'; }
+    // 公式引擎是硬性要求（2026-09-01 改定），不再是「有更好」。
+    // 🔴 2026-09-09 起 XSL 随包分发（runtime/xsl/），所以这里不 ok
+    //    **不再意味着「你没装 Office」**，而是安装包缺东西了（多半被杀软
+    //    删了）。文案跟着改，别再让人去装 Office —— 装了也没用。
+    else if (!(e.formula || {}).ok) { color = '#b91c1c'; text = '公式引擎缺失'; cls = 'f-bad'; }
     else {
       var parts = [];
       parts.push(g.ok ? '显卡 ✓' : '显卡 ✗');
-      parts.push('Office ✓');
+      parts.push('公式 ✓');
       // C++ 运行库也摆出来 —— 它齐不齐决定那 2.8 GB 装不装得上，
       // 用户有权在点之前就看见，而不是下完才知道。
       if (e.vcredist) parts.push(e.vcredist.ok ? 'C++ 运行库 ✓' : 'C++ 运行库 ✗');
@@ -398,25 +401,24 @@ function gateView(st, kind) {
   }
 
   if (kind === 'formula') {
-    // 小蔡 2026-09-01 定：必须有微软 Office，不再降级。
-    // 这一屏是被拦下来的老师唯一能看到的解释，必须说清楚三件事：
-    // 为什么需要、要装什么、装完怎么办。
+    // 🔴 2026-09-09 大改：XSL 随包分发（runtime/xsl/），node 本来就随包，
+    //    所以走到这一屏**只可能是安装包缺东西**（多半被杀毒软件删了），
+    //    不再是「你没装 Office」。
+    //    原来这屏会劝人去装 Microsoft 365 —— 现在那是错的引导：装了
+    //    也解决不了「安装目录下的文件被删」这件事。
     var f = e.formula || {};
-    var noNode = (e.node || {}).ok === false && (e.office || {}).ok;
+    var noNode = (e.node || {}).ok === false;
     return '<div class="fill">'
-      + '<div style="font-size:14px;font-weight:600">'
-      + (noNode ? '安装包不完整' : '需要先安装微软 Office') + '</div>'
+      + '<div style="font-size:14px;font-weight:600">安装包不完整</div>'
       + '<div class="f-dim" style="max-width:470px;line-height:1.65;text-align:left">'
       + esc(f.why || '') + '</div>'
-      + (noNode ? '' :
-         '<div class="f-dim" style="max-width:470px;line-height:1.65;text-align:left">'
-         + '装 Microsoft 365、或者 Office 2021 / 2024 都可以，'
-         + '装好之后回来点「重新检查」。<br>'
-         + '<b>只装 WPS 不行</b> —— WPS 没有这个转换文件（我们查过它的安装目录）。'
-         + '</div>')
+      + '<div class="f-dim" style="max-width:470px;line-height:1.65;text-align:left">'
+      + '这两样都是随软件一起装的，正常不会缺。最常见的原因是<b>被杀毒软件'
+      + '删掉了</b> —— 把安装包重新解压一次即可；如果反复被删，把安装目录'
+      + '加进杀软白名单。'
+      + '</div>'
       + '<div style="display:flex;gap:8px;margin-top:2px">'
-      + (noNode ? btn('openNode', '去 nodejs.org 下载', { cls: 'primary' })
-                : btn('openOffice', '去微软官网看看', { cls: 'primary' }))
+      + (noNode ? btn('openNode', '去 nodejs.org 下载', { cls: 'primary' }) : '')
       + btn('reload', '重新检查')
       + btn('quit', '退出') + '</div></div>';
   }
@@ -886,8 +888,8 @@ function aboutView(st) {
     + '<div class="f-dim" style="max-width:92%;text-align:left;'
     + 'line-height:1.8;font-size:11px">'
     + '本软件使用了以下开源组件：<br>' + rows
-    + '<br>公式转换用微软 Office 的 MML2OMML.XSL，那是你本机 Office '
-    + '的文件，不随本软件分发。'
+    + '<br>公式转换用微软的 MML2OMML.XSL（随本软件一起分发，'
+    + '在 runtime\\xsl\\ 下），版权归微软所有。'
     + '</div>'
     + '<div style="display:flex;gap:8px;margin-top:6px">'
     // 🔴 **转换中必须灰掉它**（2026-09-08 加）。

@@ -714,8 +714,12 @@ def _build_docx(md_path, out_path, prefer_xsl=True, resource_path=None):
     #    门口拦了「完全没有 Office」，屋里这三条也必须拦，否则立论只贯彻了一半。
     if prefer_xsl and texs:
         if not tomath.xsl_available():
-            rep['error'] = ('这台电脑没有微软 Office 的 MML2OMML.XSL，'
-                            '公式转不成 Word 原生公式。装上 Office 再试。')
+            # 🔴 2026-09-09 起 XSL 随包分发（runtime/xsl/），正常装机走不到
+            #    这里。走到了基本只有一种可能：文件被杀软删了。所以别再让人
+            #    去装 Office —— 装了也解决不了「文件被删」。
+            rep['error'] = ('公式转换要用的文件不见了：安装目录下的 '
+                            'runtime/xsl/MML2OMML.XSL，公式转不成 Word 原生公式。'
+                            '通常是被杀毒软件删掉了，把安装包重新解压一次即可。')
             return rep
         elif not tomath.node_available():
             rep['error'] = ('缺少 Node.js —— 公式的第一步转换要用到它，'

@@ -68,6 +68,10 @@ CODE = [
     ('app/package.json', 'resources/app/package.json'),
     ('app/renderer', 'resources/app/renderer'),
     ('runtime/pandoc', 'runtime/pandoc'),
+    # 微软的 MML2OMML.XSL。2026-09-09 起随包分发，不再要求用户装 Office
+    # （见 pipeline/tomath.py 顶部）。**漏了这一行 = 发行版转不了公式**，
+    # 而且不会在打包时报错，要到用户点转换才炸。
+    ('runtime/xsl', 'runtime/xsl'),
 ]
 
 # 双击的那个 exe 叫什么。这是用户唯一会点的东西，用中文名友好；
@@ -367,6 +371,9 @@ UPDATE_PARTS = [
     ('app/package.json', 'resources/app/package.json'),
     ('app/icon.ico', 'resources/app/icon.ico'),
     ('app/renderer', 'resources/app/renderer'),
+    # runtime/ 里唯一进更新包的东西，190 KB。不带的话老用户升上来
+    # runtime/xsl 是空的，还得靠装 Office 兜底 —— 那这次改动对他们等于没做。
+    ('runtime/xsl', 'runtime/xsl'),
     ('version.json', 'version.json'),
 ]
 
@@ -375,6 +382,8 @@ def make_update_zip(version, sha=''):
     r"""打业务代码更新包。用户下载后解压覆盖即可。
 
     刻意不含 runtime/ —— 那些不会变，而且加进来包就从 0.9 MB 变成 700 MB。
+    **唯一的例外是 runtime/xsl**（190 KB）：它 2026-09-09 才加进来，
+    老用户的安装目录里没有，不随更新包走的话他们升上来还是得装 Office。
     """
     os.makedirs(DIST, exist_ok=True)
     out = os.path.join(DIST, 'pdf_to_word-%s-update.zip' % version)

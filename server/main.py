@@ -84,7 +84,12 @@ def env():
     return {
         'gpu': {'ok': g['ok'], 'why': g['why'], 'detail': g['gpu']},
         # 公式引擎是硬性要求（小蔡 2026-09-01 定），两个条件缺一不可：
-        # XSL 来自用户的 Office，node 用来跑 KaTeX 把 LaTeX 转成 MathML。
+        # XSL + node（跑 KaTeX 把 LaTeX 转成 MathML）。
+        # 🔴 这一项的**名字还叫 office，含义已经不是「装没装 Office」**了 ——
+        #    2026-09-09 起 XSL 随包分发（runtime/xsl/），find_xsl() 优先返回
+        #    自带那份，所以正常情况下它恒为真。名字没改是因为前端和诊断报告
+        #    都在读这个键，改名要动好几处而收益只是好听一点。
+        #    它现在的实际含义是「XSL 找得到吗」。
         'office': {'ok': bool(xsl), 'path': xsl},
         'node': {'ok': node_ok},
         'formula': {'ok': bool(xsl) and node_ok,
@@ -122,9 +127,14 @@ def _formula_why(xsl_ok, node_ok):
     if xsl_ok and node_ok:
         return '公式会转成 Word 原生公式对象，可编辑可搜索。'
     if not xsl_ok:
-        return ('这台电脑没有装微软 Office。本软件把公式转成 Word 原生公式，'
-                '要用到 Office 自带的一个转换文件（MML2OMML.XSL），'
-                '那是微软的文件，不能随本软件分发，只能装了 Office 才有。')
+        # 🔴 2026-09-09 起 XSL 随包分发，正常装机走不到这条分支。
+        #    走到了只有两种可能：自带文件被杀软删了，或者有人手工精简过
+        #    安装目录。所以话要往这个方向说，别再让人去装 Office ——
+        #    装了也解决不了「文件被删」这件事。
+        return ('公式转换要用的文件不见了：安装目录下的 '
+                'runtime/xsl/MML2OMML.XSL。'
+                '通常是被杀毒软件删掉了。把安装包重新解压一次即可；'
+                '如果反复被删，把安装目录加进杀软白名单。')
     # ⚠️ 不要说「重装一次应该能解决」。setup_env.py 根本不装 node
     #    （实测提到 node 的次数是 0），node 走的是系统 PATH，
     #    重装我们的软件不会带来它。说一句解决不了问题的话，

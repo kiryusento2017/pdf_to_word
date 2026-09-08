@@ -3,3 +3,10 @@
 # 2026-08-31 栽过一次，启动.cmd 当时是 LF，启动时刷四行报错。
 *.cmd text eol=crlf
 *.bat text eol=crlf
+
+# 🔴 微软的原始文件，**git 一个字节都别动**。
+# 不标 binary 的话 git 会把它的 4727 个 CRLF 转成 LF，文件从 194432 字节
+# 变成 189705 —— 内容没变、XML 解析器也不在乎，但「我验证过的那份」和
+# 「我打包发出去的那份」就不是同一个字节序列了，而且换台 Linux 机器 clone
+# 再打包又是另一种。原样存、原样出。
+runtime/xsl/MML2OMML.XSL binary

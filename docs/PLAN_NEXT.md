@@ -4992,3 +4992,79 @@ STATE = os.path.join(paths.LOGS, 'upgrade_state.json')              # upgrade.py
 「**哪一屏没有抓手**」—— 同一个机制，两个完全不同的漏法。做这类
 「结构没变就跳过」的优化，两边都得过一遍：**变的是什么，以及当前这屏
 显示的是什么。**
+
+
+## 四十四、XSL 随包分发，不再要求装 Office（2026-09-09）
+
+**小蔡定的**：「实际上，这个软件只给三个人用，xsl 完全可以打包进入项目，
+随着 exe 分发」「以后需要 xsl 都直接调用打包好的就行」。
+云端版（teach-studio）先做了这个决定，本项目跟进，两边一致。
+
+### ⚠️ 风险（说过一次，小蔡拍板）
+
+`MML2OMML.XSL` 是微软随 Office 分发的文件。原来 `tomath.py` 顶部写着
+「提取出来再分发是侵权，只读用户自己机器上那份」，这次把那条推翻了。
+
+两点摆在这儿，以后别当没发生过：
+
+1. **「只给三个人用」和「公开分发」是两回事。** 仓库和 release 都是公开的，
+   任何人都能下这个 exe
+2. **本项目是 GPL-3.0**，把非 GPL 兼容的微软文件打进去分发，授权上是冲突的
+
+### 改了什么
+
+| 位置 | 改动 |
+|---|---|
+| `runtime/xsl/MML2OMML.XSL` | 新增（194432 字节，从本机 Office 复制） |
+| `.gitattributes` | 标 `binary` —— 见下面那个坑 |
+| `pipeline/tomath.py` | 加 `bundled_xsl()`；`find_xsl()` **自带的优先**，Office 探测保留做兜底 |
+| `pipeline/todocx.py` | 转换失败的提示不再说「装上 Office」，改说「文件被杀软删了」 |
+| `server/main.py` | `_formula_why` 同上；`office` 这个键的**名字没改但含义变了**（现在是「XSL 找得到吗」） |
+| `app/renderer/pages.js` | 状态栏「Office ✓」→「公式 ✓」；拦截屏标题「需要先安装微软 Office」→「安装包不完整」；关于页的版权说明 |
+| `app/renderer/actions.js` | 删了 `openOffice` —— 拦截屏不再劝人装 Office，它成了孤儿 |
+| `tools/build_release.py` | **两个清单都加了 `runtime/xsl`**：首装包 `CODE` 和增量更新包 `UPDATE_PARTS` |
+
+### 🔴 一个差点没发现的坑：git 会改这个文件
+
+第一次提交后发现云端版仓库里那份是 **189705 字节**，而本机是 **194432**。
+差值 4727 正好等于文件行数 —— **git 把 4727 个 CRLF 转成了 LF**。
+
+内容没变、XML 解析器也不在乎行尾，但「我验证过的那份」和「我打包发出去的
+那份」就不是同一个字节序列了，而且换台 Linux 机器 clone 再打包又是另一种。
+所以 `.gitattributes` 里标了 `binary`，`git diff --cached` 显示
+`Bin 0 -> 194432 bytes` 才算对。
+
+**以后往仓库里放任何二进制/原样文件，都先确认 git 没在背后改它。**
+
+### 打包清单差点漏掉
+
+`build_release.py` 的 `CODE` 清单原来只有 `('runtime/pandoc', ...)`。
+不加 `runtime/xsl` 的话，**发行版里根本没这个文件，整个改动白做** ——
+而且打包时不报错，要到用户点转换才炸。
+
+`UPDATE_PARTS`（增量更新包）也加了。那份清单的注释写着「刻意不含
+runtime/，加进来包就从 0.9 MB 变成 700 MB」，但 xsl 只有 190 KB；
+不带的话老用户升上来 `runtime/xsl` 是空的，这次改动对他们等于没做。
+
+### 验证：模拟一台没装 Office 的机器
+
+不是推理，是真跑：把 Office 探测的两条路（注册表 + 目录扫描）都堵死，
+只留自带的那份，然后真转两个公式。
+
+```
+find_xsl 找到  : ...\runtime\xsl\MML2OMML.XSL
+是自带的那份吗 : True
+\frac{a}{b}      -> OK
+x \in \emptyset  -> OK
+含 ∅ (U+2205): True
+含 ⌀ (U+2300): False      <- Pandoc 那条错路的特征，必须是 False
+```
+
+最后两行是关键：空集符号正确，说明走的确实是 XSL 而不是悄悄退回了 Pandoc。
+
+测试侧：`tomath` / `todocx` 里所有「模拟没有 XSL」的用例，原来只堵注册表和
+目录扫描两条路，现在**必须三条一起堵**（自带的那条也要），少堵一条那些用例
+就测了个寂寞。新增 `Test自带的XSL` 三条盯住新行为：自带的文件真的在、
+自带的优先于用户的 Office、自带的没了才回头找 Office。
+
+前端 219 条全绿，Python 626 条 OK。
