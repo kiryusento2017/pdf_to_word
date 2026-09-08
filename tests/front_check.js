@@ -963,20 +963,35 @@ console.log('\n\u68c0\u67e5\u66f4\u65b0\uff1a');
     if (!h.includes('都写不进去')) throw new Error('失败原因没显示，用户只能干瞪眼');
   });
 
-  ck('转换进行中，关于按钮禁用但不消失', () => {
-    // 🔴 小蔡 2026-09-03 定的。更新包覆盖的正是 pipeline/*.py，而转换
-    //    每处理一份 PDF 就新起一次 MinerU 子进程 —— 转到一半换掉代码，
-    //    后面几份读到的是新代码；装完还要重启，一重启这批全废。
-    //
-    //    **但不能把按钮拿掉**：上面那条注释写着「卡在安装任何一步的
-    //    用户，唯一的自救手段就是更新到修好的版本」。禁用 ≠ 移除。
+  ck('转换进行中，「关于」是能点的', () => {
+    // 🔴 2026-09-08 改：以前转换中它是灰的，理由是进去第一个按钮就是
+    //    「检查更新」。但那是**为了拦一个按钮把整间屋子锁了** —— 屋里
+    //    还有版本号、环境检测、磁盘占用、生成诊断文件，转换中看全都安全，
+    //    而诊断恰恰是转换卡住时最需要的那一个，以前正好进不去。
+    //    保护点下移到「检查更新」自己身上（见下一条）。
     const st = ready(sb);
     st.task = { state: 'running', items: [] };
     const h = fn(st);
     if (!h.includes('data-act="openAbout"')) throw new Error('按钮被拿掉了');
     const i = h.indexOf('data-act="openAbout"');
     const tag = h.slice(i, h.indexOf('>', i));
-    if (!tag.includes('disabled')) throw new Error('转换中却还能点');
+    if (tag.includes('disabled')) throw new Error('转换中进不去关于，诊断就摸不到');
+  });
+
+  ck('转换进行中，关于页里的「检查更新」必须是灰的', () => {
+    // 🔴 门开了之后，这个按钮就直接暴露在外 —— 而它是屋里最危险的一个：
+    //    更新包覆盖的正是 pipeline/*.py，转到一半换掉代码，后面几份读到的
+    //    是新代码；装完还要重启，一重启这批全废，而老师可能已经等了十几
+    //    分钟。**以前根本没有测试盯着它**，全靠外面那道门。
+    const st = ready(sb);
+    st.task = { state: 'running', items: [] };
+    st.about = 'about';
+    const h = fn(st);
+    const i = h.indexOf('data-act="checkUpdate"');
+    if (i < 0) throw new Error('关于页里没有检查更新按钮');
+    const tag = h.slice(i, h.indexOf('>', i));
+    if (!tag.includes('disabled'))
+      throw new Error('转换中还能点检查更新 —— 换掉代码会让这批全废');
   });
 
   ck('没在转换时关于是能点的', () => {
